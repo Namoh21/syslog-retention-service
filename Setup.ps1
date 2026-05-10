@@ -478,28 +478,38 @@ function Start-Diagnostics {
     Write-Host "  You can test the app directly (outside the service) to see errors live."
     $run = Read-Host "  Run app now in this window for 30 seconds? (yes/no)"
     if ($run -eq 'yes' -or $run -eq 'y') {
-        Write-Host ""
-        Write-Host "  Starting app... press Ctrl+C to stop early." -ForegroundColor Yellow
-        Write-Host "  Watch for errors below:" -ForegroundColor Yellow
-        Write-Host ""
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
-        $job = Start-Job -ScriptBlock {
-            param($py, $script, $dir)
-            Set-Location $dir
-            & $py $script 2>&1
-        } -ArgumentList $PythonExe, (Join-Path $ScriptDir "main.py"), $ScriptDir
-        $deadline = (Get-Date).AddSeconds(30)
-        while ((Get-Date) -lt $deadline) {
-            $out = Receive-Job $job -ErrorAction SilentlyContinue
-            if ($out) { $out | ForEach-Object { Write-Host "  $_" } }
-            Start-Sleep -Milliseconds 500
+        # Resolve which Python to use
+        $testPy = $null
+        if (Test-Path $PythonExe) {
+            $testPy = $PythonExe
+        } else {
+            $sysPy = Get-Command python -ErrorAction SilentlyContinue
+            if ($sysPy) { $testPy = $sysPy.Source }
         }
-        Stop-Job $job -ErrorAction SilentlyContinue
-        Remove-Job $job -ErrorAction SilentlyContinue
-        Write-Host ""
-        Write-Host "  Test run finished. Restarting service..." -ForegroundColor Yellow
-        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        if (-not $testPy) {
+            Write-Err "No Python found. Run Install first."
+        } else {
+            Write-Host ""
+            Write-Host "  Using Python: $testPy" -ForegroundColor Gray
+            Write-Host "  Starting app - watch for errors below:" -ForegroundColor Yellow
+            Write-Host ""
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Seconds 1
+            $proc = Start-Process -FilePath $testPy `
+                -ArgumentList (Join-Path $ScriptDir "main.py") `
+                -WorkingDirectory $ScriptDir `
+                -NoNewWindow -PassThru
+            $deadline = (Get-Date).AddSeconds(30)
+            while ((Get-Date) -lt $deadline -and -not $proc.HasExited) {
+                Start-Sleep -Seconds 1
+            }
+            if (-not $proc.HasExited) { $proc.Kill() }
+            Write-Host ""
+            Write-Host "  Test run finished (exit code: $($proc.ExitCode))." -ForegroundColor Yellow
+            Write-Host "  Check the output above for errors." -ForegroundColor Yellow
+            Write-Host "  NOTE: Run Install first if venv was missing." -ForegroundColor Cyan
+            Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+        }
     }
 
     Wait-Enter
