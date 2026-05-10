@@ -379,6 +379,132 @@ function Edit-EnvFile {
     Wait-Enter
 }
 
+function Start-Diagnostics {
+    Write-Banner
+    Write-Host "  [ DIAGNOSTICS ]" -ForegroundColor Cyan
+    Write-Host ""
+
+    # 1. Service status
+    Write-Host "  -- Windows Service --" -ForegroundColor Cyan
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        $col = if ($svc.Status -eq 'Running') { 'Green' } else { 'Red' }
+        Write-Host "  Status : $($svc.Status)" -ForegroundColor $col
+        Write-Host "  Start  : $($svc.StartType)"
+    } else {
+        Write-Host "  Service NOT installed" -ForegroundColor Red
+    }
+
+    # 2. Python / venv
+    Write-Host ""
+    Write-Host "  -- Python Environment --" -ForegroundColor Cyan
+    if (Test-Path $PythonExe) {
+        $ver = & $PythonExe --version 2>&1
+        Write-Host "  Venv Python : $ver" -ForegroundColor Green
+    } else {
+        Write-Host "  Venv Python NOT found at $PythonExe" -ForegroundColor Red
+        Write-Host "  Run Install to create the venv." -ForegroundColor Yellow
+    }
+
+    # 3. Key files
+    Write-Host ""
+    Write-Host "  -- Key Files --" -ForegroundColor Cyan
+    $files = @{
+        "main.py"            = (Join-Path $ScriptDir "main.py")
+        "windows_service.py" = (Join-Path $ScriptDir "windows_service.py")
+        ".env"               = $EnvFile
+        "requirements.txt"   = $ReqFile
+    }
+    foreach ($name in $files.Keys) {
+        $exists = Test-Path $files[$name]
+        $col = if ($exists) { 'Green' } else { 'Red' }
+        $label = if ($exists) { "OK" } else { "MISSING" }
+        Write-Host "  $label  $name" -ForegroundColor $col
+    }
+
+    # 4. Port check
+    Write-Host ""
+    Write-Host "  -- Port Availability --" -ForegroundColor Cyan
+    foreach ($port in @($WebPort, $SyslogPort)) {
+        $inUse = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+        if ($inUse) {
+            Write-Host "  Port $port : IN USE (pid $($inUse[0].OwningProcess))" -ForegroundColor Green
+        } else {
+            $udpInUse = Get-NetUDPEndpoint -LocalPort $port -ErrorAction SilentlyContinue
+            if ($udpInUse) {
+                Write-Host "  Port $port : IN USE UDP (pid $($udpInUse[0].OwningProcess))" -ForegroundColor Green
+            } else {
+                Write-Host "  Port $port : not listening" -ForegroundColor Yellow
+            }
+        }
+    }
+
+    # 5. Firewall rules
+    Write-Host ""
+    Write-Host "  -- Firewall Rules --" -ForegroundColor Cyan
+    $rules = @("Syslog UDP $SyslogPort", "Syslog TCP $SyslogPort", "SIEM Web Console $WebPort")
+    foreach ($rule in $rules) {
+        $r = Get-NetFirewallRule -DisplayName $rule -ErrorAction SilentlyContinue
+        if ($r) {
+            $col = if ($r.Enabled -eq 'True') { 'Green' } else { 'Yellow' }
+            Write-Host "  $($r.Enabled)   $rule" -ForegroundColor $col
+        } else {
+            Write-Host "  MISSING  $rule" -ForegroundColor Red
+        }
+    }
+
+    # 6. Recent log output
+    Write-Host ""
+    Write-Host "  -- Recent Log Output --" -ForegroundColor Cyan
+    $logFile = Join-Path $LogDir "service.log"
+    $errFile = Join-Path $LogDir "service_err.log"
+    if (Test-Path $errFile) {
+        $errLines = Get-Content $errFile -Tail 10 -ErrorAction SilentlyContinue
+        if ($errLines) {
+            Write-Host "  service_err.log (last 10 lines):" -ForegroundColor Yellow
+            $errLines | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
+        }
+    }
+    if (Test-Path $logFile) {
+        Write-Host "  service.log (last 15 lines):" -ForegroundColor Gray
+        Get-Content $logFile -Tail 15 | ForEach-Object { Write-Host "  $_" -ForegroundColor White }
+    } else {
+        Write-Warn "No log file yet - service may not have started successfully"
+    }
+
+    # 7. Offer test run
+    Write-Host ""
+    Write-Host "  -- Test Run --" -ForegroundColor Cyan
+    Write-Host "  You can test the app directly (outside the service) to see errors live."
+    $run = Read-Host "  Run app now in this window for 30 seconds? (yes/no)"
+    if ($run -eq 'yes' -or $run -eq 'y') {
+        Write-Host ""
+        Write-Host "  Starting app... press Ctrl+C to stop early." -ForegroundColor Yellow
+        Write-Host "  Watch for errors below:" -ForegroundColor Yellow
+        Write-Host ""
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 1
+        $job = Start-Job -ScriptBlock {
+            param($py, $script, $dir)
+            Set-Location $dir
+            & $py $script 2>&1
+        } -ArgumentList $PythonExe, (Join-Path $ScriptDir "main.py"), $ScriptDir
+        $deadline = (Get-Date).AddSeconds(30)
+        while ((Get-Date) -lt $deadline) {
+            $out = Receive-Job $job -ErrorAction SilentlyContinue
+            if ($out) { $out | ForEach-Object { Write-Host "  $_" } }
+            Start-Sleep -Milliseconds 500
+        }
+        Stop-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -ErrorAction SilentlyContinue
+        Write-Host ""
+        Write-Host "  Test run finished. Restarting service..." -ForegroundColor Yellow
+        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    }
+
+    Wait-Enter
+}
+
 # ---- Main menu loop ----
 
 while ($true) {
@@ -394,7 +520,8 @@ while ($true) {
     Write-Host "  4. Open web console (http://localhost:$WebPort)" -ForegroundColor White
     Write-Host "  5. View service status and logs" -ForegroundColor White
     Write-Host "  6. Edit .env configuration" -ForegroundColor White
-    Write-Host "  7. Exit" -ForegroundColor White
+    Write-Host "  7. Diagnostics and test run" -ForegroundColor White
+    Write-Host "  8. Exit" -ForegroundColor White
     Write-Host ""
     $choice = Read-Host "  Select option"
 
@@ -405,7 +532,8 @@ while ($true) {
         '4' { Open-Console }
         '5' { Show-Status }
         '6' { Edit-EnvFile }
-        '7' { exit 0 }
+        '7' { Start-Diagnostics }
+        '8' { exit 0 }
         default { Write-Warn "Invalid choice"; Start-Sleep -Seconds 1 }
     }
 }
