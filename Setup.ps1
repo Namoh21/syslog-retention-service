@@ -301,9 +301,13 @@ function Start-Update {
     }
 
     Write-Step "Updating Python dependencies"
-    & $PipExe install --upgrade pip --quiet
-    & $PipExe install -r $ReqFile --quiet
-    Write-Ok "Dependencies updated"
+    if (Test-Path $PipExe) {
+        & $PipExe install --upgrade pip --quiet
+        & $PipExe install -r $ReqFile --quiet
+        Write-Ok "Dependencies updated"
+    } else {
+        Write-Warn "Venv not found - skipping pip update (run Install first)"
+    }
 
     Write-Step "Restarting service (DB migration runs on startup)"
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -314,9 +318,14 @@ function Start-Update {
     } else {
         Write-Warn "Service not registered. Run Install first."
     }
+
+    # Reload this script if Setup.ps1 itself was updated by the pull
     Write-Host ""
     Write-Ok "Update complete."
-    Wait-Enter
+    Write-Host "  Setup.ps1 was updated - reloading now..." -ForegroundColor Cyan
+    Start-Sleep -Seconds 2
+    & powershell.exe -NoExit -ExecutionPolicy Bypass -File "$PSCommandPath"
+    exit 0
 }
 
 function Start-Uninstall {
