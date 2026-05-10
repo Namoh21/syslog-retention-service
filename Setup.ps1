@@ -34,7 +34,6 @@ $NssmExe      = Join-Path $NssmDir "win64\nssm.exe"
 $LogDir       = Join-Path $ScriptDir "logs"
 $DataDir      = Join-Path $ScriptDir "data"
 $EnvFile      = Join-Path $ScriptDir ".env"
-$EnvExample   = Join-Path $ScriptDir ".env.example"
 $ReqFile      = Join-Path $ScriptDir "requirements.txt"
 $SyslogPort   = 514
 $WebPort      = 8080
@@ -93,27 +92,122 @@ function Install-Nssm {
     }
 }
 
-function Initialize-EnvFile {
-    if (Test-Path $EnvFile) { return }
-    if (Test-Path $EnvExample) {
-        Copy-Item $EnvExample $EnvFile
+function Read-EnvInput {
+    param([string]$Prompt, [string]$Default = "", [bool]$Secret = $false)
+    $display = if ($Default -ne "") { "$Prompt [$Default]" } else { $Prompt }
+    Write-Host "  $display" -ForegroundColor White -NoNewline
+    Write-Host " : " -NoNewline
+    if ($Secret) {
+        $val = Read-Host -AsSecureString
+        $val = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+                   [Runtime.InteropServices.Marshal]::SecureStringToBSTR($val))
     } else {
-        $secret = [System.BitConverter]::ToString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).Replace("-","").ToLower()
-        $content = @"
-SECRET_KEY=$secret
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=changeme
-ANTHROPIC_API_KEY=
-SYSLOG_UDP_PORT=514
-SYSLOG_TCP_PORT=514
-API_PORT=8080
-RETENTION_DAYS=90
-"@
-        Set-Content $EnvFile $content -Encoding UTF8
+        $val = Read-Host
     }
-    Write-Warn ".env created - opening for you to configure now."
-    Write-Warn "Set ADMIN_PASSWORD and ANTHROPIC_API_KEY at minimum."
-    Start-Process notepad $EnvFile -Wait
+    if ($val -eq "" -and $Default -ne "") { return $Default }
+    return $val
+}
+
+function Initialize-EnvFile {
+    if (Test-Path $EnvFile) {
+        Write-Ok ".env already exists - skipping configuration wizard"
+        Write-Host "  (Select option 6 from the main menu to edit it)" -ForegroundColor Gray
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  +--------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host "  |   Configuration Wizard                           |" -ForegroundColor Yellow
+    Write-Host "  |   Press Enter to accept the [default value]      |" -ForegroundColor Yellow
+    Write-Host "  +--------------------------------------------------+" -ForegroundColor Yellow
+    Write-Host ""
+
+    # Secret key - auto-generate, no need to ask
+    $secret = [System.BitConverter]::ToString(
+        [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
+    ).Replace("-","").ToLower()
+    Write-Ok "SECRET_KEY auto-generated"
+
+    # Admin credentials
+    Write-Host ""
+    Write-Host "  -- Admin Account --" -ForegroundColor Cyan
+    $adminUser = Read-EnvInput "Admin username" "admin"
+    do {
+        $adminPass = Read-EnvInput "Admin password (min 8 chars)" "" $true
+        if ($adminPass.Length -lt 8) { Write-Warn "Password must be at least 8 characters." }
+    } while ($adminPass.Length -lt 8)
+
+    # Anthropic API key
+    Write-Host ""
+    Write-Host "  -- Claude AI --" -ForegroundColor Cyan
+    Write-Host "  Your Anthropic API key is needed for AI log analysis." -ForegroundColor Gray
+    Write-Host "  Get one at: https://console.anthropic.com" -ForegroundColor Gray
+    Write-Host "  (Leave blank to skip - you can add it later in .env)" -ForegroundColor Gray
+    $anthropicKey = Read-EnvInput "Anthropic API key" ""
+
+    $claudeModels = @("claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5-20251001")
+    Write-Host ""
+    Write-Host "  Claude model options:" -ForegroundColor Gray
+    for ($i = 0; $i -lt $claudeModels.Length; $i++) {
+        $label = if ($i -eq 0) { " (recommended)" } else { "" }
+        Write-Host "    $($i+1). $($claudeModels[$i])$label" -ForegroundColor Gray
+    }
+    $modelChoice = Read-EnvInput "Choose model 1-3" "1"
+    $idx = [int]$modelChoice - 1
+    if ($idx -lt 0 -or $idx -ge $claudeModels.Length) { $idx = 0 }
+    $claudeModel = $claudeModels[$idx]
+
+    # Syslog ports
+    Write-Host ""
+    Write-Host "  -- Syslog Ports --" -ForegroundColor Cyan
+    Write-Host "  Port 514 requires Administrator. Use 5514 if you have issues." -ForegroundColor Gray
+    $udpPort = Read-EnvInput "Syslog UDP port" "514"
+    $tcpPort = Read-EnvInput "Syslog TCP port" "514"
+
+    # Web console
+    Write-Host ""
+    Write-Host "  -- Web Console --" -ForegroundColor Cyan
+    $apiPort = Read-EnvInput "Web console port" "8080"
+    $apiHost = Read-EnvInput "Bind address (0.0.0.0 = all interfaces)" "0.0.0.0"
+
+    # Retention
+    Write-Host ""
+    Write-Host "  -- Log Retention --" -ForegroundColor Cyan
+    $retDays = Read-EnvInput "Retention period in days" "90"
+    $maxEntries = Read-EnvInput "Maximum log entries" "5000000"
+
+    # External API keys
+    Write-Host ""
+    Write-Host "  -- External API Keys (optional) --" -ForegroundColor Cyan
+    Write-Host "  Pre-shared keys for Claude Projects or scripts (comma-separated)." -ForegroundColor Gray
+    Write-Host "  Leave blank - you can generate keys in the web console later." -ForegroundColor Gray
+    $extKeys = Read-EnvInput "External API keys" ""
+
+    # Write .env
+    $envContent = @"
+# Generated by Setup.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+
+SECRET_KEY=$secret
+ADMIN_USERNAME=$adminUser
+ADMIN_PASSWORD=$adminPass
+
+ANTHROPIC_API_KEY=$anthropicKey
+CLAUDE_MODEL=$claudeModel
+
+SYSLOG_UDP_PORT=$udpPort
+SYSLOG_TCP_PORT=$tcpPort
+
+API_HOST=$apiHost
+API_PORT=$apiPort
+
+RETENTION_DAYS=$retDays
+MAX_LOG_ENTRIES=$maxEntries
+
+EXTERNAL_API_KEYS=$extKeys
+"@
+    Set-Content $EnvFile $envContent -Encoding UTF8
+    Write-Host ""
+    Write-Ok ".env saved to $EnvFile"
 }
 
 function Set-FirewallRules {
