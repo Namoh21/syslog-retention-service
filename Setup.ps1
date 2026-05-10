@@ -58,10 +58,32 @@ function Get-ServiceStatus {
 }
 
 function Get-PythonPath {
-    $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
-    $cmd = Get-Command python3 -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    # The WindowsApps stub opens the Store instead of running Python - skip it
+    foreach ($name in @("python", "python3")) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if (-not $cmd) { continue }
+        $src = $cmd.Source
+        if ($src -like "*WindowsApps*") { continue }
+        # Verify it actually runs
+        $ver = & $src --version 2>&1
+        if ($ver -match "Python \d") { return $src }
+    }
+
+    # Last resort: check common install paths
+    $candidates = @(
+        "C:\Python312\python.exe",
+        "C:\Python311\python.exe",
+        "C:\Python310\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
+        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe"
+    )
+    foreach ($p in $candidates) {
+        if (Test-Path $p) {
+            $ver = & $p --version 2>&1
+            if ($ver -match "Python \d") { return $p }
+        }
+    }
     return $null
 }
 
@@ -222,6 +244,10 @@ function Start-Install {
     Write-Step "Creating Python virtual environment"
     if (-not (Test-Path $VenvDir)) {
         & $pyPath -m venv $VenvDir
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $PythonExe)) {
+            Write-Err "Venv creation failed. Check that Python 3.10+ is properly installed."
+            Wait-Enter; return
+        }
         Write-Ok "Venv created"
     } else {
         Write-Ok "Venv already exists"
@@ -229,7 +255,11 @@ function Start-Install {
 
     Write-Step "Installing Python dependencies (this may take a minute)..."
     & $PipExe install --upgrade pip --quiet
-    & $PipExe install -r $ReqFile --quiet
+    & $PipExe install -r $ReqFile
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "pip install failed - see errors above."
+        Wait-Enter; return
+    }
     Write-Ok "Dependencies installed"
 
     New-Item -ItemType Directory -Force -Path $LogDir  | Out-Null
@@ -243,8 +273,11 @@ function Start-Install {
         & $PythonExe $SvcScript remove 2>$null
         Start-Sleep -Seconds 2
     }
-    & $PythonExe $SvcScript install
     & $PythonExe $SvcScript --startup auto install
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Service registration failed - see errors above."
+        Wait-Enter; return
+    }
     Set-Service -Name $ServiceName -DisplayName "Syslog Retention and SIEM Service" -Description "Syslog receiver and SIEM for Unifi Dream Machine. Web console on port $WebPort." -ErrorAction SilentlyContinue
     Write-Ok "Service registered"
 
@@ -255,7 +288,11 @@ function Start-Install {
     Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
     $svcStatus = Get-ServiceStatus
-    Write-Ok "Service status: $svcStatus"
+    if ($svcStatus -eq 'Running') {
+        Write-Ok "Service status: $svcStatus"
+    } else {
+        Write-Err "Service status: $svcStatus - check logs with option 7 (Diagnostics)"
+    }
 
     Write-Host ""
     Write-Host "  ============================================" -ForegroundColor Green
