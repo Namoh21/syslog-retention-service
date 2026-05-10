@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Syslog Retention &amp; SIEM Console</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --accent: #58a6ff; --accent2: #3fb950; --warn: #d29922; --danger: #f85149;
+    --text: #c9d1d9; --muted: #8b949e; --radius: 6px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.5 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+  /* Layout */
+  #app { display: flex; height: 100vh; overflow: hidden; }
+  nav { width: 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+  nav .brand { padding: 20px 16px; font-size: 15px; font-weight: 600; color: var(--accent); border-bottom: 1px solid var(--border); }
+  nav .brand span { font-size: 11px; display: block; color: var(--muted); font-weight: 400; margin-top: 2px; }
+  nav ul { list-style: none; padding: 8px 0; flex: 1; }
+  nav ul li a { display: flex; align-items: center; gap: 10px; padding: 9px 16px; color: var(--muted); text-decoration: none; border-radius: 0; transition: .15s; cursor: pointer; }
+  nav ul li a:hover, nav ul li a.active { background: rgba(88,166,255,.1); color: var(--accent); }
+  nav .user-info { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+  main { flex: 1; overflow-y: auto; padding: 24px; }
+
+  /* Cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+  .card h2 { font-size: 16px; margin-bottom: 16px; color: var(--text); }
+  .card h3 { font-size: 13px; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .05em; }
+
+  /* Stat grid */
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
+  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
+  .stat .val { font-size: 28px; font-weight: 700; color: var(--accent); }
+  .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  /* Table */
+  .tbl-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 8px 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  td { padding: 7px 12px; border-bottom: 1px solid rgba(48,54,61,.5); vertical-align: top; }
+  tr:hover td { background: rgba(88,166,255,.04); }
+  .truncate { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Severity badges */
+  .sev { display: inline-block; padding: 2px 7px; border-radius: 12px; font-size: 11px; font-weight: 600; }
+  .sev-0,.sev-1,.sev-2 { background: rgba(248,81,73,.2); color: #f85149; }
+  .sev-3 { background: rgba(210,153,34,.2); color: #d29922; }
+  .sev-4 { background: rgba(88,166,255,.15); color: #58a6ff; }
+  .sev-5,.sev-6,.sev-7 { background: rgba(139,148,158,.15); color: #8b949e; }
+
+  /* Forms */
+  .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; align-items: flex-end; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  label { font-size: 12px; color: var(--muted); }
+  input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: var(--radius); font-size: 13px; outline: none; }
+  input:focus, select:focus { border-color: var(--accent); }
+  input[type=number] { width: 100px; }
+
+  /* Buttons */
+  .btn { padding: 7px 14px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-primary:hover { opacity: .85; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { opacity: .85; }
+  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
+  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+
+  /* Pagination */
+  .pagination { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .page-info { color: var(--muted); font-size: 12px; }
+
+  /* AI Panel */
+  .ai-options { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; align-items: flex-end; }
+  #ai-result { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-size: 13px; min-height: 80px; white-space: pre-wrap; display: none; }
+  .finding { border-left: 3px solid var(--border); padding: 10px 14px; margin-bottom: 10px; border-radius: 0 var(--radius) var(--radius) 0; }
+  .finding-CRITICAL { border-color: #f85149; background: rgba(248,81,73,.06); }
+  .finding-HIGH { border-color: #d29922; background: rgba(210,153,34,.06); }
+  .finding-MEDIUM { border-color: #58a6ff; background: rgba(88,166,255,.06); }
+  .finding-LOW,.finding-INFO { border-color: #3fb950; background: rgba(63,185,80,.04); }
+  .finding h4 { font-size: 13px; margin-bottom: 4px; }
+  .finding p { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+  .finding .rec { color: var(--accent2); font-size: 12px; }
+  .threat-badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 13px; margin-bottom: 12px; }
+  .threat-LOW { background: rgba(63,185,80,.2); color: #3fb950; }
+  .threat-MEDIUM { background: rgba(88,166,255,.2); color: #58a6ff; }
+  .threat-HIGH { background: rgba(210,153,34,.2); color: #d29922; }
+  .threat-CRITICAL { background: rgba(248,81,73,.2); color: #f85149; }
+
+  /* Login */
+  #login-screen { display: flex; align-items: center; justify-content: center; height: 100vh; background: var(--bg); }
+  .login-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 40px; width: 340px; }
+  .login-box h1 { font-size: 20px; margin-bottom: 6px; color: var(--accent); }
+  .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
+  .login-box .form-group { margin-bottom: 14px; width: 100%; }
+  .login-box input { width: 100%; }
+  .login-box .btn { width: 100%; margin-top: 6px; padding: 10px; }
+  .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; display: none; }
+
+  /* Misc */
+  .hidden { display: none !important; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .tag { display: inline-block; background: rgba(88,166,255,.15); color: var(--accent); font-size: 11px; padding: 2px 7px; border-radius: 10px; }
+  .copy-key { font-family: monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--border); padding: 8px 12px; border-radius: var(--radius); word-break: break-all; margin-top: 8px; color: var(--accent2); }
+  .alert { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: 14px; }
+  .alert-info { background: rgba(88,166,255,.1); border: 1px solid rgba(88,166,255,.3); color: var(--accent); }
+  .alert-warn { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); color: var(--warn); }
+  .alert-ok { background: rgba(63,185,80,.1); border: 1px solid rgba(63,185,80,.3); color: var(--accent2); }
+</style>
+</head>
+<body>
+
+<!-- Login Screen -->
+<div id="login-screen">
+  <div class="login-box">
+    <h1>&#x1F6E1; SIEM Console</h1>
+    <p>Syslog Retention &amp; Security Service</p>
+    <div class="form-group">
+      <label>Username</label>
+      <input id="login-user" type="text" placeholder="admin" autocomplete="username" />
+    </div>
+    <div class="form-group">
+      <label>Password</label>
+      <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+    </div>
+    <button class="btn btn-primary" onclick="doLogin()">Sign In</button>
+    <div class="error-msg" id="login-err">Invalid username or password.</div>
+  </div>
+</div>
+
+<!-- Main App -->
+<div id="app" class="hidden">
+  <nav>
+    <div class="brand">&#x1F6E1; SIEM Console<span>Syslog Retention Service</span></div>
+    <ul>
+      <li><a onclick="showPage('dashboard')" data-page="dashboard">&#x1F4CA; Dashboard</a></li>
+      <li><a onclick="showPage('logs')" data-page="logs">&#x1F4CB; Log Viewer</a></li>
+      <li><a onclick="showPage('ai')" data-page="ai">&#x1F916; AI Analysis</a></li>
+      <li><a onclick="showPage('retention')" data-page="retention">&#x1F5C4; Retention</a></li>
+      <li><a onclick="showPage('users')" data-page="users">&#x1F464; Users</a></li>
+      <li><a onclick="showPage('apikeys')" data-page="apikeys">&#x1F511; API Keys</a></li>
+    </ul>
+    <div class="user-info">
+      Signed in as <strong id="nav-user"></strong><br/>
+      <a href="#" onclick="doLogout()" style="color:var(--danger);font-size:12px;">Sign out</a>
+    </div>
+  </nav>
+
+  <main id="main-content">
+    <!-- Pages are rendered here -->
+  </main>
+</div>
+
+<script>
+const API = '';  // same origin
+let token = null;
+let currentUser = null;
+
+// ===================== AUTH =====================
+async function doLogin() {
+  const u = document.getElementById('login-user').value.trim();
+  const p = document.getElementById('login-pass').value;
+  const err = document.getElementById('login-err');
+  err.style.display = 'none';
+  try {
+    const fd = new FormData();
+    fd.append('username', u); fd.append('password', p);
+    const r = await fetch(`${API}/api/auth/token`, { method: 'POST', body: fd });
+    if (!r.ok) { err.style.display = 'block'; return; }
+    const d = await r.json();
+    token = d.access_token;
+    currentUser = u;
+    document.getElementById('nav-user').textContent = u;
+    document.getElementById('login-screen').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    showPage('dashboard');
+  } catch(e) { err.textContent = e.message; err.style.display = 'block'; }
+}
+
+function doLogout() {
+  token = null; currentUser = null;
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('login-screen').classList.remove('hidden');
+}
+
+document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+async function apiFetch(path, opts={}) {
+  const r = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+  });
+  if (r.status === 401) { doLogout(); return null; }
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({detail: r.statusText}));
+    throw new Error(err.detail || r.statusText);
+  }
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+// ===================== NAVIGATION =====================
+function showPage(name) {
+  document.querySelectorAll('nav ul li a').forEach(a => {
+    a.classList.toggle('active', a.dataset.page === name);
+  });
+  const pages = { dashboard, logs, ai, retention, users, apikeys };
+  pages[name]?.();
+}
+
+function render(html) { document.getElementById('main-content').innerHTML = html; }
+
+// ===================== DASHBOARD =====================
+async function dashboard() {
+  render(`<div class="stat-grid" id="stats-grid"><div class="stat"><div class="val"><span class="spinner"></span></div><div class="lbl">Loading…</div></div></div>`);
+  try {
+    const s = await apiFetch('/api/stats');
+    if (!s) return;
+    const svColors = ['#f85149','#f85149','#f85149','#d29922','#58a6ff','#8b949e','#8b949e','#8b949e'];
+    const sevRows = (s.by_severity||[]).map(x =>
+      `<tr><td><span class="sev sev-${x.severity}">${x.name}</span></td><td>${x.count.toLocaleString()}</td></tr>`
+    ).join('');
+    const srcRows = (s.top_sources||[]).map(x =>
+      `<tr><td>${x.ip}</td><td>${x.count.toLocaleString()}</td></tr>`
+    ).join('');
+    render(`
+      <div class="stat-grid">
+        <div class="stat"><div class="val">${(s.total_entries||0).toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
+        <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry</div></div>
+        <div class="stat"><div class="val" style="color:var(--muted)">${fmtDate(s.oldest_entry)}</div><div class="lbl">Oldest Entry</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+        <div class="card"><h2>Events by Severity</h2><div class="tbl-wrap"><table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>${sevRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div></div>
+        <div class="card"><h2>Top Source IPs</h2><div class="tbl-wrap"><table><thead><tr><th>IP</th><th>Count</th></tr></thead><tbody>${srcRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div></div>
+      </div>
+    `);
+  } catch(e) { render(`<div class="alert alert-warn">Failed to load stats: ${e.message}</div>`); }
+}
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  return new Date(iso).toLocaleString();
+}
+
+// ===================== LOGS =====================
+let logPage = { offset: 0, limit: 100, total: 0 };
+let logFilters = {};
+
+async function logs() {
+  render(`
+    <div class="card">
+      <h2>Log Viewer</h2>
+      <div class="form-row">
+        <div class="form-group"><label>Source IP</label><input id="f-ip" placeholder="e.g. 192.168.1.1" /></div>
+        <div class="form-group"><label>Hostname</label><input id="f-host" placeholder="partial match" /></div>
+        <div class="form-group"><label>Max Severity</label>
+          <select id="f-sev">
+            <option value="">All</option>
+            <option value="0">0 Emergency</option>
+            <option value="1">1 Alert</option>
+            <option value="2">2 Critical</option>
+            <option value="3">3 Error</option>
+            <option value="4">4 Warning</option>
+            <option value="5">5 Notice</option>
+            <option value="6">6 Info</option>
+            <option value="7">7 Debug</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Search message</label><input id="f-search" placeholder="keyword…" /></div>
+        <div class="form-group"><label>Since</label><input type="datetime-local" id="f-since" /></div>
+        <div class="form-group"><label>Until</label><input type="datetime-local" id="f-until" /></div>
+        <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="applyLogFilters()">Search</button></div>
+      </div>
+      <div id="log-table-wrap"><div class="spinner"></div> Loading…</div>
+    </div>
+  `);
+  logPage = { offset: 0, limit: 100, total: 0 };
+  logFilters = {};
+  await fetchLogs();
+}
+
+function applyLogFilters() {
+  logPage.offset = 0;
+  logFilters = {
+    source_ip: document.getElementById('f-ip')?.value.trim() || null,
+    hostname: document.getElementById('f-host')?.value.trim() || null,
+    severity_max: document.getElementById('f-sev')?.value || null,
+    search: document.getElementById('f-search')?.value.trim() || null,
+    since: document.getElementById('f-since')?.value ? new Date(document.getElementById('f-since').value).toISOString() : null,
+    until: document.getElementById('f-until')?.value ? new Date(document.getElementById('f-until').value).toISOString() : null,
+  };
+  fetchLogs();
+}
+
+async function fetchLogs() {
+  const wrap = document.getElementById('log-table-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="spinner"></div> Fetching…';
+
+  let qs = `?limit=${logPage.limit}&offset=${logPage.offset}`;
+  for (const [k, v] of Object.entries(logFilters)) {
+    if (v !== null && v !== '') qs += `&${k}=${encodeURIComponent(v)}`;
+  }
+  try {
+    const d = await apiFetch(`/api/logs${qs}`);
+    if (!d) return;
+    logPage.total = d.total;
+
+    const rows = d.entries.map(e => `
+      <tr>
+        <td style="white-space:nowrap;color:var(--muted)">${fmtDate(e.received_at)}</td>
+        <td>${e.source_ip}</td>
+        <td>${e.hostname||''}</td>
+        <td><span class="sev sev-${e.severity}">${e.severity_name||e.severity}</span></td>
+        <td>${e.app_name||''}</td>
+        <td class="truncate">${esc(e.message||'')}</td>
+      </tr>
+    `).join('');
+
+    const start = logPage.offset + 1;
+    const end = Math.min(logPage.offset + logPage.limit, logPage.total);
+    wrap.innerHTML = `
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Timestamp</th><th>Source IP</th><th>Hostname</th><th>Severity</th><th>App</th><th>Message</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan=6 style="color:var(--muted);text-align:center;padding:24px">No entries found</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="pagination">
+        <button class="btn btn-ghost btn-sm" onclick="logNav(-1)" ${logPage.offset===0?'disabled':''}>← Prev</button>
+        <span class="page-info">${d.total>0?`${start}–${end} of ${d.total.toLocaleString()}`:'0 results'}</span>
+        <button class="btn btn-ghost btn-sm" onclick="logNav(1)" ${end>=logPage.total?'disabled':''}>Next →</button>
+      </div>
+    `;
+  } catch(e) { wrap.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+function logNav(dir) {
+  logPage.offset = Math.max(0, logPage.offset + dir * logPage.limit);
+  fetchLogs();
+}
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ===================== AI ANALYSIS =====================
+async function ai() {
+  render(`
+    <div class="card">
+      <h2>AI Security Analysis</h2>
+      <p style="color:var(--muted);margin-bottom:16px;font-size:13px">
+        Sends recent log data to Claude for security analysis and recommendations.
+        Requires ANTHROPIC_API_KEY to be configured.
+      </p>
+      <div class="ai-options">
+        <div class="form-group">
+          <label>Time Window</label>
+          <select id="ai-hours">
+            <option value="1">Last 1 hour</option>
+            <option value="6">Last 6 hours</option>
+            <option value="24" selected>Last 24 hours</option>
+            <option value="72">Last 3 days</option>
+            <option value="168">Last 7 days</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Focus Area</label>
+          <input id="ai-focus" value="security threats and anomalies" style="width:260px" />
+        </div>
+        <div class="form-group"><label>&nbsp;</label>
+          <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()">&#x1F916; Analyze Logs</button>
+        </div>
+      </div>
+      <div id="ai-output"></div>
+    </div>
+  `);
+}
+
+async function runAnalysis() {
+  const btn = document.getElementById('ai-btn');
+  const out = document.getElementById('ai-output');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span>Analyzing…';
+  out.innerHTML = '';
+  try {
+    const hours = parseInt(document.getElementById('ai-hours').value);
+    const focus = document.getElementById('ai-focus').value.trim();
+    const d = await apiFetch('/api/ai/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ hours, focus })
+    });
+    if (!d) return;
+    renderAnalysis(d, out);
+  } catch(e) {
+    out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '&#x1F916; Analyze Logs';
+  }
+}
+
+function renderAnalysis(d, out) {
+  if (d.error) { out.innerHTML = `<div class="alert alert-warn">${d.error}</div>`; return; }
+  const a = d.analysis;
+  if (!a || a.raw) {
+    out.innerHTML = `<div style="white-space:pre-wrap;font-size:13px;color:var(--text)">${esc(typeof a==='string'?a:a?.summary||JSON.stringify(d))}</div>`;
+    return;
+  }
+  const tl = a.threat_level || 'UNKNOWN';
+  const findings = (a.findings||[]).map(f => `
+    <div class="finding finding-${f.severity}">
+      <h4><span class="tag">${f.severity}</span> ${esc(f.title)}</h4>
+      <p>${esc(f.detail)}</p>
+      ${f.recommendation?`<div class="rec">&#x2192; ${esc(f.recommendation)}</div>`:''}
+    </div>
+  `).join('');
+  const imm = (a.immediate_actions||[]).map(x=>`<li style="margin-bottom:6px">${esc(x)}</li>`).join('');
+  const lng = (a.long_term_recommendations||[]).map(x=>`<li style="margin-bottom:6px">${esc(x)}</li>`).join('');
+
+  out.innerHTML = `
+    <div style="margin-bottom:16px">
+      <span class="threat-badge threat-${tl}">Threat Level: ${tl}</span>
+      <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries · ${d.hours_covered}h window · ${d.model}</span>
+    </div>
+    <div class="card" style="margin-bottom:12px"><p>${esc(a.summary||'')}</p></div>
+    ${findings ? `<div class="card"><h2>Findings</h2>${findings}</div>` : ''}
+    ${imm ? `<div class="card"><h2>Immediate Actions</h2><ul style="padding-left:18px;color:var(--text)">${imm}</ul></div>` : ''}
+    ${lng ? `<div class="card"><h2>Long-term Recommendations</h2><ul style="padding-left:18px;color:var(--text)">${lng}</ul></div>` : ''}
+    <p style="color:var(--muted);font-size:11px">Analyzed at ${fmtDate(d.analyzed_at)}</p>
+  `;
+}
+
+// ===================== RETENTION =====================
+async function retention() {
+  render(`<div class="card"><h2>Retention Policy</h2><div class="spinner"></div> Loading…</div>`);
+  try {
+    const d = await apiFetch('/api/admin/retention');
+    if (!d) return;
+    render(`
+      <div class="card" style="max-width:500px">
+        <h2>Retention Policy</h2>
+        <div class="alert alert-info" style="margin-bottom:16px">Changes take effect on the next scheduled purge or when you click Purge Now.</div>
+        <div class="form-group" style="margin-bottom:14px">
+          <label>Retention Period (days)</label>
+          <input type="number" id="ret-days" value="${d.retention_days}" min="1" max="3650" />
+        </div>
+        <div class="form-group" style="margin-bottom:20px">
+          <label>Maximum Log Entries</label>
+          <input type="number" id="ret-max" value="${d.max_entries}" min="1000" style="width:160px" />
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="saveRetention()">Save Policy</button>
+          <button class="btn btn-ghost" onclick="purgeNow()">&#x1F5D1; Purge Now</button>
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin-top:12px">Last updated: ${fmtDate(d.updated_at)}</p>
+        <div id="ret-msg" style="margin-top:10px"></div>
+      </div>
+    `);
+  } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function saveRetention() {
+  const msg = document.getElementById('ret-msg');
+  try {
+    await apiFetch('/api/admin/retention', {
+      method: 'PUT',
+      body: JSON.stringify({
+        retention_days: parseInt(document.getElementById('ret-days').value),
+        max_entries: parseInt(document.getElementById('ret-max').value),
+      })
+    });
+    msg.innerHTML = '<div class="alert alert-ok">Policy saved.</div>';
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function purgeNow() {
+  const msg = document.getElementById('ret-msg');
+  try {
+    const d = await apiFetch('/api/admin/purge', { method: 'POST' });
+    msg.innerHTML = `<div class="alert alert-ok">${d.message}</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ===================== USERS =====================
+async function users() {
+  render(`<div class="card"><div class="spinner"></div> Loading…</div>`);
+  try {
+    const list = await apiFetch('/api/admin/users');
+    if (!list) return;
+    const rows = list.map(u => `
+      <tr>
+        <td>${u.id}</td>
+        <td>${esc(u.username)}</td>
+        <td>${u.is_admin ? '<span class="tag">Admin</span>' : 'Read/Write'}</td>
+        <td>${u.is_active ? '&#x2705; Active' : '&#x274C; Inactive'}</td>
+        <td>${fmtDate(u.created_at)}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id},'${esc(u.username)}')">Delete</button></td>
+      </tr>
+    `).join('');
+    render(`
+      <div class="card">
+        <h2>Users</h2>
+        <div class="tbl-wrap">
+          <table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+          <tbody>${rows}</tbody></table>
+        </div>
+      </div>
+      <div class="card" style="max-width:420px">
+        <h2>Add User</h2>
+        <div class="form-group" style="margin-bottom:10px"><label>Username</label><input id="nu-user" placeholder="username" /></div>
+        <div class="form-group" style="margin-bottom:10px"><label>Password</label><input type="password" id="nu-pass" placeholder="••••••" /></div>
+        <div class="form-group" style="margin-bottom:16px"><label><input type="checkbox" id="nu-admin" /> Admin role</label></div>
+        <button class="btn btn-primary" onclick="createUser()">Create User</button>
+        <div id="user-msg" style="margin-top:10px"></div>
+      </div>
+    `);
+  } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function createUser() {
+  const msg = document.getElementById('user-msg');
+  try {
+    await apiFetch('/api/admin/users', { method: 'POST', body: JSON.stringify({
+      username: document.getElementById('nu-user').value.trim(),
+      password: document.getElementById('nu-pass').value,
+      is_admin: document.getElementById('nu-admin').checked,
+    })});
+    msg.innerHTML = '<div class="alert alert-ok">User created.</div>';
+    setTimeout(users, 1000);
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function deleteUser(id, name) {
+  if (!confirm(`Delete user "${name}"?`)) return;
+  try {
+    await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' });
+    users();
+  } catch(e) { alert(e.message); }
+}
+
+// ===================== API KEYS =====================
+async function apikeys() {
+  render(`<div class="card"><div class="spinner"></div> Loading…</div>`);
+  try {
+    const list = await apiFetch('/api/admin/apikeys');
+    if (!list) return;
+    const rows = list.map(k => `
+      <tr>
+        <td>${k.id}</td>
+        <td>${esc(k.label)}</td>
+        <td>${k.read_only ? 'Read-only' : 'Read/Write'}</td>
+        <td>${k.is_active ? '&#x2705; Active' : '&#x274C; Revoked'}</td>
+        <td>${fmtDate(k.created_at)}</td>
+        <td>${k.last_used_at ? fmtDate(k.last_used_at) : 'Never'}</td>
+        <td>${k.is_active ? `<button class="btn btn-danger btn-sm" onclick="revokeKey(${k.id})">Revoke</button>` : ''}</td>
+      </tr>
+    `).join('');
+    render(`
+      <div class="card">
+        <h2>API Keys</h2>
+        <div class="alert alert-info" style="margin-bottom:14px">
+          Use these keys to authenticate Claude Projects or automated clients via <code>Authorization: Bearer &lt;key&gt;</code>.
+        </div>
+        <div class="tbl-wrap">
+          <table><thead><tr><th>ID</th><th>Label</th><th>Type</th><th>Status</th><th>Created</th><th>Last Used</th><th></th></tr></thead>
+          <tbody>${rows || '<tr><td colspan=7 style="color:var(--muted);text-align:center;padding:20px">No API keys yet</td></tr>'}</tbody></table>
+        </div>
+      </div>
+      <div class="card" style="max-width:420px">
+        <h2>Generate New API Key</h2>
+        <div class="form-group" style="margin-bottom:10px"><label>Label</label><input id="nk-label" placeholder="e.g. claude-project-main" /></div>
+        <div class="form-group" style="margin-bottom:16px"><label><input type="checkbox" id="nk-ro" checked /> Read-only (recommended)</label></div>
+        <button class="btn btn-primary" onclick="createKey()">Generate Key</button>
+        <div id="key-msg" style="margin-top:10px"></div>
+      </div>
+    `);
+  } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function createKey() {
+  const msg = document.getElementById('key-msg');
+  try {
+    const d = await apiFetch('/api/admin/apikeys', { method: 'POST', body: JSON.stringify({
+      label: document.getElementById('nk-label').value.trim(),
+      read_only: document.getElementById('nk-ro').checked,
+    })});
+    msg.innerHTML = `
+      <div class="alert alert-ok">
+        <strong>Key generated — copy it now, it won't be shown again.</strong>
+        <div class="copy-key">${d.raw_key}</div>
+      </div>
+    `;
+    setTimeout(apikeys, 3000);
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function revokeKey(id) {
+  if (!confirm('Revoke this API key? It cannot be un-revoked.')) return;
+  try {
+    await apiFetch(`/api/admin/apikeys/${id}`, { method: 'DELETE' });
+    apikeys();
+  } catch(e) { alert(e.message); }
+}
+</script>
+</body>
+</html>
