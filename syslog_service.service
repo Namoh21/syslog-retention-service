@@ -1,0 +1,17 @@
+[Unit]
+Description=Syslog Retention and SIEM Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/syslog-retention-service
+ExecStart=/opt/syslog-retention-service/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/syslog-siem/service.log
+StandardError=append:/var/log/syslog-siem/service_err.log
+
+[Install]
+WantedBy=multi-user.target

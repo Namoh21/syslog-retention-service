@@ -1,6 +1,8 @@
 # Syslog Retention & SIEM Service
 
-A self-hosted Windows 11 syslog retention and security analysis service designed to receive logs from a **Unifi Dream Machine (UDM)** and other network devices. Logs are stored locally, normalized into structured fields, and analyzed by **Claude AI** for security recommendations. A built-in web console provides an authenticated admin dashboard and a REST API allows Claude Projects to connect programmatically.
+A self-hosted syslog retention and security analysis service designed to receive logs from a **Unifi Dream Machine (UDM)** and other network devices. Logs are stored locally, normalized into structured fields, and analyzed by **Claude AI** for security recommendations. A built-in web console provides an authenticated admin dashboard and a REST API allows Claude Projects to connect programmatically.
+
+Runs on **Raspberry Pi 4/5** (recommended) or **Windows 11**.
 
 ---
 
@@ -12,21 +14,28 @@ A self-hosted Windows 11 syslog retention and security analysis service designed
 - **Claude AI analysis** — sends log data to Claude Sonnet for threat detection and security recommendations
 - **REST API** — JWT and API-key authentication for web UI and Claude Projects
 - **Web admin console** — dark-themed single-page dashboard for log viewing, filtering, AI analysis, user management, and API key management
-- **Windows service** — runs at boot via NSSM, managed through `Setup.ps1`
+- **Linux/systemd service** — runs at boot, managed through `install.sh`
+- **Windows service** — runs at boot via pywin32, managed through `Setup.ps1`
 
 ---
 
-## Requirements
+## Platform Requirements
 
-| Requirement | Version |
+### Raspberry Pi 4 / Linux (Recommended)
+
+| Requirement | Notes |
 |---|---|
-| Windows | 11 (or Windows Server 2019+) |
-| Python | 3.10 or newer |
-| Git | Any recent version |
-| Internet access | First install only (to download NSSM) |
+| Raspberry Pi OS Bookworm or Bullseye | Or any Debian-based distro |
+| Python 3.10+ | Pre-installed on Raspberry Pi OS |
+| Git | Installed automatically by `install.sh` |
 
-Install Python from [python.org](https://python.org) — check **"Add Python to PATH"** during setup.  
-Install Git from [git-scm.com](https://git-scm.com).
+### Windows 11
+
+| Requirement | Notes |
+|---|---|
+| Windows 11 Pro or Home | |
+| Python 3.10+ | From [python.org](https://python.org) — check "Add to PATH" |
+| Git | From [git-scm.com](https://git-scm.com) |
 
 ---
 
@@ -41,9 +50,70 @@ git clone https://github.com/Namoh21/syslog-retention-service.git
 cd syslog-retention-service
 ```
 
+---
+
+## Installation — Raspberry Pi 4 (Recommended)
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/Namoh21/syslog-retention-service.git
+cd syslog-retention-service
+```
+
 ### 2. Run the installer
 
-Right-click `Setup.ps1` and select **"Run with PowerShell"**, or from an **Administrator** PowerShell prompt:
+```bash
+sudo bash install.sh
+```
+
+The menu-driven installer will:
+
+1. Install system dependencies (`python3`, `git`, `ufw`) via apt
+2. Walk you through a configuration wizard (admin password, API key, ports, retention)
+3. Copy files to `/opt/syslog-retention-service`
+4. Create a Python virtual environment and install all dependencies
+5. Register and enable a systemd service (starts at boot)
+6. Open firewall ports via ufw
+
+Select **option 1 — Install / Repair** from the menu.
+
+### 3. Open the web console
+
+```
+http://<pi-ip-address>:8080
+```
+
+The installer prints your Pi's IP address at the end. Log in with the admin credentials you set during the wizard.
+
+### Updating (Raspberry Pi)
+
+```bash
+sudo bash /opt/syslog-retention-service/install.sh
+```
+
+Select **option 2 — Update**, or run the standalone updater:
+
+```bash
+sudo bash /opt/syslog-retention-service/update.sh
+```
+
+---
+
+## Installation — Windows 11
+
+### 1. Clone the repository
+
+Open PowerShell and run:
+
+```powershell
+git clone https://github.com/Namoh21/syslog-retention-service.git
+cd syslog-retention-service
+```
+
+### 2. Run the installer
+
+From an **Administrator** PowerShell prompt:
 
 ```powershell
 .\Setup.ps1
@@ -51,32 +121,19 @@ Right-click `Setup.ps1` and select **"Run with PowerShell"**, or from an **Admin
 
 The menu-driven installer will:
 
-1. Check that Python and Git are available
-2. Create a `.env` configuration file and open it in Notepad for you to fill in
+1. Check that Python 3.10+ is installed (must be from python.org, not the Windows Store)
+2. Walk you through a configuration wizard (admin password, API key, ports, retention)
 3. Create a Python virtual environment and install all dependencies
-4. Download NSSM (the Windows service wrapper)
-5. Register and start the Windows service
-6. Add Windows Firewall rules for syslog (port 514) and the web console (port 8080)
+4. Register and start a Windows service via pywin32
+5. Add Windows Firewall rules for syslog (port 514) and the web console (port 8080)
 
 Select **option 1 — Install / Repair** from the menu.
 
-### 3. Configure `.env`
+### 3. Open the web console
 
-When the installer opens `.env`, set these values at minimum:
-
-```env
-# A long random string — generate one at: python -c "import secrets; print(secrets.token_hex(32))"
-SECRET_KEY=replace-with-a-long-random-string
-
-# Admin login for the web console
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=your-strong-password-here
-
-# Required for AI analysis
-ANTHROPIC_API_KEY=sk-ant-...
 ```
-
-Save the file and the installer will continue automatically.
+http://localhost:8080
+```
 
 ### 4. Point your Unifi Dream Machine at this PC
 
