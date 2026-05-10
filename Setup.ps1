@@ -67,9 +67,11 @@ function Get-ServiceStatus {
 }
 
 function Get-PythonPath {
-    $p = (Get-Command python -ErrorAction SilentlyContinue)?.Source
-    if (-not $p) { $p = (Get-Command python3 -ErrorAction SilentlyContinue)?.Source }
-    return $p
+    $cmd = Get-Command python -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    $cmd = Get-Command python3 -ErrorAction SilentlyContinue
+    if ($cmd) { return $cmd.Source }
+    return $null
 }
 
 # ── NSSM ──────────────────────────────────────────────────────────────────────
@@ -151,9 +153,9 @@ function Action-Install {
 
     # Git check
     Write-Step "Checking Git"
-    $gitPath = (Get-Command git -ErrorAction SilentlyContinue)?.Source
-    if (-not $gitPath) { Write-Warn "Git not found — update feature will be unavailable." }
-    else { Write-Ok "Git at $gitPath" }
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $gitCmd) { Write-Warn "Git not found - update feature will be unavailable." }
+    else { Write-Ok "Git at $($gitCmd.Source)" }
 
     # .env
     Write-Step "Configuring .env"
@@ -230,8 +232,8 @@ function Action-Update {
     Write-Host "  [ UPDATE ]" -ForegroundColor Cyan
     Write-Host ""
 
-    $gitPath = (Get-Command git -ErrorAction SilentlyContinue)?.Source
-    if (-not $gitPath) {
+    $gitCmd = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $gitCmd) {
         Write-Err "Git is not installed. Cannot auto-update."
         Write-Warn "Download the latest release manually from GitHub."
         Pause-Prompt; return
@@ -281,7 +283,7 @@ function Action-Uninstall {
         & $NssmExe stop   $ServiceName confirm 2>$null
         & $NssmExe remove $ServiceName confirm 2>$null
         Write-Ok "Service removed"
-    } else { Write-Warn "NSSM not found — skipping service removal" }
+    } else { Write-Warn "NSSM not found - skipping service removal" }
 
     Write-Step "Removing firewall rules"
     Remove-NetFirewallRule -DisplayName "Syslog UDP $SyslogPort"      -ErrorAction SilentlyContinue
