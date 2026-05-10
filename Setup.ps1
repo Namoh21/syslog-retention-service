@@ -58,32 +58,49 @@ function Get-ServiceStatus {
 }
 
 function Get-PythonPath {
+    # Refresh PATH from registry so installs done in this session are found
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath    = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:PATH    = "$machinePath;$userPath"
+
     # The WindowsApps stub opens the Store instead of running Python - skip it
-    foreach ($name in @("python", "python3")) {
+    foreach ($name in @("python", "python3", "py")) {
         $cmd = Get-Command $name -ErrorAction SilentlyContinue
         if (-not $cmd) { continue }
         $src = $cmd.Source
         if ($src -like "*WindowsApps*") { continue }
-        # Verify it actually runs
         $ver = & $src --version 2>&1
         if ($ver -match "Python \d") { return $src }
     }
 
-    # Last resort: check common install paths
-    $candidates = @(
-        "C:\Python312\python.exe",
-        "C:\Python311\python.exe",
-        "C:\Python310\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python312\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe",
-        "$env:LOCALAPPDATA\Programs\Python\Python310\python.exe"
+    # Search common install locations (user + system, versions 3.10-3.13)
+    $roots = @(
+        "$env:LOCALAPPDATA\Programs\Python",
+        "C:\Python",
+        "C:\Program Files\Python",
+        "C:\Program Files (x86)\Python",
+        "$env:ProgramFiles\Python"
     )
-    foreach ($p in $candidates) {
-        if (Test-Path $p) {
-            $ver = & $p --version 2>&1
-            if ($ver -match "Python \d") { return $p }
-        }
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        Get-ChildItem $root -Filter "Python3*" -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object {
+                $p = Join-Path $_.FullName "python.exe"
+                if (Test-Path $p) {
+                    $ver = & $p --version 2>&1
+                    if ($ver -match "Python 3\.(1[0-9]|[2-9]\d)") { return $p }
+                }
+            }
     }
+
+    # py launcher (installed by official Python installer)
+    $pyLauncher = "C:\Windows\py.exe"
+    if (Test-Path $pyLauncher) {
+        $resolved = & $pyLauncher -3 -c "import sys; print(sys.executable)" 2>&1
+        if ($resolved -and (Test-Path $resolved)) { return $resolved }
+    }
+
     return $null
 }
 
@@ -222,8 +239,18 @@ function Start-Install {
     Write-Step "Checking Python 3.10+"
     $pyPath = Get-PythonPath
     if (-not $pyPath) {
-        Write-Err "Python not found in PATH."
-        Write-Host "  Install Python 3.10+ from https://python.org (check 'Add to PATH')."
+        Write-Err "Python 3.10+ not found."
+        Write-Host ""
+        Write-Host "  If you just installed Python, try these steps:" -ForegroundColor Yellow
+        Write-Host "  1. Close this window and open a new PowerShell as Administrator"
+        Write-Host "  2. Re-run Setup.ps1 - it will pick up the updated PATH"
+        Write-Host ""
+        Write-Host "  If Python is not installed yet:" -ForegroundColor Yellow
+        Write-Host "  1. Download from https://python.org/downloads"
+        Write-Host "  2. Run installer and CHECK 'Add python.exe to PATH'"
+        Write-Host "  3. Open a new PowerShell as Administrator and re-run Setup.ps1"
+        Write-Host ""
+        Write-Host "  To verify Python is installed, run: where.exe python" -ForegroundColor Gray
         Wait-Enter
         return
     }
