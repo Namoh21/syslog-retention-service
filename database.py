@@ -11,6 +11,27 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from config import settings
 
+# Normalized columns added in v1.1 — kept as a list so _migrate_db can add
+# them to existing installs without dropping data.
+_NORMALIZED_COLUMNS = [
+    ("event_type",    "VARCHAR(64)"),
+    ("src_ip",        "VARCHAR(45)"),
+    ("dst_ip",        "VARCHAR(45)"),
+    ("src_port",      "INTEGER"),
+    ("dst_port",      "INTEGER"),
+    ("protocol",      "VARCHAR(16)"),
+    ("action",        "VARCHAR(16)"),
+    ("direction",     "VARCHAR(16)"),
+    ("interface_in",  "VARCHAR(32)"),
+    ("interface_out", "VARCHAR(32)"),
+    ("mac_address",   "VARCHAR(17)"),
+    ("norm_user",     "VARCHAR(128)"),
+    ("norm_hostname", "VARCHAR(255)"),
+    ("domain",        "VARCHAR(255)"),
+    ("rule_name",     "VARCHAR(255)"),
+    ("extra_json",    "TEXT"),
+]
+
 
 Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
 
@@ -40,9 +61,30 @@ class SyslogEntry(Base):
     message = Column(Text)
     raw = Column(Text)
 
+    # Normalized fields (v1.1)
+    event_type    = Column(String(64),  nullable=True, index=True)
+    src_ip        = Column(String(45),  nullable=True, index=True)
+    dst_ip        = Column(String(45),  nullable=True)
+    src_port      = Column(Integer,     nullable=True)
+    dst_port      = Column(Integer,     nullable=True, index=True)
+    protocol      = Column(String(16),  nullable=True)
+    action        = Column(String(16),  nullable=True, index=True)
+    direction     = Column(String(16),  nullable=True)
+    interface_in  = Column(String(32),  nullable=True)
+    interface_out = Column(String(32),  nullable=True)
+    mac_address   = Column(String(17),  nullable=True)
+    norm_user     = Column(String(128), nullable=True)
+    norm_hostname = Column(String(255), nullable=True)
+    domain        = Column(String(255), nullable=True)
+    rule_name     = Column(String(255), nullable=True)
+    extra_json    = Column(Text,        nullable=True)   # JSON blob for leftover fields
+
     __table_args__ = (
         Index("ix_entries_received_severity", "received_at", "severity"),
         Index("ix_entries_source_received", "source_ip", "received_at"),
+        Index("ix_entries_event_type", "event_type", "received_at"),
+        Index("ix_entries_src_ip", "src_ip", "received_at"),
+        Index("ix_entries_action", "action", "received_at"),
     )
 
 
@@ -78,8 +120,22 @@ class RetentionPolicy(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+def _migrate_db():
+    """Add any missing normalized columns to an existing database (safe to re-run)."""
+    with engine.connect() as conn:
+        existing = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(syslog_entries)")).fetchall()
+        }
+        for col_name, col_type in _NORMALIZED_COLUMNS:
+            if col_name not in existing:
+                conn.execute(text(f"ALTER TABLE syslog_entries ADD COLUMN {col_name} {col_type}"))
+        conn.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate_db()
     _seed_defaults()
 
 
@@ -134,6 +190,13 @@ def query_logs(
     search: Optional[str] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
+    # normalized filters
+    event_type: Optional[str] = None,
+    src_ip: Optional[str] = None,
+    dst_ip: Optional[str] = None,
+    dst_port: Optional[int] = None,
+    protocol: Optional[str] = None,
+    action: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
 ) -> tuple[list[SyslogEntry], int]:
@@ -150,6 +213,18 @@ def query_logs(
         q = q.filter(SyslogEntry.received_at >= since)
     if until:
         q = q.filter(SyslogEntry.received_at <= until)
+    if event_type:
+        q = q.filter(SyslogEntry.event_type == event_type)
+    if src_ip:
+        q = q.filter(SyslogEntry.src_ip == src_ip)
+    if dst_ip:
+        q = q.filter(SyslogEntry.dst_ip == dst_ip)
+    if dst_port is not None:
+        q = q.filter(SyslogEntry.dst_port == dst_port)
+    if protocol:
+        q = q.filter(SyslogEntry.protocol.ilike(protocol))
+    if action:
+        q = q.filter(SyslogEntry.action == action.upper())
     total = q.count()
     entries = q.order_by(SyslogEntry.received_at.desc()).offset(offset).limit(limit).all()
     return entries, total

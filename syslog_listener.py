@@ -8,7 +8,9 @@ import re
 from datetime import datetime, timezone
 from typing import Optional
 
+import json
 from database import SessionLocal, SyslogEntry
+from normalizer import normalize
 
 logger = logging.getLogger("syslog_listener")
 
@@ -74,7 +76,30 @@ def _parse(raw: str, source_ip: str) -> SyslogEntry:
     )
 
 
+def _apply_normalization(entry: SyslogEntry) -> SyslogEntry:
+    """Run the message through the normalizer and stamp fields onto the entry."""
+    nf = normalize(entry.message or "")
+    entry.event_type    = nf.event_type
+    entry.src_ip        = nf.src_ip or entry.source_ip
+    entry.dst_ip        = nf.dst_ip
+    entry.src_port      = nf.src_port
+    entry.dst_port      = nf.dst_port
+    entry.protocol      = nf.protocol
+    entry.action        = nf.action
+    entry.direction     = nf.direction
+    entry.interface_in  = nf.interface_in
+    entry.interface_out = nf.interface_out
+    entry.mac_address   = nf.mac_address
+    entry.norm_user     = nf.user
+    entry.norm_hostname = nf.hostname
+    entry.domain        = nf.domain
+    entry.rule_name     = nf.rule_name
+    entry.extra_json    = json.dumps(nf.extra) if nf.extra else None
+    return entry
+
+
 def _store(entry: SyslogEntry) -> None:
+    _apply_normalization(entry)
     db = SessionLocal()
     try:
         db.add(entry)

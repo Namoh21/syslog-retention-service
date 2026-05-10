@@ -249,31 +249,86 @@ function fmtDate(iso) {
 let logPage = { offset: 0, limit: 100, total: 0 };
 let logFilters = {};
 
+const EVENT_TYPES = [
+  'firewall_block','firewall_allow','ids_alert','threat_block',
+  'auth_failure','auth_success','dhcp_ack','dhcp_request','dhcp_discover',
+  'dhcp_release','dhcp_offer','dhcp_nak','vpn_connect','vpn_disconnect',
+  'dns_query','dns_response','port_scan','unknown',
+];
+
+const ACTION_COLORS = { BLOCK:'#f85149', ALLOW:'#3fb950', ALERT:'#d29922', CLOSE:'#8b949e' };
+
+function etBadge(et) {
+  if (!et || et === 'unknown') return `<span style="color:var(--muted);font-size:11px">${et||''}</span>`;
+  const colors = {
+    firewall_block:'#f85149', firewall_allow:'#3fb950', ids_alert:'#d29922',
+    threat_block:'#f85149', auth_failure:'#f85149', auth_success:'#3fb950',
+    port_scan:'#d29922', vpn_connect:'#58a6ff', vpn_disconnect:'#8b949e',
+    dns_query:'#58a6ff', dns_response:'#58a6ff',
+  };
+  const c = colors[et] || '#8b949e';
+  return `<span style="color:${c};font-size:11px;font-weight:600">${et}</span>`;
+}
+
+function actionBadge(a) {
+  if (!a) return '';
+  const c = ACTION_COLORS[a] || '#8b949e';
+  return `<span class="sev" style="background:${c}22;color:${c}">${a}</span>`;
+}
+
 async function logs() {
+  const etOptions = EVENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('');
   render(`
     <div class="card">
       <h2>Log Viewer</h2>
-      <div class="form-row">
-        <div class="form-group"><label>Source IP</label><input id="f-ip" placeholder="e.g. 192.168.1.1" /></div>
-        <div class="form-group"><label>Hostname</label><input id="f-host" placeholder="partial match" /></div>
-        <div class="form-group"><label>Max Severity</label>
-          <select id="f-sev">
-            <option value="">All</option>
-            <option value="0">0 Emergency</option>
-            <option value="1">1 Alert</option>
-            <option value="2">2 Critical</option>
-            <option value="3">3 Error</option>
-            <option value="4">4 Warning</option>
-            <option value="5">5 Notice</option>
-            <option value="6">6 Info</option>
-            <option value="7">7 Debug</option>
-          </select>
+      <details style="margin-bottom:12px">
+        <summary style="cursor:pointer;color:var(--accent);font-size:13px;user-select:none">&#x1F50D; Filters</summary>
+        <div style="margin-top:12px">
+          <div class="form-row">
+            <div class="form-group"><label>Source IP (syslog)</label><input id="f-ip" placeholder="192.168.1.1" /></div>
+            <div class="form-group"><label>Hostname</label><input id="f-host" placeholder="partial match" /></div>
+            <div class="form-group"><label>Max Severity</label>
+              <select id="f-sev">
+                <option value="">All</option>
+                <option value="0">0 Emergency</option><option value="1">1 Alert</option>
+                <option value="2">2 Critical</option><option value="3">3 Error</option>
+                <option value="4">4 Warning</option><option value="5">5 Notice</option>
+                <option value="6">6 Info</option><option value="7">7 Debug</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Search message</label><input id="f-search" placeholder="keyword…" /></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Event Type</label>
+              <select id="f-et"><option value="">All</option>${etOptions}</select>
+            </div>
+            <div class="form-group"><label>Src IP (normalized)</label><input id="f-src" placeholder="attacker IP" /></div>
+            <div class="form-group"><label>Dst IP</label><input id="f-dst" placeholder="target IP" /></div>
+            <div class="form-group"><label>Dst Port</label><input type="number" id="f-dport" placeholder="443" style="width:90px" /></div>
+            <div class="form-group"><label>Protocol</label>
+              <select id="f-proto">
+                <option value="">All</option>
+                <option>TCP</option><option>UDP</option><option>ICMP</option>
+                <option>DNS</option><option>SSH</option><option>VPN</option>
+              </select>
+            </div>
+            <div class="form-group"><label>Action</label>
+              <select id="f-action">
+                <option value="">All</option>
+                <option>BLOCK</option><option>ALLOW</option><option>ALERT</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group"><label>Since</label><input type="datetime-local" id="f-since" /></div>
+            <div class="form-group"><label>Until</label><input type="datetime-local" id="f-until" /></div>
+            <div class="form-group"><label>&nbsp;</label>
+              <button class="btn btn-primary" onclick="applyLogFilters()">Search</button>
+              <button class="btn btn-ghost" onclick="clearLogFilters()" style="margin-left:6px">Clear</button>
+            </div>
+          </div>
         </div>
-        <div class="form-group"><label>Search message</label><input id="f-search" placeholder="keyword…" /></div>
-        <div class="form-group"><label>Since</label><input type="datetime-local" id="f-since" /></div>
-        <div class="form-group"><label>Until</label><input type="datetime-local" id="f-until" /></div>
-        <div class="form-group"><label>&nbsp;</label><button class="btn btn-primary" onclick="applyLogFilters()">Search</button></div>
-      </div>
+      </details>
       <div id="log-table-wrap"><div class="spinner"></div> Loading…</div>
     </div>
   `);
@@ -284,14 +339,29 @@ async function logs() {
 
 function applyLogFilters() {
   logPage.offset = 0;
+  const v = id => document.getElementById(id)?.value.trim() || null;
   logFilters = {
-    source_ip: document.getElementById('f-ip')?.value.trim() || null,
-    hostname: document.getElementById('f-host')?.value.trim() || null,
-    severity_max: document.getElementById('f-sev')?.value || null,
-    search: document.getElementById('f-search')?.value.trim() || null,
+    source_ip:    v('f-ip'),
+    hostname:     v('f-host'),
+    severity_max: v('f-sev'),
+    search:       v('f-search'),
+    event_type:   v('f-et'),
+    src_ip:       v('f-src'),
+    dst_ip:       v('f-dst'),
+    dst_port:     v('f-dport'),
+    protocol:     v('f-proto'),
+    action:       v('f-action'),
     since: document.getElementById('f-since')?.value ? new Date(document.getElementById('f-since').value).toISOString() : null,
     until: document.getElementById('f-until')?.value ? new Date(document.getElementById('f-until').value).toISOString() : null,
   };
+  fetchLogs();
+}
+
+function clearLogFilters() {
+  ['f-ip','f-host','f-sev','f-search','f-et','f-src','f-dst','f-dport','f-proto','f-action','f-since','f-until']
+    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  logFilters = {};
+  logPage.offset = 0;
   fetchLogs();
 }
 
@@ -311,12 +381,15 @@ async function fetchLogs() {
 
     const rows = d.entries.map(e => `
       <tr>
-        <td style="white-space:nowrap;color:var(--muted)">${fmtDate(e.received_at)}</td>
-        <td>${e.source_ip}</td>
-        <td>${e.hostname||''}</td>
-        <td><span class="sev sev-${e.severity}">${e.severity_name||e.severity}</span></td>
-        <td>${e.app_name||''}</td>
-        <td class="truncate">${esc(e.message||'')}</td>
+        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${fmtDate(e.received_at)}</td>
+        <td style="font-size:12px">${etBadge(e.event_type)}</td>
+        <td>${actionBadge(e.action)}</td>
+        <td style="font-size:12px">${e.src_ip||e.source_ip||''}</td>
+        <td style="font-size:12px">${e.dst_ip ? `${e.dst_ip}${e.dst_port?':'+e.dst_port:''}` : ''}</td>
+        <td style="font-size:12px">${e.protocol||''}</td>
+        <td style="font-size:12px">${e.hostname||''}</td>
+        <td><span class="sev sev-${e.severity}" style="font-size:10px">${e.severity_name||e.severity}</span></td>
+        <td class="truncate" style="max-width:320px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
       </tr>
     `).join('');
 
@@ -325,8 +398,12 @@ async function fetchLogs() {
     wrap.innerHTML = `
       <div class="tbl-wrap">
         <table>
-          <thead><tr><th>Timestamp</th><th>Source IP</th><th>Hostname</th><th>Severity</th><th>App</th><th>Message</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan=6 style="color:var(--muted);text-align:center;padding:24px">No entries found</td></tr>'}</tbody>
+          <thead><tr>
+            <th>Timestamp</th><th>Event Type</th><th>Action</th>
+            <th>Src IP</th><th>Dst IP:Port</th><th>Proto</th>
+            <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
+          </tr></thead>
+          <tbody>${rows || '<tr><td colspan=9 style="color:var(--muted);text-align:center;padding:24px">No entries found</td></tr>'}</tbody>
         </table>
       </div>
       <div class="pagination">

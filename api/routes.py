@@ -41,6 +41,19 @@ class LogEntryOut(BaseModel):
     hostname: Optional[str]
     app_name: Optional[str]
     message: Optional[str]
+    # normalized
+    event_type: Optional[str]
+    src_ip: Optional[str]
+    dst_ip: Optional[str]
+    src_port: Optional[int]
+    dst_port: Optional[int]
+    protocol: Optional[str]
+    action: Optional[str]
+    direction: Optional[str]
+    rule_name: Optional[str]
+    norm_user: Optional[str]
+    domain: Optional[str]
+    mac_address: Optional[str]
 
     class Config:
         from_attributes = True
@@ -141,6 +154,13 @@ async def list_logs(
     search: Optional[str] = Query(None),
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
+    # normalized filters
+    event_type: Optional[str] = Query(None),
+    src_ip: Optional[str] = Query(None),
+    dst_ip: Optional[str] = Query(None),
+    dst_port: Optional[int] = Query(None),
+    protocol: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
@@ -154,6 +174,12 @@ async def list_logs(
         search=search,
         since=since,
         until=until,
+        event_type=event_type,
+        src_ip=src_ip,
+        dst_ip=dst_ip,
+        dst_port=dst_port,
+        protocol=protocol,
+        action=action,
         limit=limit,
         offset=offset,
     )
@@ -172,6 +198,18 @@ async def list_logs(
                 hostname=e.hostname,
                 app_name=e.app_name,
                 message=e.message,
+                event_type=e.event_type,
+                src_ip=e.src_ip,
+                dst_ip=e.dst_ip,
+                src_port=e.src_port,
+                dst_port=e.dst_port,
+                protocol=e.protocol,
+                action=e.action,
+                direction=e.direction,
+                rule_name=e.rule_name,
+                norm_user=e.norm_user,
+                domain=e.domain,
+                mac_address=e.mac_address,
             )
             for e in entries
         ],
@@ -187,6 +225,7 @@ async def get_log(
     entry = db.query(SyslogEntry).filter_by(id=entry_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
+    import json as _json
     return {
         "id": entry.id,
         "received_at": entry.received_at,
@@ -200,6 +239,22 @@ async def get_log(
         "msg_id": entry.msg_id,
         "message": entry.message,
         "raw": entry.raw,
+        # normalized
+        "event_type": entry.event_type,
+        "src_ip": entry.src_ip,
+        "dst_ip": entry.dst_ip,
+        "src_port": entry.src_port,
+        "dst_port": entry.dst_port,
+        "protocol": entry.protocol,
+        "action": entry.action,
+        "direction": entry.direction,
+        "interface_in": entry.interface_in,
+        "interface_out": entry.interface_out,
+        "mac_address": entry.mac_address,
+        "rule_name": entry.rule_name,
+        "user": entry.norm_user,
+        "domain": entry.domain,
+        "extra": _json.loads(entry.extra_json) if entry.extra_json else None,
     }
 
 
