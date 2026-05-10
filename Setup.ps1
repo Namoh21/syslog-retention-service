@@ -15,7 +15,7 @@
       7) Exit
 
 .NOTES
-    Requires: Python 3.10+, Git, internet access (first run only for NSSM).
+    Requires: Python 3.10+ and Git only. No external downloads needed.
     Run as Administrator from the syslog_service directory.
 #>
 
@@ -23,21 +23,17 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'SilentlyContinue'
 
 $ServiceName  = "SyslogRetentionSvc"
-$DisplayName  = "Syslog Retention and SIEM Service"
 $ScriptDir    = $PSScriptRoot
 $VenvDir      = Join-Path $ScriptDir ".venv"
 $PythonExe    = Join-Path $VenvDir "Scripts\python.exe"
 $PipExe       = Join-Path $VenvDir "Scripts\pip.exe"
-$MainScript   = Join-Path $ScriptDir "main.py"
-$NssmDir      = Join-Path $ScriptDir "tools\nssm"
-$NssmExe      = Join-Path $NssmDir "win64\nssm.exe"
+$SvcScript    = Join-Path $ScriptDir "windows_service.py"
 $LogDir       = Join-Path $ScriptDir "logs"
 $DataDir      = Join-Path $ScriptDir "data"
 $EnvFile      = Join-Path $ScriptDir ".env"
 $ReqFile      = Join-Path $ScriptDir "requirements.txt"
 $SyslogPort   = 514
 $WebPort      = 8080
-$NssmUrl      = "https://nssm.cc/release/nssm-2.24.zip"
 
 function Write-Banner {
     Clear-Host
@@ -69,28 +65,6 @@ function Get-PythonPath {
     return $null
 }
 
-function Install-Nssm {
-    if (Test-Path $NssmExe) { return }
-    Write-Step "Downloading NSSM service wrapper..."
-    $zipPath = Join-Path $ScriptDir "tools\_nssm.zip"
-    New-Item -ItemType Directory -Force -Path (Join-Path $ScriptDir "tools") | Out-Null
-    try {
-        Invoke-WebRequest -Uri $NssmUrl -OutFile $zipPath -UseBasicParsing
-        Expand-Archive -Path $zipPath -DestinationPath (Join-Path $ScriptDir "tools") -Force
-        $extracted = Get-ChildItem (Join-Path $ScriptDir "tools") -Filter "nssm*" -Directory | Select-Object -First 1
-        if ($extracted -and $extracted.FullName -ne $NssmDir) {
-            if (Test-Path $NssmDir) { Remove-Item $NssmDir -Recurse -Force }
-            Rename-Item $extracted.FullName $NssmDir
-        }
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        Write-Ok "NSSM installed"
-    } catch {
-        Write-Err "Failed to download NSSM: $_"
-        Write-Warn "Download manually from https://nssm.cc and extract to tools\nssm\"
-        Wait-Enter
-        throw
-    }
-}
 
 function Read-EnvInput {
     param([string]$Prompt, [string]$Default = "", [bool]$Secret = $false)
@@ -261,32 +235,24 @@ function Start-Install {
     New-Item -ItemType Directory -Force -Path $LogDir  | Out-Null
     New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 
-    Install-Nssm
-
     Write-Step "Registering Windows service"
     $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($existing) {
-        Write-Warn "Service already registered - reconfiguring"
-        & $NssmExe stop   $ServiceName confirm 2>$null
-        & $NssmExe remove $ServiceName confirm 2>$null
+        Write-Warn "Service already registered - removing and re-registering"
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        & $PythonExe $SvcScript remove 2>$null
+        Start-Sleep -Seconds 2
     }
-    & $NssmExe install $ServiceName $PythonExe
-    & $NssmExe set     $ServiceName AppParameters  $MainScript
-    & $NssmExe set     $ServiceName AppDirectory   $ScriptDir
-    & $NssmExe set     $ServiceName DisplayName    $DisplayName
-    & $NssmExe set     $ServiceName Description    "Syslog receiver and SIEM for Unifi Dream Machine. Web console on port $WebPort."
-    & $NssmExe set     $ServiceName Start          SERVICE_AUTO_START
-    & $NssmExe set     $ServiceName AppStdout      (Join-Path $LogDir "service.log")
-    & $NssmExe set     $ServiceName AppStderr      (Join-Path $LogDir "service_err.log")
-    & $NssmExe set     $ServiceName AppRotateFiles 1
-    & $NssmExe set     $ServiceName AppRotateBytes 10485760
+    & $PythonExe $SvcScript install
+    & $PythonExe $SvcScript --startup auto install
+    Set-Service -Name $ServiceName -DisplayName "Syslog Retention and SIEM Service" -Description "Syslog receiver and SIEM for Unifi Dream Machine. Web console on port $WebPort." -ErrorAction SilentlyContinue
     Write-Ok "Service registered"
 
     Write-Step "Configuring Windows Firewall"
     Set-FirewallRules
 
     Write-Step "Starting service"
-    & $NssmExe start $ServiceName
+    Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 3
     $svcStatus = Get-ServiceStatus
     Write-Ok "Service status: $svcStatus"
@@ -342,7 +308,7 @@ function Start-Update {
     Write-Step "Restarting service (DB migration runs on startup)"
     $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
     if ($svc) {
-        & $NssmExe restart $ServiceName
+        Restart-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 4
         Write-Ok "Service status: $(Get-ServiceStatus)"
     } else {
@@ -361,12 +327,13 @@ function Start-Uninstall {
     if ($confirm -ne "YES") { Write-Warn "Cancelled."; Wait-Enter; return }
 
     Write-Step "Stopping and removing service"
-    if (Test-Path $NssmExe) {
-        & $NssmExe stop   $ServiceName confirm 2>$null
-        & $NssmExe remove $ServiceName confirm 2>$null
+    $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+    if ($svc) {
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        & $PythonExe $SvcScript remove 2>$null
         Write-Ok "Service removed"
     } else {
-        Write-Warn "NSSM not found - skipping service removal"
+        Write-Warn "Service not found - may already be uninstalled"
     }
 
     Write-Step "Removing firewall rules"
