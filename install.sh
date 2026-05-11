@@ -29,7 +29,7 @@ ok()    { echo -e "${GREEN}     OK: $*${NC}"; }
 warn()  { echo -e "${YELLOW}     WARN: $*${NC}"; }
 err()   { echo -e "${RED}     ERROR: $*${NC}"; }
 header(){ echo -e "${CYAN}  $*${NC}"; }
-ask()   { echo -en "${WHITE}  $* ${NC}"; }
+ask()   { printf "  %s " "$*"; }
 
 banner() {
     clear
@@ -60,17 +60,18 @@ read_input() {
     local default="${2:-}"
     local secret="${3:-}"
     local val
+    local display
 
     if [[ -n "$default" ]]; then
-        ask "$prompt [$default] :"
+        display="  ${prompt} [${default}] : "
     else
-        ask "$prompt :"
+        display="  ${prompt} : "
     fi
 
     if [[ -n "$secret" ]]; then
-        read -rs val; echo ""
+        read -rsp "$display" val; echo ""
     else
-        read -r val
+        read -rp "$display" val
     fi
 
     if [[ -z "$val" && -n "$default" ]]; then
