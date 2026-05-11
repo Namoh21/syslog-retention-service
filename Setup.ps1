@@ -105,6 +105,54 @@ function Get-PythonPath {
 }
 
 
+function Install-Python {
+    $pythonVersion = "3.12.10"
+    $installerUrl  = "https://www.python.org/ftp/python/${pythonVersion}/python-${pythonVersion}-amd64.exe"
+    $installerPath = "$env:TEMP\python-installer.exe"
+
+    Write-Host ""
+    Write-Host "  Python 3.10+ is required but was not found." -ForegroundColor Yellow
+    Write-Host "  This installer can download and install Python $pythonVersion automatically."
+    Write-Host ""
+    $ans = Read-Host "  Download and install Python $pythonVersion now? (yes/no)"
+    if ($ans -ne "yes" -and $ans -ne "y") {
+        Write-Warn "Skipped. Install Python manually from https://python.org/downloads"
+        return $false
+    }
+
+    Write-Step "Downloading Python $pythonVersion (~28 MB)..."
+    try {
+        Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath -UseBasicParsing
+    } catch {
+        Write-Err "Download failed: $_"
+        Write-Warn "Install manually from https://python.org/downloads"
+        return $false
+    }
+    Write-Ok "Downloaded to $installerPath"
+
+    Write-Step "Installing Python $pythonVersion (silent, all users, with PATH)..."
+    # /quiet        = no UI
+    # InstallAllUsers=1  = install for all users (requires admin)
+    # PrependPath=1      = add to PATH
+    # Include_launcher=1 = install py.exe launcher
+    $installArgs = "/quiet InstallAllUsers=1 PrependPath=1 Include_launcher=1 Include_test=0"
+    $proc = Start-Process -FilePath $installerPath -ArgumentList $installArgs -Wait -PassThru
+    Remove-Item $installerPath -Force -ErrorAction SilentlyContinue
+
+    if ($proc.ExitCode -ne 0) {
+        Write-Err "Python installer exited with code $($proc.ExitCode)"
+        return $false
+    }
+    Write-Ok "Python $pythonVersion installed"
+
+    # Reload PATH from registry so we find it immediately
+    $machinePath = [System.Environment]::GetEnvironmentVariable("Path", "Machine")
+    $userPath    = [System.Environment]::GetEnvironmentVariable("Path", "User")
+    $env:PATH    = "$machinePath;$userPath"
+
+    return $true
+}
+
 function Read-EnvInput {
     param([string]$Prompt, [string]$Default = "", [bool]$Secret = $false)
     $display = if ($Default -ne "") { "$Prompt [$Default]" } else { $Prompt }
@@ -239,20 +287,17 @@ function Start-Install {
     Write-Step "Checking Python 3.10+"
     $pyPath = Get-PythonPath
     if (-not $pyPath) {
-        Write-Err "Python 3.10+ not found."
-        Write-Host ""
-        Write-Host "  If you just installed Python, try these steps:" -ForegroundColor Yellow
-        Write-Host "  1. Close this window and open a new PowerShell as Administrator"
-        Write-Host "  2. Re-run Setup.ps1 - it will pick up the updated PATH"
-        Write-Host ""
-        Write-Host "  If Python is not installed yet:" -ForegroundColor Yellow
-        Write-Host "  1. Download from https://python.org/downloads"
-        Write-Host "  2. Run installer and CHECK 'Add python.exe to PATH'"
-        Write-Host "  3. Open a new PowerShell as Administrator and re-run Setup.ps1"
-        Write-Host ""
-        Write-Host "  To verify Python is installed, run: where.exe python" -ForegroundColor Gray
-        Wait-Enter
-        return
+        $installed = Install-Python
+        if ($installed) {
+            $pyPath = Get-PythonPath
+        }
+        if (-not $pyPath) {
+            Write-Err "Python still not found after install attempt."
+            Write-Host "  Please install manually from https://python.org/downloads" -ForegroundColor Yellow
+            Write-Host "  Check 'Add python.exe to PATH', then re-run Setup.ps1." -ForegroundColor Yellow
+            Wait-Enter
+            return
+        }
     }
     $pyVer = & $pyPath -c "import sys; print(str(sys.version_info.major) + '.' + str(sys.version_info.minor))" 2>$null
     Write-Ok "Python $pyVer at $pyPath"
