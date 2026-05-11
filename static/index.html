@@ -182,6 +182,7 @@
       <li class="nav-section">Analyze</li>
       <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis</a></li>
       <li class="nav-section">Configure</li>
+      <li><a onclick="showPage('svcSettings')" data-page="svcSettings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
       <li><a onclick="showPage('users')" data-page="users"><span class="nav-icon">&#x1F464;</span> Users</a></li>
       <li><a onclick="showPage('apikeys')" data-page="apikeys"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
@@ -255,7 +256,7 @@ async function apiFetch(path, opts={}) {
 function showPage(name) {
   document.querySelectorAll('nav ul li a').forEach(a =>
     a.classList.toggle('active', a.dataset.page === name));
-  const pages = { dashboard, logs, ai, retention, users, apikeys, setup };
+  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, setup };
   pages[name]?.();
 }
 
@@ -304,8 +305,8 @@ async function dashboard() {
     const checkAI = hasAI
       ? `<div class="check-item done"><div class="check-icon">&#x2705;</div><div class="check-body"><h4>AI Analysis enabled</h4><p>Claude AI is ready to analyze your logs for security threats.</p><span class="action" onclick="showPage('ai')">Run analysis &rarr;</span></div></div>`
       : `<div class="check-item"><div class="check-icon">&#x1F916;</div><div class="check-body"><h4>Enable AI Analysis <span style="color:var(--muted);font-weight:400">(optional)</span></h4>
-          <p>Add your Anthropic API key to the <code>.env</code> file and restart the service to enable Claude-powered security analysis.</p>
-          <p style="margin-top:4px">Get a key at <strong>console.anthropic.com</strong></p></div></div>`;
+          <p>Add your Anthropic API key to enable Claude-powered security analysis. The key is encrypted and stored in the database.</p>
+          <span class="action" onclick="showPage('svcSettings')">Add API key in Service Settings &rarr;</span></div></div>`;
 
     const checkAPI = `<div class="check-item"><div class="check-icon">&#x1F511;</div><div class="check-body"><h4>Connect Claude Projects <span style="color:var(--muted);font-weight:400">(optional)</span></h4>
       <p>Generate an API key so Claude Projects or other clients can read your logs and run analysis automatically.</p>
@@ -528,8 +529,8 @@ async function ai() {
     <div class="page-header"><h1>AI Security Analysis</h1><p>Claude analyzes your recent logs and identifies threats, anomalies, and security recommendations.</p></div>
     ${!aiEnabled ? `<div class="alert alert-warn">
       <strong>AI Analysis is not configured.</strong><br/>
-      Add your <code>ANTHROPIC_API_KEY</code> to the <code>.env</code> file and restart the service to enable this feature.<br/>
-      Get a key at <strong>console.anthropic.com</strong>
+      Add your Anthropic API key in <span style="cursor:pointer;text-decoration:underline" onclick="showPage('svcSettings')">Service Settings</span>.
+      The key is encrypted and stored in the database — no need to edit any files.
     </div>` : ''}
     <div class="card">
       <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Analysis Options</div>
@@ -771,6 +772,102 @@ async function revokeKey(id) {
   if (!confirm('Revoke this API key? Any client using it will stop working.')) return;
   try { await apiFetch(`/api/admin/apikeys/${id}`,{method:'DELETE'}); apikeys(); }
   catch(e) { alert(e.message); }
+}
+
+// ── Service Settings ──────────────────────────────────────────────────────────
+async function svcSettings() {
+  render(`<div class="page-header"><h1>Service Settings</h1></div><div class="card"><div class="spinner"></div> Loading...</div>`);
+  try {
+    const s = await apiFetch('/api/admin/settings');
+    if (!s) return;
+    const keyStatus = s.anthropic_api_key_set
+      ? `<span style="color:var(--accent2)">Set</span> <span style="color:var(--muted);font-size:12px">(${esc(s.anthropic_api_key_hint)})</span>`
+      : `<span style="color:var(--warn)">Not configured</span>`;
+    const modelOptions = (s.available_models || []).map(m =>
+      `<option value="${m}" ${m === s.claude_model ? 'selected' : ''}>${m}</option>`
+    ).join('');
+    render(`
+      <div class="page-header">
+        <h1>Service Settings</h1>
+        <p>Sensitive values are encrypted in the database. They are never stored in plaintext after first run.</p>
+      </div>
+
+      <div class="card" style="max-width:560px">
+        <div class="card-title"><span class="icon">&#x1F916;</span> Claude AI Configuration</div>
+        <div style="margin-bottom:18px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Anthropic API Key</div>
+          <div style="margin-bottom:10px">Current status: ${keyStatus}</div>
+          <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+            <div class="form-group" style="flex:1">
+              <label>New API key <span style="color:var(--muted)">(paste to update)</span></label>
+              <input type="password" id="new-api-key" placeholder="sk-ant-..." style="width:100%;font-family:monospace" autocomplete="off" />
+            </div>
+            <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
+            ${s.anthropic_api_key_set ? `<button class="btn btn-danger" onclick="removeApiKey()">Remove</button>` : ''}
+          </div>
+          <div class="help-tip">Get a key at <strong>console.anthropic.com</strong>. Stored encrypted in the database using AES-256.</div>
+        </div>
+
+        <hr class="divider" />
+
+        <div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Claude Model</div>
+          <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+            <div class="form-group">
+              <label>Model used for AI analysis</label>
+              <select id="claude-model">${modelOptions}</select>
+            </div>
+            <button class="btn btn-primary" onclick="saveModel()">Save</button>
+          </div>
+          <div class="help-tip">Sonnet is recommended — best balance of speed and quality for log analysis.</div>
+        </div>
+
+        <div id="settings-msg" style="margin-top:14px"></div>
+      </div>
+
+      <div class="card" style="max-width:560px">
+        <div class="card-title"><span class="icon">&#x1F512;</span> Security Notes</div>
+        <ul style="font-size:13px;line-height:2;padding-left:20px;color:var(--text)">
+          <li>The Anthropic API key is encrypted with AES-256 before being stored in the database</li>
+          <li>Encryption uses a key derived from your <code>SECRET_KEY</code> in <code>.env</code></li>
+          <li>The <code>.env</code> file has owner-only permissions (600 on Linux)</li>
+          <li>Admin password is stored as a bcrypt hash — the original is never retained</li>
+          <li>API keys for external clients are stored as SHA-256 hashes</li>
+        </ul>
+      </div>
+    `);
+  } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function saveApiKey() {
+  const msg = document.getElementById('settings-msg');
+  const val = document.getElementById('new-api-key').value.trim();
+  if (!val) { msg.innerHTML = '<div class="alert alert-warn">Please enter an API key.</div>'; return; }
+  try {
+    await apiFetch('/api/admin/settings/anthropic-key', { method:'PUT', body:JSON.stringify({value:val}) });
+    msg.innerHTML = '<div class="alert alert-ok">API key saved and encrypted in database.</div>';
+    document.getElementById('new-api-key').value = '';
+    setTimeout(svcSettings, 1500);
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function removeApiKey() {
+  if (!confirm('Remove the Anthropic API key? AI analysis will stop working until a new key is added.')) return;
+  const msg = document.getElementById('settings-msg');
+  try {
+    await apiFetch('/api/admin/settings/anthropic-key', { method:'DELETE' });
+    msg.innerHTML = '<div class="alert alert-ok">API key removed.</div>';
+    setTimeout(svcSettings, 1500);
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function saveModel() {
+  const msg = document.getElementById('settings-msg');
+  const val = document.getElementById('claude-model').value;
+  try {
+    await apiFetch('/api/admin/settings/claude-model', { method:'PUT', body:JSON.stringify({value:val}) });
+    msg.innerHTML = `<div class="alert alert-ok">Model updated to ${esc(val)}.</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 // ── Setup Guide ───────────────────────────────────────────────────────────────

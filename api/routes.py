@@ -453,11 +453,66 @@ async def revoke_api_key(
 
 @router.get("/info", tags=["info"])
 async def service_info(_: User = Depends(get_current_user)):
+    from database import get_service_setting
+    api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
+    claude_model = get_service_setting("claude_model") or settings.claude_model
     return {
         "service": settings.service_display_name,
         "version": "1.0.0",
         "syslog_udp_port": settings.syslog_udp_port,
         "syslog_tcp_port": settings.syslog_tcp_port,
-        "claude_model": settings.claude_model,
-        "ai_enabled": bool(settings.anthropic_api_key),
+        "claude_model": claude_model,
+        "ai_enabled": bool(api_key),
     }
+
+
+# ===================== Service Settings =====================
+
+class ServiceSettingUpdate(BaseModel):
+    value: str
+
+
+@router.get("/admin/settings", tags=["admin"])
+async def get_settings(_: User = Depends(require_admin)):
+    from database import get_service_setting
+    api_key = get_service_setting("anthropic_api_key")
+    claude_model = get_service_setting("claude_model") or settings.claude_model
+    return {
+        "anthropic_api_key_set": bool(api_key),
+        "anthropic_api_key_hint": f"...{api_key[-6:]}" if len(api_key) > 6 else ("set" if api_key else "not set"),
+        "claude_model": claude_model,
+        "available_models": [
+            "claude-sonnet-4-6",
+            "claude-opus-4-7",
+            "claude-haiku-4-5-20251001",
+        ],
+    }
+
+
+@router.put("/admin/settings/anthropic-key", tags=["admin"])
+async def update_anthropic_key(
+    body: ServiceSettingUpdate,
+    _: User = Depends(require_admin),
+):
+    from database import set_service_setting
+    if not body.value.strip():
+        raise HTTPException(status_code=400, detail="API key cannot be empty")
+    set_service_setting("anthropic_api_key", body.value.strip())
+    return {"message": "Anthropic API key updated and encrypted in database."}
+
+
+@router.delete("/admin/settings/anthropic-key", tags=["admin"])
+async def delete_anthropic_key(_: User = Depends(require_admin)):
+    from database import set_service_setting
+    set_service_setting("anthropic_api_key", "")
+    return {"message": "Anthropic API key removed."}
+
+
+@router.put("/admin/settings/claude-model", tags=["admin"])
+async def update_claude_model(
+    body: ServiceSettingUpdate,
+    _: User = Depends(require_admin),
+):
+    from database import set_service_setting
+    set_service_setting("claude_model", body.value.strip())
+    return {"message": f"Claude model updated to {body.value.strip()}"}

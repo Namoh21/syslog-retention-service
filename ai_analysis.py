@@ -56,13 +56,15 @@ async def analyze_logs(
     focus: str = "security",
     hours: int = 24,
 ) -> dict[str, Any]:
-    if not settings.anthropic_api_key:
+    from database import get_service_setting
+    api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
+    if not api_key:
         return {
-            "error": "Anthropic API key not configured. Set ANTHROPIC_API_KEY in .env",
+            "error": "Anthropic API key not configured. Add it in Settings > AI Configuration.",
             "log_count": len(entries),
         }
 
-    client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+    client = anthropic.Anthropic(api_key=api_key)
     log_text = _format_entries(entries)
 
     user_message = (

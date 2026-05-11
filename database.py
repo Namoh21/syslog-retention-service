@@ -1,3 +1,4 @@
+import base64
 import hashlib
 import logging
 import os
@@ -9,6 +10,30 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("database")
+
+
+def _fernet():
+    """Fernet cipher derived from SECRET_KEY — used to encrypt sensitive DB values."""
+    from cryptography.fernet import Fernet
+    key = base64.urlsafe_b64encode(
+        hashlib.sha256(settings.secret_key.encode()).digest()
+    )
+    return Fernet(key)
+
+
+def encrypt_value(plaintext: str) -> str:
+    if not plaintext:
+        return ""
+    return _fernet().encrypt(plaintext.encode()).decode()
+
+
+def decrypt_value(ciphertext: str) -> str:
+    if not ciphertext:
+        return ""
+    try:
+        return _fernet().decrypt(ciphertext.encode()).decode()
+    except Exception:
+        return ""
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Index, Integer, String, Text,
@@ -127,6 +152,15 @@ class RetentionPolicy(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class ServiceSetting(Base):
+    """Encrypted key-value store for sensitive service configuration."""
+    __tablename__ = "service_settings"
+
+    key = Column(String(128), primary_key=True)
+    encrypted_value = Column(Text, nullable=False, default="")
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 def _migrate_db():
     """Add any missing normalized columns to an existing database (safe to re-run)."""
     with engine.connect() as conn:
@@ -197,6 +231,51 @@ def _seed_defaults():
                 ))
                 logger.info("Imported API key from EXTERNAL_API_KEYS into DB.")
 
+        # Import ANTHROPIC_API_KEY from .env into encrypted DB storage
+        _import_setting(db, "anthropic_api_key", settings.anthropic_api_key)
+
+        db.commit()
+    finally:
+        db.close()
+
+
+def _import_setting(db, key: str, env_value: str) -> None:
+    """Store an env value into ServiceSetting (encrypted) if it's a real value."""
+    from config import _SEEDED_SENTINEL
+    if not env_value or env_value == _SEEDED_SENTINEL:
+        return
+    existing = db.query(ServiceSetting).filter_by(key=key).first()
+    encrypted = encrypt_value(env_value)
+    if existing:
+        existing.encrypted_value = encrypted
+        existing.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(ServiceSetting(key=key, encrypted_value=encrypted))
+    logger.info("Imported '%s' from .env into encrypted DB storage.", key)
+
+
+def get_service_setting(key: str, default: str = "") -> str:
+    """Read a decrypted setting from the DB."""
+    db = SessionLocal()
+    try:
+        row = db.query(ServiceSetting).filter_by(key=key).first()
+        if not row:
+            return default
+        return decrypt_value(row.encrypted_value) or default
+    finally:
+        db.close()
+
+
+def set_service_setting(key: str, value: str) -> None:
+    """Write an encrypted setting to the DB."""
+    db = SessionLocal()
+    try:
+        row = db.query(ServiceSetting).filter_by(key=key).first()
+        if row:
+            row.encrypted_value = encrypt_value(value)
+            row.updated_at = datetime.now(timezone.utc)
+        else:
+            db.add(ServiceSetting(key=key, encrypted_value=encrypt_value(value)))
         db.commit()
     finally:
         db.close()
@@ -241,7 +320,8 @@ def _secure_env_file():
 
         text, c1 = _scrub(text, "ADMIN_PASSWORD")
         text, c2 = _scrub(text, "EXTERNAL_API_KEYS")
-        changed = c1 or c2
+        text, c3 = _scrub(text, "ANTHROPIC_API_KEY")
+        changed = c1 or c2 or c3
 
         if changed:
             env_path.write_text(text, encoding="utf-8")
