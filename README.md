@@ -6,6 +6,28 @@ Runs on **Raspberry Pi 4/5** (recommended) or **Windows 11**.
 
 ---
 
+## Quick Start — Raspberry Pi
+
+```bash
+git clone https://github.com/Namoh21/syslog-retention-service.git
+cd syslog-retention-service
+sudo bash install.sh        # choose option 1, follow the wizard
+```
+
+Then point your UDM syslog to the Pi's IP on port 514 and open `http://<pi-ip>:8080`.
+
+## Quick Start — Windows 11
+
+```powershell
+git clone https://github.com/Namoh21/syslog-retention-service.git
+cd syslog-retention-service
+.\Setup.ps1                 # run as Administrator, choose option 1
+```
+
+Then point your UDM syslog to this PC's IP on port 514 and open `http://localhost:8080`.
+
+---
+
 ## Features
 
 - **Syslog receiver** — UDP and TCP on port 514, RFC 3164 and RFC 5424

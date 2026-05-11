@@ -3,181 +3,230 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Syslog Retention &amp; SIEM Console</title>
+<title>Syslog SIEM Console</title>
 <style>
   :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --accent: #58a6ff; --accent2: #3fb950; --warn: #d29922; --danger: #f85149;
-    --text: #c9d1d9; --muted: #8b949e; --radius: 6px;
+    --bg:#0d1117;--surface:#161b22;--surface2:#1c2128;--border:#30363d;
+    --accent:#58a6ff;--accent2:#3fb950;--warn:#d29922;--danger:#f85149;
+    --text:#c9d1d9;--muted:#8b949e;--radius:6px;
   }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font: 14px/1.5 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 'Segoe UI',system-ui,sans-serif;min-height:100vh;}
 
-  /* Layout */
-  #app { display: flex; height: 100vh; overflow: hidden; }
-  nav { width: 220px; background: var(--surface); border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
-  nav .brand { padding: 20px 16px; font-size: 15px; font-weight: 600; color: var(--accent); border-bottom: 1px solid var(--border); }
-  nav .brand span { font-size: 11px; display: block; color: var(--muted); font-weight: 400; margin-top: 2px; }
-  nav ul { list-style: none; padding: 8px 0; flex: 1; }
-  nav ul li a { display: flex; align-items: center; gap: 10px; padding: 9px 16px; color: var(--muted); text-decoration: none; border-radius: 0; transition: .15s; cursor: pointer; }
-  nav ul li a:hover, nav ul li a.active { background: rgba(88,166,255,.1); color: var(--accent); }
-  nav .user-info { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
-  main { flex: 1; overflow-y: auto; padding: 24px; }
+  /* ── Layout ── */
+  #app{display:flex;height:100vh;overflow:hidden;}
+  nav{width:230px;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;}
+  nav .brand{padding:18px 16px;border-bottom:1px solid var(--border);}
+  nav .brand-title{font-size:15px;font-weight:700;color:var(--accent);}
+  nav .brand-sub{font-size:11px;color:var(--muted);margin-top:2px;}
+  nav ul{list-style:none;padding:8px 0;flex:1;}
+  nav ul li a{display:flex;align-items:center;gap:10px;padding:10px 16px;color:var(--muted);text-decoration:none;cursor:pointer;transition:.15s;font-size:13px;}
+  nav ul li a:hover,nav ul li a.active{background:rgba(88,166,255,.1);color:var(--accent);}
+  nav ul li a .nav-icon{font-size:15px;width:20px;text-align:center;}
+  nav ul li a .nav-badge{margin-left:auto;background:var(--danger);color:#fff;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;}
+  nav .nav-section{padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;}
+  nav .user-info{padding:12px 16px;border-top:1px solid var(--border);font-size:12px;color:var(--muted);}
+  nav .user-info strong{color:var(--text);}
+  nav .user-info a{color:var(--danger);font-size:11px;text-decoration:none;}
+  nav .status-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent2);margin-right:5px;vertical-align:middle;}
+  main{flex:1;overflow-y:auto;padding:24px;background:var(--bg);}
+  .page-header{margin-bottom:20px;}
+  .page-header h1{font-size:20px;font-weight:600;color:var(--text);}
+  .page-header p{font-size:13px;color:var(--muted);margin-top:4px;}
 
-  /* Cards */
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
-  .card h2 { font-size: 16px; margin-bottom: 16px; color: var(--text); }
-  .card h3 { font-size: 13px; color: var(--muted); margin-bottom: 12px; text-transform: uppercase; letter-spacing: .05em; }
+  /* ── Cards ── */
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:16px;}
+  .card-title{font-size:14px;font-weight:600;color:var(--text);margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+  .card-title .icon{font-size:16px;}
 
-  /* Stat grid */
-  .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 20px; }
-  .stat { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; }
-  .stat .val { font-size: 28px; font-weight: 700; color: var(--accent); }
-  .stat .lbl { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  /* ── Stats ── */
+  .stat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;margin-bottom:16px;}
+  .stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:16px;}
+  .stat .val{font-size:26px;font-weight:700;color:var(--accent);line-height:1.2;}
+  .stat .lbl{font-size:12px;color:var(--muted);margin-top:4px;}
+  .stat .delta{font-size:11px;margin-top:4px;}
 
-  /* Table */
-  .tbl-wrap { overflow-x: auto; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th { text-align: left; padding: 8px 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); white-space: nowrap; }
-  td { padding: 7px 12px; border-bottom: 1px solid rgba(48,54,61,.5); vertical-align: top; }
-  tr:hover td { background: rgba(88,166,255,.04); }
-  .truncate { max-width: 380px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* ── Onboarding checklist ── */
+  .checklist{display:flex;flex-direction:column;gap:10px;}
+  .check-item{display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface2);}
+  .check-item.done{border-color:rgba(63,185,80,.3);background:rgba(63,185,80,.04);}
+  .check-item.active{border-color:rgba(88,166,255,.4);background:rgba(88,166,255,.06);}
+  .check-icon{font-size:18px;margin-top:1px;flex-shrink:0;}
+  .check-body h4{font-size:13px;font-weight:600;color:var(--text);margin-bottom:3px;}
+  .check-body p{font-size:12px;color:var(--muted);line-height:1.5;}
+  .check-body code{background:var(--bg);border:1px solid var(--border);padding:1px 6px;border-radius:4px;font-size:11px;color:var(--accent2);}
+  .check-body .action{display:inline-block;margin-top:6px;font-size:12px;color:var(--accent);cursor:pointer;text-decoration:underline;}
 
-  /* Severity badges */
-  .sev { display: inline-block; padding: 2px 7px; border-radius: 12px; font-size: 11px; font-weight: 600; }
-  .sev-0,.sev-1,.sev-2 { background: rgba(248,81,73,.2); color: #f85149; }
-  .sev-3 { background: rgba(210,153,34,.2); color: #d29922; }
-  .sev-4 { background: rgba(88,166,255,.15); color: #58a6ff; }
-  .sev-5,.sev-6,.sev-7 { background: rgba(139,148,158,.15); color: #8b949e; }
+  /* ── Connection info box ── */
+  .conn-box{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;}
+  .conn-item{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px;}
+  .conn-item .conn-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;}
+  .conn-item .conn-val{font-size:16px;font-weight:700;color:var(--accent);margin-top:3px;font-family:monospace;}
+  .conn-item .conn-note{font-size:11px;color:var(--muted);margin-top:2px;}
 
-  /* Forms */
-  .form-row { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; align-items: flex-end; }
-  .form-group { display: flex; flex-direction: column; gap: 5px; }
-  label { font-size: 12px; color: var(--muted); }
-  input, select { background: var(--bg); border: 1px solid var(--border); color: var(--text); padding: 7px 10px; border-radius: var(--radius); font-size: 13px; outline: none; }
-  input:focus, select:focus { border-color: var(--accent); }
-  input[type=number] { width: 100px; }
+  /* ── Tables ── */
+  .tbl-wrap{overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;font-size:12px;}
+  td{padding:7px 12px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:top;}
+  tr:hover td{background:rgba(88,166,255,.04);}
+  .truncate{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-  /* Buttons */
-  .btn { padding: 7px 14px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: .15s; }
-  .btn-primary { background: var(--accent); color: #000; }
-  .btn-primary:hover { opacity: .85; }
-  .btn-danger { background: var(--danger); color: #fff; }
-  .btn-danger:hover { opacity: .85; }
-  .btn-ghost { background: transparent; border: 1px solid var(--border); color: var(--text); }
-  .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
-  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  /* ── Severity / event badges ── */
+  .sev{display:inline-block;padding:2px 7px;border-radius:10px;font-size:11px;font-weight:600;}
+  .sev-0,.sev-1,.sev-2{background:rgba(248,81,73,.2);color:#f85149;}
+  .sev-3{background:rgba(210,153,34,.2);color:#d29922;}
+  .sev-4{background:rgba(88,166,255,.15);color:#58a6ff;}
+  .sev-5,.sev-6,.sev-7{background:rgba(139,148,158,.15);color:#8b949e;}
 
-  /* Pagination */
-  .pagination { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
-  .page-info { color: var(--muted); font-size: 12px; }
+  /* ── Forms ── */
+  .form-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:flex-end;}
+  .form-group{display:flex;flex-direction:column;gap:5px;}
+  label{font-size:12px;color:var(--muted);}
+  input,select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:7px 10px;border-radius:var(--radius);font-size:13px;outline:none;}
+  input:focus,select:focus{border-color:var(--accent);}
+  input[type=number]{width:100px;}
 
-  /* AI Panel */
-  .ai-options { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; align-items: flex-end; }
-  #ai-result { background: var(--bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; font-size: 13px; min-height: 80px; white-space: pre-wrap; display: none; }
-  .finding { border-left: 3px solid var(--border); padding: 10px 14px; margin-bottom: 10px; border-radius: 0 var(--radius) var(--radius) 0; }
-  .finding-CRITICAL { border-color: #f85149; background: rgba(248,81,73,.06); }
-  .finding-HIGH { border-color: #d29922; background: rgba(210,153,34,.06); }
-  .finding-MEDIUM { border-color: #58a6ff; background: rgba(88,166,255,.06); }
-  .finding-LOW,.finding-INFO { border-color: #3fb950; background: rgba(63,185,80,.04); }
-  .finding h4 { font-size: 13px; margin-bottom: 4px; }
-  .finding p { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
-  .finding .rec { color: var(--accent2); font-size: 12px; }
-  .threat-badge { display: inline-block; padding: 3px 10px; border-radius: 4px; font-weight: 700; font-size: 13px; margin-bottom: 12px; }
-  .threat-LOW { background: rgba(63,185,80,.2); color: #3fb950; }
-  .threat-MEDIUM { background: rgba(88,166,255,.2); color: #58a6ff; }
-  .threat-HIGH { background: rgba(210,153,34,.2); color: #d29922; }
-  .threat-CRITICAL { background: rgba(248,81,73,.2); color: #f85149; }
+  /* ── Buttons ── */
+  .btn{padding:7px 14px;border-radius:var(--radius);border:none;cursor:pointer;font-size:13px;font-weight:600;transition:.15s;}
+  .btn-primary{background:var(--accent);color:#000;}
+  .btn-primary:hover{opacity:.85;}
+  .btn-success{background:var(--accent2);color:#000;}
+  .btn-success:hover{opacity:.85;}
+  .btn-danger{background:var(--danger);color:#fff;}
+  .btn-danger:hover{opacity:.85;}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--text);}
+  .btn-ghost:hover{border-color:var(--accent);color:var(--accent);}
+  .btn-sm{padding:4px 10px;font-size:12px;}
 
-  /* Login */
-  #login-screen { display: flex; align-items: center; justify-content: center; height: 100vh; background: var(--bg); }
-  .login-box { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 40px; width: 340px; }
-  .login-box h1 { font-size: 20px; margin-bottom: 6px; color: var(--accent); }
-  .login-box p { color: var(--muted); font-size: 13px; margin-bottom: 24px; }
-  .login-box .form-group { margin-bottom: 14px; width: 100%; }
-  .login-box input { width: 100%; }
-  .login-box .btn { width: 100%; margin-top: 6px; padding: 10px; }
-  .error-msg { color: var(--danger); font-size: 12px; margin-top: 8px; display: none; }
+  /* ── Pagination ── */
+  .pagination{display:flex;gap:8px;align-items:center;margin-top:12px;}
+  .page-info{color:var(--muted);font-size:12px;}
 
-  /* Misc */
-  .hidden { display: none !important; }
-  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: middle; margin-right: 6px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .tag { display: inline-block; background: rgba(88,166,255,.15); color: var(--accent); font-size: 11px; padding: 2px 7px; border-radius: 10px; }
-  .copy-key { font-family: monospace; font-size: 12px; background: var(--bg); border: 1px solid var(--border); padding: 8px 12px; border-radius: var(--radius); word-break: break-all; margin-top: 8px; color: var(--accent2); }
-  .alert { padding: 10px 14px; border-radius: var(--radius); font-size: 13px; margin-bottom: 14px; }
-  .alert-info { background: rgba(88,166,255,.1); border: 1px solid rgba(88,166,255,.3); color: var(--accent); }
-  .alert-warn { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.3); color: var(--warn); }
-  .alert-ok { background: rgba(63,185,80,.1); border: 1px solid rgba(63,185,80,.3); color: var(--accent2); }
+  /* ── AI findings ── */
+  .finding{border-left:3px solid var(--border);padding:10px 14px;margin-bottom:10px;border-radius:0 var(--radius) var(--radius) 0;}
+  .finding-CRITICAL{border-color:#f85149;background:rgba(248,81,73,.06);}
+  .finding-HIGH{border-color:#d29922;background:rgba(210,153,34,.06);}
+  .finding-MEDIUM{border-color:#58a6ff;background:rgba(88,166,255,.06);}
+  .finding-LOW,.finding-INFO{border-color:#3fb950;background:rgba(63,185,80,.04);}
+  .finding h4{font-size:13px;margin-bottom:4px;}
+  .finding p{color:var(--muted);font-size:12px;margin-bottom:4px;}
+  .finding .rec{color:var(--accent2);font-size:12px;}
+  .threat-badge{display:inline-block;padding:3px 10px;border-radius:4px;font-weight:700;font-size:13px;margin-bottom:12px;}
+  .threat-LOW{background:rgba(63,185,80,.2);color:#3fb950;}
+  .threat-MEDIUM{background:rgba(88,166,255,.2);color:#58a6ff;}
+  .threat-HIGH{background:rgba(210,153,34,.2);color:#d29922;}
+  .threat-CRITICAL{background:rgba(248,81,73,.2);color:#f85149;}
+
+  /* ── Login ── */
+  #login-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);}
+  .login-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:40px;width:360px;box-shadow:0 8px 32px rgba(0,0,0,.4);}
+  .login-box h1{font-size:22px;margin-bottom:4px;color:var(--accent);font-weight:700;}
+  .login-box .login-sub{color:var(--muted);font-size:13px;margin-bottom:28px;}
+  .login-box .form-group{margin-bottom:14px;width:100%;}
+  .login-box input{width:100%;padding:10px 12px;}
+  .login-box .btn{width:100%;margin-top:8px;padding:10px;font-size:14px;}
+  .error-msg{color:var(--danger);font-size:12px;margin-top:10px;display:none;padding:8px 12px;background:rgba(248,81,73,.1);border-radius:var(--radius);border:1px solid rgba(248,81,73,.3);}
+
+  /* ── Misc ── */
+  .hidden{display:none!important;}
+  .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle;margin-right:6px;}
+  @keyframes spin{to{transform:rotate(360deg);}}
+  .tag{display:inline-block;background:rgba(88,166,255,.15);color:var(--accent);font-size:11px;padding:2px 7px;border-radius:10px;}
+  .copy-key{font-family:monospace;font-size:12px;background:var(--bg);border:1px solid var(--border);padding:10px 12px;border-radius:var(--radius);word-break:break-all;margin-top:8px;color:var(--accent2);}
+  .alert{padding:10px 14px;border-radius:var(--radius);font-size:13px;margin-bottom:14px;line-height:1.5;}
+  .alert-info{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);color:var(--accent);}
+  .alert-warn{background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.3);color:var(--warn);}
+  .alert-ok{background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);color:var(--accent2);}
+  .two-col{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+  @media(max-width:900px){.two-col{grid-template-columns:1fr;}.conn-box{grid-template-columns:1fr;}}
+  .empty-state{text-align:center;padding:48px 24px;color:var(--muted);}
+  .empty-state .empty-icon{font-size:48px;margin-bottom:16px;}
+  .empty-state h3{font-size:16px;color:var(--text);margin-bottom:8px;}
+  .empty-state p{font-size:13px;max-width:420px;margin:0 auto;}
+  .help-tip{font-size:11px;color:var(--muted);margin-top:6px;}
+  .divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
 </style>
 </head>
 <body>
 
-<!-- Login Screen -->
+<!-- Login -->
 <div id="login-screen">
   <div class="login-box">
     <h1>&#x1F6E1; SIEM Console</h1>
-    <p>Syslog Retention &amp; Security Service</p>
+    <div class="login-sub">Syslog Retention &amp; Security Service</div>
     <div class="form-group">
       <label>Username</label>
       <input id="login-user" type="text" placeholder="admin" autocomplete="username" />
     </div>
     <div class="form-group">
       <label>Password</label>
-      <input id="login-pass" type="password" placeholder="••••••••" autocomplete="current-password" />
+      <input id="login-pass" type="password" placeholder="Enter your password" autocomplete="current-password" />
     </div>
     <button class="btn btn-primary" onclick="doLogin()">Sign In</button>
-    <div class="error-msg" id="login-err">Invalid username or password.</div>
+    <div class="error-msg" id="login-err">Incorrect username or password. Please try again.</div>
   </div>
 </div>
 
-<!-- Main App -->
+<!-- App -->
 <div id="app" class="hidden">
   <nav>
-    <div class="brand">&#x1F6E1; SIEM Console<span>Syslog Retention Service</span></div>
+    <div class="brand">
+      <div class="brand-title">&#x1F6E1; SIEM Console</div>
+      <div class="brand-sub">Syslog Retention Service</div>
+    </div>
     <ul>
-      <li><a onclick="showPage('dashboard')" data-page="dashboard">&#x1F4CA; Dashboard</a></li>
-      <li><a onclick="showPage('logs')" data-page="logs">&#x1F4CB; Log Viewer</a></li>
-      <li><a onclick="showPage('ai')" data-page="ai">&#x1F916; AI Analysis</a></li>
-      <li><a onclick="showPage('retention')" data-page="retention">&#x1F5C4; Retention</a></li>
-      <li><a onclick="showPage('users')" data-page="users">&#x1F464; Users</a></li>
-      <li><a onclick="showPage('apikeys')" data-page="apikeys">&#x1F511; API Keys</a></li>
+      <li class="nav-section">Monitor</li>
+      <li><a onclick="showPage('dashboard')" data-page="dashboard"><span class="nav-icon">&#x1F4CA;</span> Dashboard</a></li>
+      <li><a onclick="showPage('logs')" data-page="logs"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
+      <li class="nav-section">Analyze</li>
+      <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis</a></li>
+      <li class="nav-section">Configure</li>
+      <li><a onclick="showPage('retention')" data-page="retention"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
+      <li><a onclick="showPage('users')" data-page="users"><span class="nav-icon">&#x1F464;</span> Users</a></li>
+      <li><a onclick="showPage('apikeys')" data-page="apikeys"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
+      <li class="nav-section">Help</li>
+      <li><a onclick="showPage('setup')" data-page="setup"><span class="nav-icon">&#x2139;&#xFE0F;</span> Setup Guide</a></li>
     </ul>
     <div class="user-info">
+      <span class="status-dot"></span>Service running<br/>
       Signed in as <strong id="nav-user"></strong><br/>
-      <a href="#" onclick="doLogout()" style="color:var(--danger);font-size:12px;">Sign out</a>
+      <a href="#" onclick="doLogout()">Sign out</a>
     </div>
   </nav>
 
-  <main id="main-content">
-    <!-- Pages are rendered here -->
-  </main>
+  <main id="main-content"></main>
 </div>
 
 <script>
-const API = '';  // same origin
+const API = '';
 let token = null;
 let currentUser = null;
+let serviceInfo = null;
 
-// ===================== AUTH =====================
+// ── Auth ──────────────────────────────────────────────────────────────────────
 async function doLogin() {
   const u = document.getElementById('login-user').value.trim();
   const p = document.getElementById('login-pass').value;
   const err = document.getElementById('login-err');
   err.style.display = 'none';
+  const btn = document.querySelector('.login-box .btn');
+  btn.disabled = true; btn.textContent = 'Signing in...';
   try {
     const fd = new FormData();
     fd.append('username', u); fd.append('password', p);
-    const r = await fetch(`${API}/api/auth/token`, { method: 'POST', body: fd });
-    if (!r.ok) { err.style.display = 'block'; return; }
+    const r = await fetch(`${API}/api/auth/token`, { method:'POST', body:fd });
+    if (!r.ok) { err.style.display='block'; btn.disabled=false; btn.textContent='Sign In'; return; }
     const d = await r.json();
     token = d.access_token;
     currentUser = u;
     document.getElementById('nav-user').textContent = u;
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
+    serviceInfo = await apiFetch('/api/info').catch(() => null);
     showPage('dashboard');
-  } catch(e) { err.textContent = e.message; err.style.display = 'block'; }
+  } catch(e) { err.textContent = e.message; err.style.display='block'; }
+  btn.disabled = false; btn.textContent = 'Sign In';
 }
 
 function doLogout() {
@@ -191,62 +240,122 @@ document.getElementById('login-pass').addEventListener('keydown', e => { if(e.ke
 async function apiFetch(path, opts={}) {
   const r = await fetch(`${API}${path}`, {
     ...opts,
-    headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json', ...(opts.headers||{}) }
+    headers:{ 'Authorization':`Bearer ${token}`, 'Content-Type':'application/json', ...(opts.headers||{}) }
   });
   if (r.status === 401) { doLogout(); return null; }
   if (!r.ok) {
-    const err = await r.json().catch(() => ({detail: r.statusText}));
+    const err = await r.json().catch(() => ({detail:r.statusText}));
     throw new Error(err.detail || r.statusText);
   }
   if (r.status === 204) return null;
   return r.json();
 }
 
-// ===================== NAVIGATION =====================
+// ── Navigation ────────────────────────────────────────────────────────────────
 function showPage(name) {
-  document.querySelectorAll('nav ul li a').forEach(a => {
-    a.classList.toggle('active', a.dataset.page === name);
-  });
-  const pages = { dashboard, logs, ai, retention, users, apikeys };
+  document.querySelectorAll('nav ul li a').forEach(a =>
+    a.classList.toggle('active', a.dataset.page === name));
+  const pages = { dashboard, logs, ai, retention, users, apikeys, setup };
   pages[name]?.();
 }
 
 function render(html) { document.getElementById('main-content').innerHTML = html; }
 
-// ===================== DASHBOARD =====================
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── Dashboard ─────────────────────────────────────────────────────────────────
 async function dashboard() {
-  render(`<div class="stat-grid" id="stats-grid"><div class="stat"><div class="val"><span class="spinner"></span></div><div class="lbl">Loading…</div></div></div>`);
+  render(`<div class="page-header"><h1>Dashboard</h1><p>Overview of your network logging activity.</p></div>
+    <div class="stat-grid"><div class="stat"><div class="val"><span class="spinner"></span></div><div class="lbl">Loading...</div></div></div>`);
   try {
-    const s = await apiFetch('/api/stats');
+    const [s, info] = await Promise.all([
+      apiFetch('/api/stats'),
+      apiFetch('/api/info').catch(() => null)
+    ]);
     if (!s) return;
-    const svColors = ['#f85149','#f85149','#f85149','#d29922','#58a6ff','#8b949e','#8b949e','#8b949e'];
+
+    const total = s.total_entries || 0;
+    const aiEnabled = info?.ai_enabled;
+    const udpPort = info?.syslog_udp_port || 514;
+    const webPort = location.port || 8080;
+
+    // Get host IP via a trick (window.location.hostname)
+    const host = location.hostname;
+
     const sevRows = (s.by_severity||[]).map(x =>
       `<tr><td><span class="sev sev-${x.severity}">${x.name}</span></td><td>${x.count.toLocaleString()}</td></tr>`
     ).join('');
     const srcRows = (s.top_sources||[]).map(x =>
-      `<tr><td>${x.ip}</td><td>${x.count.toLocaleString()}</td></tr>`
+      `<tr><td style="font-family:monospace">${x.ip}</td><td>${x.count.toLocaleString()}</td></tr>`
     ).join('');
+
+    // Checklist state
+    const hasLogs   = total > 0;
+    const hasAI     = !!aiEnabled;
+
+    const checkLogs = hasLogs
+      ? `<div class="check-item done"><div class="check-icon">&#x2705;</div><div class="check-body"><h4>Logs are flowing</h4><p>${total.toLocaleString()} entries received from your network devices.</p></div></div>`
+      : `<div class="check-item active"><div class="check-icon">&#x1F4E1;</div><div class="check-body"><h4>Point your UDM at this service</h4>
+          <p>In your UniFi controller go to <strong>Settings &rarr; System &rarr; Logging</strong>, enable Remote Syslog, and set:</p>
+          <p style="margin-top:6px"><strong>Server IP:</strong> <code>${host}</code> &nbsp; <strong>Port:</strong> <code>${udpPort}</code></p>
+          <p class="help-tip">Logs will appear here within seconds of saving.</p></div></div>`;
+
+    const checkAI = hasAI
+      ? `<div class="check-item done"><div class="check-icon">&#x2705;</div><div class="check-body"><h4>AI Analysis enabled</h4><p>Claude AI is ready to analyze your logs for security threats.</p><span class="action" onclick="showPage('ai')">Run analysis &rarr;</span></div></div>`
+      : `<div class="check-item"><div class="check-icon">&#x1F916;</div><div class="check-body"><h4>Enable AI Analysis <span style="color:var(--muted);font-weight:400">(optional)</span></h4>
+          <p>Add your Anthropic API key to the <code>.env</code> file and restart the service to enable Claude-powered security analysis.</p>
+          <p style="margin-top:4px">Get a key at <strong>console.anthropic.com</strong></p></div></div>`;
+
+    const checkAPI = `<div class="check-item"><div class="check-icon">&#x1F511;</div><div class="check-body"><h4>Connect Claude Projects <span style="color:var(--muted);font-weight:400">(optional)</span></h4>
+      <p>Generate an API key so Claude Projects or other clients can read your logs and run analysis automatically.</p>
+      <span class="action" onclick="showPage('apikeys')">Generate API key &rarr;</span></div></div>`;
+
+    const onboarding = !hasLogs ? `
+      <div class="card" style="border-color:rgba(88,166,255,.3)">
+        <div class="card-title"><span class="icon">&#x1F680;</span> Getting Started</div>
+        <div class="checklist">${checkLogs}${checkAI}${checkAPI}</div>
+      </div>` : '';
+
+    const connBox = `
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x1F4F6;</span> Connection Info — Point your UDM here</div>
+        <div class="conn-box">
+          <div class="conn-item"><div class="conn-label">Server IP Address</div><div class="conn-val">${host}</div><div class="conn-note">Your UDM syslog target IP</div></div>
+          <div class="conn-item"><div class="conn-label">Syslog Port</div><div class="conn-val">${udpPort}</div><div class="conn-note">UDP and TCP</div></div>
+          <div class="conn-item"><div class="conn-label">Web Console</div><div class="conn-val">${host}:${webPort}</div><div class="conn-note">This interface</div></div>
+          <div class="conn-item"><div class="conn-label">AI Analysis</div><div class="conn-val" style="color:${hasAI?'var(--accent2)':'var(--muted)'}">${hasAI?'Enabled':'Disabled'}</div><div class="conn-note">${hasAI?'Claude '+info.claude_model:'Add ANTHROPIC_API_KEY to .env'}</div></div>
+        </div>
+      </div>`;
+
     render(`
+      <div class="page-header"><h1>Dashboard</h1><p>Network logging activity and service status.</p></div>
+      ${onboarding}
       <div class="stat-grid">
-        <div class="stat"><div class="val">${(s.total_entries||0).toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
+        <div class="stat"><div class="val">${total.toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
         <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry</div></div>
         <div class="stat"><div class="val" style="color:var(--muted)">${fmtDate(s.oldest_entry)}</div><div class="lbl">Oldest Entry</div></div>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-        <div class="card"><h2>Events by Severity</h2><div class="tbl-wrap"><table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>${sevRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div></div>
-        <div class="card"><h2>Top Source IPs</h2><div class="tbl-wrap"><table><thead><tr><th>IP</th><th>Count</th></tr></thead><tbody>${srcRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div></div>
+      ${connBox}
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x26A0;&#xFE0F;</span> Events by Severity</div>
+          ${sevRows ? `<div class="tbl-wrap"><table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>${sevRows}</tbody></table></div>`
+            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No events yet</p></div>`}
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x1F5A7;</span> Top Source Devices</div>
+          ${srcRows ? `<div class="tbl-wrap"><table><thead><tr><th>IP Address</th><th>Log Count</th></tr></thead><tbody>${srcRows}</tbody></table></div>`
+            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No sources yet</p></div>`}
+        </div>
       </div>
+      ${hasLogs ? `<div class="checklist" style="margin-top:0">${checkAI}${checkAPI}</div>` : ''}
     `);
-  } catch(e) { render(`<div class="alert alert-warn">Failed to load stats: ${e.message}</div>`); }
+  } catch(e) { render(`<div class="alert alert-warn">Failed to load dashboard: ${e.message}</div>`); }
 }
 
-function fmtDate(iso) {
-  if (!iso) return '—';
-  return new Date(iso).toLocaleString();
-}
-
-// ===================== LOGS =====================
-let logPage = { offset: 0, limit: 100, total: 0 };
+// ── Log Viewer ────────────────────────────────────────────────────────────────
+let logPage = { offset:0, limit:100, total:0 };
 let logFilters = {};
 
 const EVENT_TYPES = [
@@ -256,83 +365,74 @@ const EVENT_TYPES = [
   'dns_query','dns_response','port_scan','unknown',
 ];
 
-const ACTION_COLORS = { BLOCK:'#f85149', ALLOW:'#3fb950', ALERT:'#d29922', CLOSE:'#8b949e' };
-
 function etBadge(et) {
-  if (!et || et === 'unknown') return `<span style="color:var(--muted);font-size:11px">${et||''}</span>`;
-  const colors = {
-    firewall_block:'#f85149', firewall_allow:'#3fb950', ids_alert:'#d29922',
-    threat_block:'#f85149', auth_failure:'#f85149', auth_success:'#3fb950',
-    port_scan:'#d29922', vpn_connect:'#58a6ff', vpn_disconnect:'#8b949e',
-    dns_query:'#58a6ff', dns_response:'#58a6ff',
-  };
-  const c = colors[et] || '#8b949e';
+  if (!et || et==='unknown') return `<span style="color:var(--muted);font-size:11px">${et||''}</span>`;
+  const c = {firewall_block:'#f85149',firewall_allow:'#3fb950',ids_alert:'#d29922',threat_block:'#f85149',
+              auth_failure:'#f85149',auth_success:'#3fb950',port_scan:'#d29922',
+              vpn_connect:'#58a6ff',vpn_disconnect:'#8b949e',dns_query:'#58a6ff',dns_response:'#58a6ff'}[et]||'#8b949e';
   return `<span style="color:${c};font-size:11px;font-weight:600">${et}</span>`;
 }
 
 function actionBadge(a) {
   if (!a) return '';
-  const c = ACTION_COLORS[a] || '#8b949e';
+  const c = {BLOCK:'#f85149',ALLOW:'#3fb950',ALERT:'#d29922',CLOSE:'#8b949e'}[a]||'#8b949e';
   return `<span class="sev" style="background:${c}22;color:${c}">${a}</span>`;
 }
 
 async function logs() {
-  const etOptions = EVENT_TYPES.map(t => `<option value="${t}">${t}</option>`).join('');
+  const etOptions = EVENT_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('');
   render(`
+    <div class="page-header"><h1>Log Viewer</h1><p>Search and filter all incoming syslog events from your network devices.</p></div>
     <div class="card">
-      <h2>Log Viewer</h2>
-      <details style="margin-bottom:12px">
-        <summary style="cursor:pointer;color:var(--accent);font-size:13px;user-select:none">&#x1F50D; Filters</summary>
-        <div style="margin-top:12px">
+      <details>
+        <summary style="cursor:pointer;color:var(--accent);font-size:13px;font-weight:600;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
+          <span>&#x1F50D;</span> Filter Logs <span style="color:var(--muted);font-size:11px;font-weight:400">&nbsp;— click to expand</span>
+        </summary>
+        <div style="margin-top:14px">
           <div class="form-row">
-            <div class="form-group"><label>Source IP (syslog)</label><input id="f-ip" placeholder="192.168.1.1" /></div>
+            <div class="form-group"><label>Source IP</label><input id="f-ip" placeholder="e.g. 192.168.1.1" /></div>
             <div class="form-group"><label>Hostname</label><input id="f-host" placeholder="partial match" /></div>
             <div class="form-group"><label>Max Severity</label>
               <select id="f-sev">
-                <option value="">All</option>
+                <option value="">All severities</option>
                 <option value="0">0 Emergency</option><option value="1">1 Alert</option>
                 <option value="2">2 Critical</option><option value="3">3 Error</option>
                 <option value="4">4 Warning</option><option value="5">5 Notice</option>
-                <option value="6">6 Info</option><option value="7">7 Debug</option>
+                <option value="6">6 Informational</option><option value="7">7 Debug</option>
               </select>
             </div>
-            <div class="form-group"><label>Search message</label><input id="f-search" placeholder="keyword…" /></div>
+            <div class="form-group"><label>Search message text</label><input id="f-search" placeholder="keyword..." style="width:200px" /></div>
           </div>
           <div class="form-row">
             <div class="form-group"><label>Event Type</label>
-              <select id="f-et"><option value="">All</option>${etOptions}</select>
+              <select id="f-et"><option value="">All event types</option>${etOptions}</select>
             </div>
-            <div class="form-group"><label>Src IP (normalized)</label><input id="f-src" placeholder="attacker IP" /></div>
-            <div class="form-group"><label>Dst IP</label><input id="f-dst" placeholder="target IP" /></div>
-            <div class="form-group"><label>Dst Port</label><input type="number" id="f-dport" placeholder="443" style="width:90px" /></div>
+            <div class="form-group"><label>Source IP (normalized)</label><input id="f-src" placeholder="attacker IP" /></div>
+            <div class="form-group"><label>Destination IP</label><input id="f-dst" placeholder="target IP" /></div>
+            <div class="form-group"><label>Dest Port</label><input type="number" id="f-dport" placeholder="443" style="width:90px" /></div>
             <div class="form-group"><label>Protocol</label>
-              <select id="f-proto">
-                <option value="">All</option>
-                <option>TCP</option><option>UDP</option><option>ICMP</option>
-                <option>DNS</option><option>SSH</option><option>VPN</option>
-              </select>
+              <select id="f-proto"><option value="">All</option><option>TCP</option><option>UDP</option><option>ICMP</option><option>DNS</option><option>SSH</option><option>VPN</option></select>
             </div>
             <div class="form-group"><label>Action</label>
-              <select id="f-action">
-                <option value="">All</option>
-                <option>BLOCK</option><option>ALLOW</option><option>ALERT</option>
-              </select>
+              <select id="f-action"><option value="">All actions</option><option>BLOCK</option><option>ALLOW</option><option>ALERT</option></select>
             </div>
           </div>
           <div class="form-row">
-            <div class="form-group"><label>Since</label><input type="datetime-local" id="f-since" /></div>
-            <div class="form-group"><label>Until</label><input type="datetime-local" id="f-until" /></div>
+            <div class="form-group"><label>From date/time</label><input type="datetime-local" id="f-since" /></div>
+            <div class="form-group"><label>To date/time</label><input type="datetime-local" id="f-until" /></div>
             <div class="form-group"><label>&nbsp;</label>
-              <button class="btn btn-primary" onclick="applyLogFilters()">Search</button>
-              <button class="btn btn-ghost" onclick="clearLogFilters()" style="margin-left:6px">Clear</button>
+              <div style="display:flex;gap:8px">
+                <button class="btn btn-primary" onclick="applyLogFilters()">Search</button>
+                <button class="btn btn-ghost" onclick="clearLogFilters()">Clear</button>
+              </div>
             </div>
           </div>
         </div>
       </details>
-      <div id="log-table-wrap"><div class="spinner"></div> Loading…</div>
     </div>
+    <div id="log-table-wrap"><div class="card"><div class="spinner"></div> Loading logs...</div></div>
   `);
-  logPage = { offset: 0, limit: 100, total: 0 };
+  logPage = { offset:0, limit:100, total:0 };
   logFilters = {};
   await fetchLogs();
 }
@@ -341,16 +441,9 @@ function applyLogFilters() {
   logPage.offset = 0;
   const v = id => document.getElementById(id)?.value.trim() || null;
   logFilters = {
-    source_ip:    v('f-ip'),
-    hostname:     v('f-host'),
-    severity_max: v('f-sev'),
-    search:       v('f-search'),
-    event_type:   v('f-et'),
-    src_ip:       v('f-src'),
-    dst_ip:       v('f-dst'),
-    dst_port:     v('f-dport'),
-    protocol:     v('f-proto'),
-    action:       v('f-action'),
+    source_ip:v('f-ip'), hostname:v('f-host'), severity_max:v('f-sev'), search:v('f-search'),
+    event_type:v('f-et'), src_ip:v('f-src'), dst_ip:v('f-dst'), dst_port:v('f-dport'),
+    protocol:v('f-proto'), action:v('f-action'),
     since: document.getElementById('f-since')?.value ? new Date(document.getElementById('f-since').value).toISOString() : null,
     until: document.getElementById('f-until')?.value ? new Date(document.getElementById('f-until').value).toISOString() : null,
   };
@@ -359,60 +452,68 @@ function applyLogFilters() {
 
 function clearLogFilters() {
   ['f-ip','f-host','f-sev','f-search','f-et','f-src','f-dst','f-dport','f-proto','f-action','f-since','f-until']
-    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
-  logFilters = {};
-  logPage.offset = 0;
-  fetchLogs();
+    .forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  logFilters = {}; logPage.offset = 0; fetchLogs();
 }
 
 async function fetchLogs() {
   const wrap = document.getElementById('log-table-wrap');
   if (!wrap) return;
-  wrap.innerHTML = '<div class="spinner"></div> Fetching…';
-
+  wrap.innerHTML = '<div class="card"><div class="spinner"></div> Fetching logs...</div>';
   let qs = `?limit=${logPage.limit}&offset=${logPage.offset}`;
-  for (const [k, v] of Object.entries(logFilters)) {
+  for (const [k,v] of Object.entries(logFilters)) {
     if (v !== null && v !== '') qs += `&${k}=${encodeURIComponent(v)}`;
   }
   try {
     const d = await apiFetch(`/api/logs${qs}`);
     if (!d) return;
     logPage.total = d.total;
-
-    const rows = d.entries.map(e => `
+    if (d.total === 0 && Object.values(logFilters).every(v => !v)) {
+      wrap.innerHTML = `<div class="card"><div class="empty-state">
+        <div class="empty-icon">&#x1F4ED;</div>
+        <h3>No logs yet</h3>
+        <p>Your service is running and listening. Point your Unifi Dream Machine syslog to this server on port ${serviceInfo?.syslog_udp_port||514} to start seeing events here.</p>
+        <button class="btn btn-ghost" onclick="showPage('setup')" style="margin-top:16px">View Setup Guide</button>
+      </div></div>`;
+      return;
+    }
+    if (d.total === 0) {
+      wrap.innerHTML = `<div class="card"><div class="empty-state">
+        <div class="empty-icon">&#x1F50D;</div>
+        <h3>No results</h3>
+        <p>No logs match your current filters. Try broadening your search.</p>
+        <button class="btn btn-ghost" onclick="clearLogFilters()" style="margin-top:16px">Clear Filters</button>
+      </div></div>`;
+      return;
+    }
+    const rows = d.entries.map(e=>`
       <tr>
-        <td style="white-space:nowrap;color:var(--muted);font-size:12px">${fmtDate(e.received_at)}</td>
-        <td style="font-size:12px">${etBadge(e.event_type)}</td>
+        <td style="white-space:nowrap;color:var(--muted);font-size:11px">${fmtDate(e.received_at)}</td>
+        <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
-        <td style="font-size:12px">${e.src_ip||e.source_ip||''}</td>
-        <td style="font-size:12px">${e.dst_ip ? `${e.dst_ip}${e.dst_port?':'+e.dst_port:''}` : ''}</td>
+        <td style="font-size:12px;font-family:monospace">${e.src_ip||e.source_ip||''}</td>
+        <td style="font-size:12px;font-family:monospace">${e.dst_ip?`${e.dst_ip}${e.dst_port?':'+e.dst_port:''}`:''}</td>
         <td style="font-size:12px">${e.protocol||''}</td>
         <td style="font-size:12px">${e.hostname||''}</td>
         <td><span class="sev sev-${e.severity}" style="font-size:10px">${e.severity_name||e.severity}</span></td>
-        <td class="truncate" style="max-width:320px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
-      </tr>
-    `).join('');
-
-    const start = logPage.offset + 1;
-    const end = Math.min(logPage.offset + logPage.limit, logPage.total);
-    wrap.innerHTML = `
+        <td class="truncate" style="max-width:300px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
+      </tr>`).join('');
+    const start = logPage.offset+1, end = Math.min(logPage.offset+logPage.limit, logPage.total);
+    wrap.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
       <div class="tbl-wrap">
-        <table>
-          <thead><tr>
-            <th>Timestamp</th><th>Event Type</th><th>Action</th>
-            <th>Src IP</th><th>Dst IP:Port</th><th>Proto</th>
-            <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
-          </tr></thead>
-          <tbody>${rows || '<tr><td colspan=9 style="color:var(--muted);text-align:center;padding:24px">No entries found</td></tr>'}</tbody>
-        </table>
+        <table><thead><tr>
+          <th>Timestamp</th><th>Event Type</th><th>Action</th>
+          <th>Src IP</th><th>Dst IP:Port</th><th>Protocol</th>
+          <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
+        </tr></thead><tbody>${rows}</tbody></table>
       </div>
-      <div class="pagination">
-        <button class="btn btn-ghost btn-sm" onclick="logNav(-1)" ${logPage.offset===0?'disabled':''}>← Prev</button>
-        <span class="page-info">${d.total>0?`${start}–${end} of ${d.total.toLocaleString()}`:'0 results'}</span>
+      <div class="pagination" style="padding:10px 16px">
+        <button class="btn btn-ghost btn-sm" onclick="logNav(-1)" ${logPage.offset===0?'disabled':''}>← Previous</button>
+        <span class="page-info">${start}–${end} of ${d.total.toLocaleString()} entries</span>
         <button class="btn btn-ghost btn-sm" onclick="logNav(1)" ${end>=logPage.total?'disabled':''}>Next →</button>
       </div>
-    `;
-  } catch(e) { wrap.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+    </div>`;
+  } catch(e) { wrap.innerHTML = `<div class="alert alert-warn">Error loading logs: ${e.message}</div>`; }
 }
 
 function logNav(dir) {
@@ -420,18 +521,19 @@ function logNav(dir) {
   fetchLogs();
 }
 
-function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-
-// ===================== AI ANALYSIS =====================
+// ── AI Analysis ───────────────────────────────────────────────────────────────
 async function ai() {
+  const aiEnabled = serviceInfo?.ai_enabled;
   render(`
+    <div class="page-header"><h1>AI Security Analysis</h1><p>Claude analyzes your recent logs and identifies threats, anomalies, and security recommendations.</p></div>
+    ${!aiEnabled ? `<div class="alert alert-warn">
+      <strong>AI Analysis is not configured.</strong><br/>
+      Add your <code>ANTHROPIC_API_KEY</code> to the <code>.env</code> file and restart the service to enable this feature.<br/>
+      Get a key at <strong>console.anthropic.com</strong>
+    </div>` : ''}
     <div class="card">
-      <h2>AI Security Analysis</h2>
-      <p style="color:var(--muted);margin-bottom:16px;font-size:13px">
-        Sends recent log data to Claude for security analysis and recommendations.
-        Requires ANTHROPIC_API_KEY to be configured.
-      </p>
-      <div class="ai-options">
+      <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Analysis Options</div>
+      <div class="form-row" style="align-items:flex-end">
         <div class="form-group">
           <label>Time Window</label>
           <select id="ai-hours">
@@ -444,241 +546,300 @@ async function ai() {
         </div>
         <div class="form-group">
           <label>Focus Area</label>
-          <input id="ai-focus" value="security threats and anomalies" style="width:260px" />
+          <input id="ai-focus" value="security threats and anomalies" style="width:280px" />
         </div>
         <div class="form-group"><label>&nbsp;</label>
-          <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()">&#x1F916; Analyze Logs</button>
+          <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()" ${!aiEnabled?'disabled':''}>
+            &#x1F916; Analyze Logs
+          </button>
         </div>
       </div>
-      <div id="ai-output"></div>
+      <p class="help-tip">Claude will review up to 500 log entries from the selected window and return structured threat findings.</p>
     </div>
+    <div id="ai-output"></div>
   `);
 }
 
 async function runAnalysis() {
   const btn = document.getElementById('ai-btn');
   const out = document.getElementById('ai-output');
-  btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span>Analyzing…';
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Analyzing...';
   out.innerHTML = '';
   try {
     const hours = parseInt(document.getElementById('ai-hours').value);
     const focus = document.getElementById('ai-focus').value.trim();
-    const d = await apiFetch('/api/ai/analyze', {
-      method: 'POST',
-      body: JSON.stringify({ hours, focus })
-    });
+    const d = await apiFetch('/api/ai/analyze', { method:'POST', body:JSON.stringify({hours,focus}) });
     if (!d) return;
     renderAnalysis(d, out);
   } catch(e) {
     out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '&#x1F916; Analyze Logs';
+    btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Logs';
   }
 }
 
 function renderAnalysis(d, out) {
-  if (d.error) { out.innerHTML = `<div class="alert alert-warn">${d.error}</div>`; return; }
+  if (d.error) { out.innerHTML=`<div class="alert alert-warn">${d.error}</div>`; return; }
   const a = d.analysis;
   if (!a || a.raw) {
-    out.innerHTML = `<div style="white-space:pre-wrap;font-size:13px;color:var(--text)">${esc(typeof a==='string'?a:a?.summary||JSON.stringify(d))}</div>`;
+    out.innerHTML=`<div class="card"><pre style="white-space:pre-wrap;font-size:13px">${esc(typeof a==='string'?a:a?.summary||JSON.stringify(d))}</pre></div>`;
     return;
   }
-  const tl = a.threat_level || 'UNKNOWN';
-  const findings = (a.findings||[]).map(f => `
+  const tl = a.threat_level||'UNKNOWN';
+  const findings = (a.findings||[]).map(f=>`
     <div class="finding finding-${f.severity}">
-      <h4><span class="tag">${f.severity}</span> ${esc(f.title)}</h4>
+      <h4><span class="tag">${f.severity}</span>&nbsp;${esc(f.title)}</h4>
       <p>${esc(f.detail)}</p>
       ${f.recommendation?`<div class="rec">&#x2192; ${esc(f.recommendation)}</div>`:''}
+    </div>`).join('');
+  const imm = (a.immediate_actions||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
+  const lng = (a.long_term_recommendations||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
+  out.innerHTML=`
+    <div class="card">
+      <div style="margin-bottom:12px">
+        <span class="threat-badge threat-${tl}">Threat Level: ${tl}</span>
+        <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries &middot; ${d.hours_covered}h window &middot; ${d.model}</span>
+      </div>
+      <p style="font-size:14px;line-height:1.6">${esc(a.summary||'')}</p>
     </div>
-  `).join('');
-  const imm = (a.immediate_actions||[]).map(x=>`<li style="margin-bottom:6px">${esc(x)}</li>`).join('');
-  const lng = (a.long_term_recommendations||[]).map(x=>`<li style="margin-bottom:6px">${esc(x)}</li>`).join('');
-
-  out.innerHTML = `
-    <div style="margin-bottom:16px">
-      <span class="threat-badge threat-${tl}">Threat Level: ${tl}</span>
-      <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries · ${d.hours_covered}h window · ${d.model}</span>
-    </div>
-    <div class="card" style="margin-bottom:12px"><p>${esc(a.summary||'')}</p></div>
-    ${findings ? `<div class="card"><h2>Findings</h2>${findings}</div>` : ''}
-    ${imm ? `<div class="card"><h2>Immediate Actions</h2><ul style="padding-left:18px;color:var(--text)">${imm}</ul></div>` : ''}
-    ${lng ? `<div class="card"><h2>Long-term Recommendations</h2><ul style="padding-left:18px;color:var(--text)">${lng}</ul></div>` : ''}
-    <p style="color:var(--muted);font-size:11px">Analyzed at ${fmtDate(d.analyzed_at)}</p>
-  `;
+    ${findings?`<div class="card"><div class="card-title">Findings</div>${findings}</div>`:''}
+    ${imm?`<div class="card"><div class="card-title">Immediate Actions</div><ul style="padding-left:20px">${imm}</ul></div>`:''}
+    ${lng?`<div class="card"><div class="card-title">Long-term Recommendations</div><ul style="padding-left:20px">${lng}</ul></div>`:''}
+    <p style="color:var(--muted);font-size:11px;margin-top:4px">Analyzed at ${fmtDate(d.analyzed_at)}</p>`;
 }
 
-// ===================== RETENTION =====================
+// ── Retention ─────────────────────────────────────────────────────────────────
 async function retention() {
-  render(`<div class="card"><h2>Retention Policy</h2><div class="spinner"></div> Loading…</div>`);
+  render(`<div class="page-header"><h1>Log Retention</h1><p>Control how long logs are kept and how much storage is used.</p></div><div class="card"><div class="spinner"></div> Loading...</div>`);
   try {
     const d = await apiFetch('/api/admin/retention');
     if (!d) return;
     render(`
-      <div class="card" style="max-width:500px">
-        <h2>Retention Policy</h2>
-        <div class="alert alert-info" style="margin-bottom:16px">Changes take effect on the next scheduled purge or when you click Purge Now.</div>
-        <div class="form-group" style="margin-bottom:14px">
-          <label>Retention Period (days)</label>
-          <input type="number" id="ret-days" value="${d.retention_days}" min="1" max="3650" />
+      <div class="page-header"><h1>Log Retention</h1><p>Control how long logs are kept and how much storage is used.</p></div>
+      <div class="card" style="max-width:520px">
+        <div class="card-title"><span class="icon">&#x1F5C4;</span> Retention Policy</div>
+        <div class="alert alert-info">Changes apply on the next scheduled purge (daily) or when you click Purge Now.</div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label>Keep logs for how many days?</label>
+          <input type="number" id="ret-days" value="${d.retention_days}" min="1" max="3650" style="width:120px" />
+          <div class="help-tip">Logs older than this are automatically deleted. 90 days is a good default.</div>
         </div>
         <div class="form-group" style="margin-bottom:20px">
-          <label>Maximum Log Entries</label>
+          <label>Maximum number of log entries to store</label>
           <input type="number" id="ret-max" value="${d.max_entries}" min="1000" style="width:160px" />
+          <div class="help-tip">When this limit is reached, the oldest entries are removed first.</div>
         </div>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="saveRetention()">Save Policy</button>
-          <button class="btn btn-ghost" onclick="purgeNow()">&#x1F5D1; Purge Now</button>
+          <button class="btn btn-ghost" onclick="purgeNow()">&#x1F5D1; Purge Old Entries Now</button>
         </div>
         <p style="color:var(--muted);font-size:12px;margin-top:12px">Last updated: ${fmtDate(d.updated_at)}</p>
-        <div id="ret-msg" style="margin-top:10px"></div>
-      </div>
-    `);
+        <div id="ret-msg" style="margin-top:12px"></div>
+      </div>`);
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
 }
 
 async function saveRetention() {
   const msg = document.getElementById('ret-msg');
   try {
-    await apiFetch('/api/admin/retention', {
-      method: 'PUT',
-      body: JSON.stringify({
-        retention_days: parseInt(document.getElementById('ret-days').value),
-        max_entries: parseInt(document.getElementById('ret-max').value),
-      })
-    });
-    msg.innerHTML = '<div class="alert alert-ok">Policy saved.</div>';
-  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+    await apiFetch('/api/admin/retention', { method:'PUT', body:JSON.stringify({
+      retention_days: parseInt(document.getElementById('ret-days').value),
+      max_entries: parseInt(document.getElementById('ret-max').value),
+    })});
+    msg.innerHTML='<div class="alert alert-ok">Policy saved successfully.</div>';
+  } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 async function purgeNow() {
   const msg = document.getElementById('ret-msg');
   try {
-    const d = await apiFetch('/api/admin/purge', { method: 'POST' });
-    msg.innerHTML = `<div class="alert alert-ok">${d.message}</div>`;
-  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+    const d = await apiFetch('/api/admin/purge',{method:'POST'});
+    msg.innerHTML=`<div class="alert alert-ok">${d.message}</div>`;
+  } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
 }
 
-// ===================== USERS =====================
+// ── Users ─────────────────────────────────────────────────────────────────────
 async function users() {
-  render(`<div class="card"><div class="spinner"></div> Loading…</div>`);
+  render(`<div class="page-header"><h1>Users</h1></div><div class="card"><div class="spinner"></div> Loading...</div>`);
   try {
     const list = await apiFetch('/api/admin/users');
     if (!list) return;
-    const rows = list.map(u => `
-      <tr>
-        <td>${u.id}</td>
-        <td>${esc(u.username)}</td>
-        <td>${u.is_admin ? '<span class="tag">Admin</span>' : 'Read/Write'}</td>
-        <td>${u.is_active ? '&#x2705; Active' : '&#x274C; Inactive'}</td>
-        <td>${fmtDate(u.created_at)}</td>
-        <td><button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id},'${esc(u.username)}')">Delete</button></td>
-      </tr>
-    `).join('');
+    const rows = list.map(u=>`<tr>
+      <td>${u.id}</td><td><strong>${esc(u.username)}</strong></td>
+      <td>${u.is_admin?'<span class="tag">Admin</span>':'Standard'}</td>
+      <td>${u.is_active?'<span style="color:var(--accent2)">Active</span>':'<span style="color:var(--muted)">Inactive</span>'}</td>
+      <td style="color:var(--muted)">${fmtDate(u.created_at)}</td>
+      <td>${u.username!==currentUser?`<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id},'${esc(u.username)}')">Remove</button>`:''}</td>
+    </tr>`).join('');
     render(`
+      <div class="page-header"><h1>Users</h1><p>Manage who can access the web console and API.</p></div>
       <div class="card">
-        <h2>Users</h2>
-        <div class="tbl-wrap">
-          <table><thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
-          <tbody>${rows}</tbody></table>
-        </div>
+        <div class="card-title"><span class="icon">&#x1F464;</span> User Accounts</div>
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>ID</th><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>
       </div>
-      <div class="card" style="max-width:420px">
-        <h2>Add User</h2>
+      <div class="card" style="max-width:440px">
+        <div class="card-title"><span class="icon">&#x2795;</span> Add New User</div>
         <div class="form-group" style="margin-bottom:10px"><label>Username</label><input id="nu-user" placeholder="username" /></div>
-        <div class="form-group" style="margin-bottom:10px"><label>Password</label><input type="password" id="nu-pass" placeholder="••••••" /></div>
-        <div class="form-group" style="margin-bottom:16px"><label><input type="checkbox" id="nu-admin" /> Admin role</label></div>
+        <div class="form-group" style="margin-bottom:10px"><label>Password</label><input type="password" id="nu-pass" placeholder="password" /></div>
+        <div class="form-group" style="margin-bottom:16px"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="nu-admin" /> Give this user Admin access</label></div>
         <button class="btn btn-primary" onclick="createUser()">Create User</button>
         <div id="user-msg" style="margin-top:10px"></div>
-      </div>
-    `);
+      </div>`);
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
 }
 
 async function createUser() {
   const msg = document.getElementById('user-msg');
   try {
-    await apiFetch('/api/admin/users', { method: 'POST', body: JSON.stringify({
-      username: document.getElementById('nu-user').value.trim(),
-      password: document.getElementById('nu-pass').value,
-      is_admin: document.getElementById('nu-admin').checked,
+    await apiFetch('/api/admin/users',{method:'POST',body:JSON.stringify({
+      username:document.getElementById('nu-user').value.trim(),
+      password:document.getElementById('nu-pass').value,
+      is_admin:document.getElementById('nu-admin').checked,
     })});
-    msg.innerHTML = '<div class="alert alert-ok">User created.</div>';
-    setTimeout(users, 1000);
-  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+    msg.innerHTML='<div class="alert alert-ok">User created successfully.</div>';
+    setTimeout(users, 1200);
+  } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 async function deleteUser(id, name) {
-  if (!confirm(`Delete user "${name}"?`)) return;
-  try {
-    await apiFetch(`/api/admin/users/${id}`, { method: 'DELETE' });
-    users();
-  } catch(e) { alert(e.message); }
+  if (!confirm(`Remove user "${name}"? This cannot be undone.`)) return;
+  try { await apiFetch(`/api/admin/users/${id}`,{method:'DELETE'}); users(); }
+  catch(e) { alert(e.message); }
 }
 
-// ===================== API KEYS =====================
+// ── API Keys ──────────────────────────────────────────────────────────────────
 async function apikeys() {
-  render(`<div class="card"><div class="spinner"></div> Loading…</div>`);
+  render(`<div class="page-header"><h1>API Keys</h1></div><div class="card"><div class="spinner"></div> Loading...</div>`);
   try {
     const list = await apiFetch('/api/admin/apikeys');
     if (!list) return;
-    const rows = list.map(k => `
-      <tr>
-        <td>${k.id}</td>
-        <td>${esc(k.label)}</td>
-        <td>${k.read_only ? 'Read-only' : 'Read/Write'}</td>
-        <td>${k.is_active ? '&#x2705; Active' : '&#x274C; Revoked'}</td>
-        <td>${fmtDate(k.created_at)}</td>
-        <td>${k.last_used_at ? fmtDate(k.last_used_at) : 'Never'}</td>
-        <td>${k.is_active ? `<button class="btn btn-danger btn-sm" onclick="revokeKey(${k.id})">Revoke</button>` : ''}</td>
-      </tr>
-    `).join('');
+    const rows = list.map(k=>`<tr>
+      <td>${k.id}</td><td><strong>${esc(k.label)}</strong></td>
+      <td>${k.read_only?'Read-only':'Read/Write'}</td>
+      <td>${k.is_active?'<span style="color:var(--accent2)">Active</span>':'<span style="color:var(--muted)">Revoked</span>'}</td>
+      <td style="color:var(--muted)">${fmtDate(k.created_at)}</td>
+      <td style="color:var(--muted)">${k.last_used_at?fmtDate(k.last_used_at):'Never used'}</td>
+      <td>${k.is_active?`<button class="btn btn-danger btn-sm" onclick="revokeKey(${k.id})">Revoke</button>`:''}</td>
+    </tr>`).join('');
     render(`
+      <div class="page-header"><h1>API Keys</h1><p>API keys let Claude Projects and automated tools read your logs securely.</p></div>
+      <div class="alert alert-info">Use <code>Authorization: Bearer &lt;key&gt;</code> in your requests. Keys are shown only once when created.</div>
       <div class="card">
-        <h2>API Keys</h2>
-        <div class="alert alert-info" style="margin-bottom:14px">
-          Use these keys to authenticate Claude Projects or automated clients via <code>Authorization: Bearer &lt;key&gt;</code>.
-        </div>
-        <div class="tbl-wrap">
-          <table><thead><tr><th>ID</th><th>Label</th><th>Type</th><th>Status</th><th>Created</th><th>Last Used</th><th></th></tr></thead>
-          <tbody>${rows || '<tr><td colspan=7 style="color:var(--muted);text-align:center;padding:20px">No API keys yet</td></tr>'}</tbody></table>
-        </div>
+        <div class="card-title"><span class="icon">&#x1F511;</span> Active Keys</div>
+        ${list.length ? `<div class="tbl-wrap"><table>
+          <thead><tr><th>ID</th><th>Label</th><th>Type</th><th>Status</th><th>Created</th><th>Last Used</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>` : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F511;</div><p>No API keys yet. Create one below to connect Claude Projects.</p></div>`}
       </div>
-      <div class="card" style="max-width:420px">
-        <h2>Generate New API Key</h2>
-        <div class="form-group" style="margin-bottom:10px"><label>Label</label><input id="nk-label" placeholder="e.g. claude-project-main" /></div>
-        <div class="form-group" style="margin-bottom:16px"><label><input type="checkbox" id="nk-ro" checked /> Read-only (recommended)</label></div>
+      <div class="card" style="max-width:440px">
+        <div class="card-title"><span class="icon">&#x2795;</span> Generate New API Key</div>
+        <div class="form-group" style="margin-bottom:10px">
+          <label>Label — what is this key for?</label>
+          <input id="nk-label" placeholder="e.g. claude-project, home-automation" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="checkbox" id="nk-ro" checked /> Read-only access <span style="color:var(--muted);font-size:11px">(recommended for external clients)</span>
+          </label>
+        </div>
         <button class="btn btn-primary" onclick="createKey()">Generate Key</button>
-        <div id="key-msg" style="margin-top:10px"></div>
-      </div>
-    `);
+        <div id="key-msg" style="margin-top:12px"></div>
+      </div>`);
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
 }
 
 async function createKey() {
   const msg = document.getElementById('key-msg');
   try {
-    const d = await apiFetch('/api/admin/apikeys', { method: 'POST', body: JSON.stringify({
-      label: document.getElementById('nk-label').value.trim(),
-      read_only: document.getElementById('nk-ro').checked,
+    const d = await apiFetch('/api/admin/apikeys',{method:'POST',body:JSON.stringify({
+      label:document.getElementById('nk-label').value.trim(),
+      read_only:document.getElementById('nk-ro').checked,
     })});
-    msg.innerHTML = `
-      <div class="alert alert-ok">
-        <strong>Key generated — copy it now, it won't be shown again.</strong>
-        <div class="copy-key">${d.raw_key}</div>
-      </div>
-    `;
-    setTimeout(apikeys, 3000);
-  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+    msg.innerHTML=`<div class="alert alert-ok">
+      <strong>Key generated — copy it now. It will not be shown again.</strong>
+      <div class="copy-key">${d.raw_key}</div>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="navigator.clipboard.writeText('${d.raw_key}').then(()=>this.textContent='Copied!')">Copy to clipboard</button>
+    </div>`;
+    setTimeout(apikeys, 4000);
+  } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 async function revokeKey(id) {
-  if (!confirm('Revoke this API key? It cannot be un-revoked.')) return;
-  try {
-    await apiFetch(`/api/admin/apikeys/${id}`, { method: 'DELETE' });
-    apikeys();
-  } catch(e) { alert(e.message); }
+  if (!confirm('Revoke this API key? Any client using it will stop working.')) return;
+  try { await apiFetch(`/api/admin/apikeys/${id}`,{method:'DELETE'}); apikeys(); }
+  catch(e) { alert(e.message); }
+}
+
+// ── Setup Guide ───────────────────────────────────────────────────────────────
+function setup() {
+  const host = location.hostname;
+  const port = serviceInfo?.syslog_udp_port || 514;
+  const webPort = location.port || 8080;
+  render(`
+    <div class="page-header"><h1>Setup Guide</h1><p>Everything you need to get logs flowing and security analysis running.</p></div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon">1&#xFE0F;&#x20E3;</span> Point Your Unifi Dream Machine at This Service</div>
+      <p style="margin-bottom:12px;font-size:13px">In your UniFi Network controller:</p>
+      <ol style="padding-left:20px;font-size:13px;line-height:2">
+        <li>Go to <strong>Settings &rarr; System &rarr; Logging</strong></li>
+        <li>Enable <strong>Remote Syslog</strong></li>
+        <li>Set the Syslog Server to <code style="font-size:13px;background:var(--bg);border:1px solid var(--border);padding:2px 8px;border-radius:4px">${host}</code></li>
+        <li>Set the Port to <code style="font-size:13px;background:var(--bg);border:1px solid var(--border);padding:2px 8px;border-radius:4px">${port}</code></li>
+        <li>Click <strong>Apply</strong></li>
+      </ol>
+      <div class="alert alert-info" style="margin-top:14px">Logs will start appearing in the <strong>Log Viewer</strong> within seconds of saving. Check the Dashboard to confirm they are flowing.</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon">2&#xFE0F;&#x20E3;</span> Enable AI Analysis</div>
+      <p style="font-size:13px;margin-bottom:10px">AI analysis requires an Anthropic API key.</p>
+      <ol style="padding-left:20px;font-size:13px;line-height:2">
+        <li>Get a key at <strong>console.anthropic.com</strong></li>
+        <li>Edit the <code>.env</code> file in the service directory</li>
+        <li>Set <code>ANTHROPIC_API_KEY=sk-ant-...</code></li>
+        <li>Restart the service (run Setup.ps1 or install.sh, choose Update)</li>
+        <li>Go to <strong><span class="action" onclick="showPage('ai')">AI Analysis</span></strong> and click Analyze Logs</li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon">3&#xFE0F;&#x20E3;</span> Connect Claude Projects</div>
+      <p style="font-size:13px;margin-bottom:10px">Claude Projects can query your logs and run analysis automatically using an API key.</p>
+      <ol style="padding-left:20px;font-size:13px;line-height:2">
+        <li>Go to <strong><span class="action" onclick="showPage('apikeys')">API Keys</span></strong> and generate a new key</li>
+        <li>In your Claude Project, use:<br/>
+          <code style="font-size:12px;background:var(--bg);border:1px solid var(--border);padding:4px 10px;border-radius:4px;display:inline-block;margin-top:4px">Authorization: Bearer &lt;your-api-key&gt;</code></li>
+        <li>Base URL: <code style="font-size:12px;background:var(--bg);border:1px solid var(--border);padding:4px 10px;border-radius:4px;display:inline-block;margin-top:4px">http://${host}:${webPort}/api</code></li>
+      </ol>
+      <div class="alert alert-info" style="margin-top:14px">
+        <strong>Useful endpoints:</strong><br/>
+        <code>GET /api/logs?event_type=firewall_block</code> — recent firewall blocks<br/>
+        <code>GET /api/ai/recommendations</code> — quick 24-hour security scan<br/>
+        <code>GET /api/stats</code> — log counts and top sources<br/>
+        Full API docs: <strong>http://${host}:${webPort}/api/docs</strong>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F527;</span> Managing the Service</div>
+      <div class="two-col" style="font-size:13px">
+        <div>
+          <strong style="color:var(--text)">Raspberry Pi</strong>
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 12px;border-radius:var(--radius);margin-top:8px;font-size:12px">sudo bash /opt/syslog-retention-service/install.sh</pre>
+          <p style="color:var(--muted);margin-top:6px">Menu options: Update, Restart, View Logs, Edit .env</p>
+        </div>
+        <div>
+          <strong style="color:var(--text)">Windows</strong>
+          <pre style="background:var(--bg);border:1px solid var(--border);padding:10px 12px;border-radius:var(--radius);margin-top:8px;font-size:12px">.\\Setup.ps1   (run as Administrator)</pre>
+          <p style="color:var(--muted);margin-top:6px">Menu options: Update, Restart, View Logs, Edit .env</p>
+        </div>
+      </div>
+    </div>
+  `);
 }
 </script>
 </body>
