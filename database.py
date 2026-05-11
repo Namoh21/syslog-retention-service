@@ -150,14 +150,18 @@ def init_db():
 def _seed_defaults():
     """Seed the admin user, retention policy, and any env-configured API keys."""
     from auth import get_password_hash
+    from config import _SEEDED_SENTINEL
     db = SessionLocal()
     try:
         # Admin user
-        if not db.query(User).filter_by(username=settings.admin_username).first():
-            pw = settings.admin_password
-            if not pw or pw in ("changeme", "(seeded)"):
+        pw = settings.admin_password
+        is_real_password = pw and pw not in ("changeme", _SEEDED_SENTINEL, "(seeded)")
+        existing_user = db.query(User).filter_by(username=settings.admin_username).first()
+
+        if not existing_user:
+            if not is_real_password:
                 logger.error(
-                    "ADMIN_PASSWORD is not set or still the default. "
+                    "ADMIN_PASSWORD is not set in .env. "
                     "Set a real password in .env before starting the service."
                 )
                 sys.exit(1)
@@ -168,6 +172,11 @@ def _seed_defaults():
                 is_admin=True,
             ))
             logger.info("Admin user '%s' created.", settings.admin_username)
+        elif is_real_password:
+            # .env has a real password and user already exists — update the hash.
+            # This handles re-installs where the wizard set a new password.
+            existing_user.hashed_password = get_password_hash(pw)
+            logger.info("Admin user '%s' password updated from .env.", settings.admin_username)
 
         # Retention policy
         if not db.query(RetentionPolicy).first():
