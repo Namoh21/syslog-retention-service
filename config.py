@@ -3,8 +3,11 @@ from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
-
 BASE_DIR = Path(__file__).parent
+ENV_FILE = BASE_DIR / ".env"
+
+# Sentinel written to .env after first-run seeding — never treated as a real value
+_SEEDED_SENTINEL = "(seeded-manage-via-web-console)"
 
 
 class Settings(BaseSettings):
@@ -31,7 +34,7 @@ class Settings(BaseSettings):
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60
 
-    # Default admin credentials (change on first run)
+    # Admin credentials — used only on first run to seed the DB, then scrubbed
     admin_username: str = "admin"
     admin_password: str = "changeme"
 
@@ -44,16 +47,21 @@ class Settings(BaseSettings):
     claude_model: str = "claude-sonnet-4-6"
     ai_analysis_max_logs: int = 500
 
-    # API keys for external Claude Project access (comma-separated)
+    # Static API keys — imported to DB on first run, then scrubbed from .env
     external_api_keys: str = ""
 
-    class Config:
-        env_file = str(BASE_DIR / ".env")
-        env_file_encoding = "utf-8"
-        extra = "ignore"
+    model_config = {
+        "env_file": str(ENV_FILE),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+    def is_seeded(self) -> bool:
+        """True when the password has already been moved to the DB."""
+        return self.admin_password in ("", _SEEDED_SENTINEL, "changeme")
 
     def get_external_api_keys(self) -> list[str]:
-        if not self.external_api_keys:
+        if not self.external_api_keys or self.external_api_keys == _SEEDED_SENTINEL:
             return []
         return [k.strip() for k in self.external_api_keys.split(",") if k.strip()]
 

@@ -1,7 +1,14 @@
+import hashlib
+import logging
+import os
 import re
+import stat
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("database")
 
 from sqlalchemy import (
     Boolean, Column, DateTime, Index, Integer, String, Text,
@@ -137,27 +144,105 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
     _seed_defaults()
+    _secure_env_file()
 
 
 def _seed_defaults():
+    """Seed the admin user, retention policy, and any env-configured API keys."""
     from auth import get_password_hash
     db = SessionLocal()
     try:
+        # Admin user
         if not db.query(User).filter_by(username=settings.admin_username).first():
+            pw = settings.admin_password
+            if not pw or pw in ("changeme", "(seeded)"):
+                logger.error(
+                    "ADMIN_PASSWORD is not set or still the default. "
+                    "Set a real password in .env before starting the service."
+                )
+                sys.exit(1)
             db.add(User(
                 username=settings.admin_username,
-                hashed_password=get_password_hash(settings.admin_password),
+                hashed_password=get_password_hash(pw),
                 is_active=True,
                 is_admin=True,
             ))
+            logger.info("Admin user '%s' created.", settings.admin_username)
+
+        # Retention policy
         if not db.query(RetentionPolicy).first():
             db.add(RetentionPolicy(
                 retention_days=settings.retention_days,
                 max_entries=settings.max_log_entries,
             ))
+
+        # Migrate EXTERNAL_API_KEYS from .env into the DB (hashed), then clear
+        for raw_key in settings.get_external_api_keys():
+            key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+            if not db.query(ApiKey).filter_by(key_hash=key_hash).first():
+                db.add(ApiKey(
+                    key_hash=key_hash,
+                    label="imported-from-env",
+                    read_only=True,
+                    is_active=True,
+                ))
+                logger.info("Imported API key from EXTERNAL_API_KEYS into DB.")
+
         db.commit()
     finally:
         db.close()
+
+
+def _secure_env_file():
+    """
+    After seeding, replace plaintext secrets in .env with a sentinel so the
+    file is no longer a credential store. Also restricts file permissions.
+    """
+    from config import ENV_FILE
+    env_path = ENV_FILE
+
+    if not env_path.exists():
+        return
+
+    # Restrict permissions: owner read/write only (0600)
+    try:
+        if sys.platform != "win32":
+            os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
+        else:
+            # Windows: remove Everyone/Users, keep only current user
+            import subprocess
+            p = str(env_path)
+            subprocess.run(["icacls", p, "/inheritance:r"], capture_output=True)
+            subprocess.run(["icacls", p, "/grant:r", f"{os.environ.get('USERNAME','Administrator')}:(R,W)"], capture_output=True)
+    except Exception as exc:
+        logger.warning("Could not restrict .env permissions: %s", exc)
+
+    # Scrub plaintext secrets from the file
+    try:
+        text = env_path.read_text(encoding="utf-8")
+        changed = False
+
+        # Replace ADMIN_PASSWORD if it still has a real value
+        from config import _SEEDED_SENTINEL
+
+        def _scrub(content, key):
+            pattern = re.compile(rf"^({re.escape(key)}=)(?!{re.escape(_SEEDED_SENTINEL)})(.+)$", re.MULTILINE)
+            new = pattern.sub(rf"\1{_SEEDED_SENTINEL}", content)
+            return new, new != content
+
+        text, c1 = _scrub(text, "ADMIN_PASSWORD")
+        text, c2 = _scrub(text, "EXTERNAL_API_KEYS")
+        changed = c1 or c2
+
+        if changed:
+            env_path.write_text(text, encoding="utf-8")
+            logger.info(
+                "Plaintext secrets removed from %s. "
+                "Manage credentials via the web console going forward.",
+                env_path,
+            )
+    except Exception as exc:
+        logger.warning("Could not scrub .env secrets: %s", exc)
 
 
 def get_db():
