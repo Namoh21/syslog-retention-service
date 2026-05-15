@@ -116,15 +116,13 @@ cd syslog-retention-service
 sudo bash install.sh
 ```
 
-Select **option 1 — Install / Repair**. The wizard asks for:
+Select **option 1 — Install / Repair**. The wizard asks only for infrastructure settings:
 
-- Admin username and password for the web console
-- Anthropic API key (optional at install time — add it later in Settings)
-- Claude model preference
 - Syslog ports (UDP default 514, TCP default 6514)
 - Web console port (default 8080)
-- Log retention period and maximum entry count
-- Allowed syslog source CIDRs (optional — leave blank to allow all)
+- Bind address (default 0.0.0.0)
+
+**No credentials are entered during install.** Your admin username, password, and Anthropic API key are configured in the web console on first visit and stored directly in the encrypted database — never written to any file on disk.
 
 The installer then:
 
@@ -137,7 +135,7 @@ The installer then:
 7. Registers and enables a hardened systemd service (auto-starts at boot)
 8. Opens firewall ports via ufw
 
-On first startup the service moves `SECRET_KEY` into `/etc/syslog-retention/` and scrubs all credentials from `.env`. From that point on `.env` contains no secrets.
+On first startup the service moves `SECRET_KEY` into `/etc/syslog-retention/` (chmod 600). After that `.env` contains only port/address config — no secrets at all.
 
 ### 3. (Optional) Set up M.2 / NVMe storage
 
@@ -199,9 +197,9 @@ Right-click `Setup.ps1` and select **"Run with PowerShell"**, or from an Adminis
 .\Setup.ps1
 ```
 
-Select **option 1 — Install / Repair**. The same configuration wizard runs as on the Pi.
+Select **option 1 — Install / Repair**. The wizard asks only for ports and bind address — no credentials. Admin account setup happens in the web console on first visit.
 
-On first startup `SECRET_KEY` is moved into the Windows DPAPI credential store (tied to your Windows user account) and scrubbed from `.env`.
+On first startup `SECRET_KEY` is moved into the Windows DPAPI credential store (tied to your Windows user account) and scrubbed from `.env`. After that `.env` contains no secrets.
 
 ### 4. Point your Unifi Dream Machine at this PC
 

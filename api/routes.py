@@ -152,6 +152,52 @@ class ApiKeyCreated(ApiKeyOut):
     raw_key: str  # Only returned once on creation
 
 
+# ===================== First-run Setup =====================
+
+class SetupInit(BaseModel):
+    username: str
+    password: str
+    anthropic_api_key: str = ""
+
+
+@router.get("/setup/status", tags=["setup"])
+async def setup_status(db: Session = Depends(get_db)):
+    """Returns whether the initial admin account has been created. Unauthenticated."""
+    has_admin = db.query(User).filter_by(is_admin=True).first() is not None
+    return {"setup_complete": has_admin}
+
+
+@router.post("/setup/initialize", status_code=201, tags=["setup"])
+async def setup_initialize(
+    request: Request,
+    body: SetupInit,
+    db: Session = Depends(get_db),
+):
+    """Create the first admin account. Only works when no admin exists. Unauthenticated."""
+    if db.query(User).filter_by(is_admin=True).first():
+        raise HTTPException(status_code=409, detail="Setup already complete. Sign in to manage users.")
+    if not body.username or not body.username.strip():
+        raise HTTPException(status_code=400, detail="Username cannot be empty.")
+    err = validate_password_strength(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    user = User(
+        username=body.username.strip(),
+        hashed_password=get_password_hash(body.password),
+        is_active=True,
+        is_admin=True,
+    )
+    db.add(user)
+    if body.anthropic_api_key.strip():
+        from database import set_service_setting
+        set_service_setting("anthropic_api_key", body.anthropic_api_key.strip(), db)
+    write_audit(db, body.username.strip(), "setup.initialize",
+                "Initial setup: admin account created",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"message": "Setup complete. You can now sign in."}
+
+
 # ===================== Auth =====================
 
 @router.post("/auth/token", response_model=Token, tags=["auth"])

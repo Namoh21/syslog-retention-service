@@ -317,19 +317,18 @@ def _seed_defaults():
         existing_user = db.query(User).filter_by(username=settings.admin_username).first()
 
         if not existing_user:
-            if not is_real_password:
-                logger.error(
-                    "ADMIN_PASSWORD is not set in .env. "
-                    "Set a real password in .env before starting the service."
-                )
-                sys.exit(1)
-            db.add(User(
-                username=settings.admin_username,
-                hashed_password=get_password_hash(pw),
-                is_active=True,
-                is_admin=True,
-            ))
-            logger.info("Admin user '%s' created.", settings.admin_username)
+            if is_real_password:
+                # Legacy path: .env had a real password (upgrade from old install)
+                db.add(User(
+                    username=settings.admin_username or "admin",
+                    hashed_password=get_password_hash(pw),
+                    is_active=True,
+                    is_admin=True,
+                ))
+                logger.info("Admin user '%s' created from .env (legacy seed).", settings.admin_username)
+            else:
+                # New install: no credentials in .env — web setup wizard will create the admin
+                logger.info("No admin credentials in .env. First-run setup wizard will configure the admin account.")
         elif is_real_password:
             # .env has a real password and user already exists — update the hash.
             # This handles re-installs where the wizard set a new password.
