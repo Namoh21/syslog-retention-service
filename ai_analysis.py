@@ -81,6 +81,7 @@ async def analyze_logs(
             max_tokens=4096,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
+            timeout=60.0,
         )
         raw_text = response.content[0].text
 

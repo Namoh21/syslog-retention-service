@@ -9,6 +9,7 @@
 set -euo pipefail
 
 SERVICE_NAME="syslog-siem"
+SERVICE_USER="syslog-siem"
 INSTALL_DIR="/opt/syslog-retention-service"
 VENV_DIR="$INSTALL_DIR/.venv"
 PYTHON="$VENV_DIR/bin/python"
@@ -19,6 +20,7 @@ SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_PORT=8080
 SYSLOG_PORT=514
+M2_MOUNT="/mnt/syslog-data"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
@@ -211,6 +213,294 @@ EOF
 # =============================================================================
 # INSTALL
 # =============================================================================
+# =============================================================================
+# M.2 STORAGE SETUP
+# =============================================================================
+setup_m2_storage() {
+    banner
+    echo -e "${CYAN}  [ M.2 / NVMe STORAGE SETUP ]${NC}\n"
+
+    if [[ $EUID -ne 0 ]]; then
+        err "Must be run as root."
+        pause; return
+    fi
+
+    # ── Detect Pi model ───────────────────────────────────────────────────────
+    local pi_model=""
+    if [[ -f /proc/device-tree/model ]]; then
+        pi_model=$(tr -d '\0' < /proc/device-tree/model 2>/dev/null || echo "")
+    fi
+    echo -e "  Detected hardware: ${CYAN}${pi_model:-Unknown}${NC}\n"
+
+    local is_pi5=false
+    local is_pi4=false
+    if echo "$pi_model" | grep -qi "raspberry pi 5"; then
+        is_pi5=true
+    elif echo "$pi_model" | grep -qi "raspberry pi 4"; then
+        is_pi4=true
+    fi
+
+    # ── Explain HAT types ────────────────────────────────────────────────────
+    echo -e "  ${YELLOW}Supported M.2 HATs:${NC}"
+    if $is_pi5; then
+        echo "  - Raspberry Pi M.2 HAT+ (official)"
+        echo "  - Pimoroni NVMe Base / NVMe Base Duo"
+        echo "  - Waveshare PCIe to M.2 HAT+"
+        echo "  - Other PCIe NVMe HATs using the Pi 5 PCIe connector"
+        echo ""
+        echo -e "  ${GRAY}Pi 5 uses PCIe. The NVMe drive will appear as /dev/nvme0n1.${NC}"
+    elif $is_pi4; then
+        echo "  - Argon ONE M.2 / Argon NEO M.2 (USB 3.0 bridge)"
+        echo "  - GeekPi / 52Pi M.2 HAT (USB 3.0)"
+        echo "  - Waveshare USB 3.0 to M.2 HAT"
+        echo ""
+        echo -e "  ${GRAY}Pi 4 M.2 HATs use USB 3.0. The drive will appear as /dev/sda or /dev/sdb.${NC}"
+    else
+        echo "  - Any USB 3.0 to M.2 adapter or PCIe M.2 HAT"
+    fi
+    echo ""
+
+    # ── Pi 5: PCIe / NVMe overlay ────────────────────────────────────────────
+    if $is_pi5; then
+        local config_file="/boot/firmware/config.txt"
+        [[ ! -f "$config_file" ]] && config_file="/boot/config.txt"
+
+        step "Checking PCIe / NVMe configuration for Pi 5"
+        local pcie_enabled=false
+        if grep -q "dtparam=pciex1" "$config_file" 2>/dev/null || \
+           lsmod 2>/dev/null | grep -q nvme || \
+           [[ -e /dev/nvme0 ]]; then
+            pcie_enabled=true
+            ok "PCIe / NVMe already enabled"
+        else
+            warn "PCIe NVMe is not yet enabled in $config_file"
+            echo ""
+            echo -e "  ${YELLOW}To use an NVMe HAT on the Pi 5, PCIe must be enabled.${NC}"
+            echo -e "  This adds the following to $config_file:"
+            echo -e "  ${GRAY}  dtparam=pciex1${NC}"
+            echo -e "  ${GRAY}  dtparam=pciex1_gen=3   (optional — for Gen 3 speed)${NC}"
+            echo ""
+            read -rp "  Enable PCIe NVMe support now? (yes/no): " en_pcie
+            if [[ "${en_pcie,,}" == "yes" || "${en_pcie,,}" == "y" ]]; then
+                # Back up config
+                cp "$config_file" "${config_file}.bak.$(date +%Y%m%d-%H%M%S)"
+                # Add PCIe params if not present
+                if ! grep -q "dtparam=pciex1" "$config_file"; then
+                    echo "" >> "$config_file"
+                    echo "# M.2 NVMe HAT - added by syslog-siem installer" >> "$config_file"
+                    echo "dtparam=pciex1" >> "$config_file"
+                    echo "dtparam=pciex1_gen=3" >> "$config_file"
+                fi
+                ok "PCIe NVMe enabled in $config_file"
+                echo ""
+                echo -e "  ${YELLOW}+------------------------------------------------+${NC}"
+                echo -e "  ${YELLOW}|  A REBOOT IS REQUIRED to activate NVMe.        |${NC}"
+                echo -e "  ${YELLOW}|  After rebooting, run this installer again     |${NC}"
+                echo -e "  ${YELLOW}|  and select M.2 Storage Setup.                |${NC}"
+                echo -e "  ${YELLOW}+------------------------------------------------+${NC}"
+                echo ""
+                read -rp "  Reboot now? (yes/no): " do_reboot
+                if [[ "${do_reboot,,}" == "yes" || "${do_reboot,,}" == "y" ]]; then
+                    reboot
+                fi
+                pause; return
+            else
+                warn "PCIe not enabled. Skipping M.2 setup."
+                pause; return
+            fi
+        fi
+    fi
+
+    # ── Detect available drives ───────────────────────────────────────────────
+    step "Scanning for available drives"
+    echo ""
+
+    # List block devices excluding the OS drive and loop/rom devices
+    local os_drive
+    os_drive=$(lsblk -ndo pkname "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -1)
+    os_drive="${os_drive:-mmcblk0}"
+
+    echo -e "  ${GRAY}(OS is on: /dev/${os_drive})${NC}\n"
+
+    # Build list of candidate drives
+    local drives=()
+    while IFS= read -r line; do
+        local dev size model
+        dev=$(echo "$line" | awk '{print $1}')
+        size=$(echo "$line" | awk '{print $4}')
+        model=$(echo "$line" | awk '{print $3}')
+        # Skip OS drive, loop, rom, zram
+        [[ "$dev" == "$os_drive" ]] && continue
+        [[ "$dev" == loop* || "$dev" == sr* || "$dev" == zram* ]] && continue
+        drives+=("$dev  $size  $model")
+    done < <(lsblk -ndo NAME,TYPE,MODEL,SIZE | grep -v "^loop\|^sr\|^zram" || true)
+
+    if [[ ${#drives[@]} -eq 0 ]]; then
+        warn "No additional drives found."
+        echo ""
+        if $is_pi5; then
+            echo "  Troubleshooting:"
+            echo "  - Verify your M.2 HAT is fully seated in the PCIe connector"
+            echo "  - Check the HAT's power jumper if it has one"
+            echo "  - Run: lsblk   and   dmesg | grep -i nvme"
+        elif $is_pi4; then
+            echo "  Troubleshooting:"
+            echo "  - Verify your M.2 HAT is connected to a USB 3.0 (blue) port"
+            echo "  - Run: lsblk   and   dmesg | grep -i usb"
+        fi
+        pause; return
+    fi
+
+    echo -e "  ${CYAN}Available drives:${NC}"
+    local i=1
+    for d in "${drives[@]}"; do
+        echo -e "  ${WHITE}$i)${NC}  /dev/$d"
+        (( i++ ))
+    done
+    echo ""
+
+    local choice
+    read -rp "  Select drive number [1-${#drives[@]}]: " choice
+    if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#drives[@]} )); then
+        warn "Invalid selection. Cancelled."
+        pause; return
+    fi
+
+    local selected_entry="${drives[$((choice-1))]}"
+    local selected_dev
+    selected_dev="/dev/$(echo "$selected_entry" | awk '{print $1}')"
+    local selected_size
+    selected_size=$(echo "$selected_entry" | awk '{print $2}')
+
+    echo ""
+    echo -e "  Selected: ${CYAN}${selected_dev}${NC}  (${selected_size})"
+
+    # ── Format warning ────────────────────────────────────────────────────────
+    echo ""
+    echo -e "  ${RED}WARNING: All data on ${selected_dev} will be ERASED.${NC}"
+    echo -e "  ${RED}This operation cannot be undone.${NC}"
+    echo ""
+    read -rp "  Type the device name to confirm (e.g. nvme0n1 or sda): " confirm_dev
+    if [[ "/dev/${confirm_dev}" != "$selected_dev" && "$confirm_dev" != "$selected_dev" ]]; then
+        warn "Device name did not match. Cancelled."
+        pause; return
+    fi
+
+    # ── Partition and format ──────────────────────────────────────────────────
+    step "Partitioning and formatting $selected_dev"
+    apt-get install -y -qq parted e2fsprogs util-linux 2>/dev/null
+
+    # Wipe existing partition table
+    wipefs -a "$selected_dev" >/dev/null 2>&1 || true
+
+    # Create GPT with single ext4 partition
+    parted -s "$selected_dev" mklabel gpt
+    parted -s "$selected_dev" mkpart primary ext4 0% 100%
+    sleep 1
+    partprobe "$selected_dev" 2>/dev/null || true
+    sleep 1
+
+    # Determine partition device name
+    local part_dev
+    if [[ "$selected_dev" == *nvme* ]]; then
+        part_dev="${selected_dev}p1"
+    else
+        part_dev="${selected_dev}1"
+    fi
+
+    # Wait for partition to appear
+    local retries=0
+    while [[ ! -b "$part_dev" && $retries -lt 10 ]]; do
+        sleep 1
+        (( retries++ ))
+    done
+
+    if [[ ! -b "$part_dev" ]]; then
+        err "Partition $part_dev did not appear. Try rebooting and re-running."
+        pause; return
+    fi
+
+    mkfs.ext4 -L syslog-data -q "$part_dev"
+    ok "Formatted $part_dev as ext4 (label: syslog-data)"
+
+    # ── Mount point and fstab ─────────────────────────────────────────────────
+    step "Configuring persistent mount at $M2_MOUNT"
+    mkdir -p "$M2_MOUNT"
+
+    # Get UUID for stable fstab entry
+    local uuid
+    uuid=$(blkid -s UUID -o value "$part_dev")
+    if [[ -z "$uuid" ]]; then
+        err "Could not read UUID from $part_dev"
+        pause; return
+    fi
+    ok "Drive UUID: $uuid"
+
+    # Remove any existing entry for this mount point or UUID
+    sed -i "/\s${M2_MOUNT//\//\\/}\s/d" /etc/fstab
+    sed -i "/UUID=${uuid}/d" /etc/fstab
+
+    # Add fstab entry (auto-mount at boot, ext4, sane defaults)
+    echo "UUID=${uuid}  ${M2_MOUNT}  ext4  defaults,noatime,nofail  0  2" >> /etc/fstab
+    ok "Added to /etc/fstab"
+
+    mount "$M2_MOUNT"
+    ok "Drive mounted at $M2_MOUNT"
+
+    # ── Migrate existing data ─────────────────────────────────────────────────
+    local db_path="$INSTALL_DIR/data"
+    if [[ -d "$db_path" && -n "$(ls -A "$db_path" 2>/dev/null)" ]]; then
+        step "Migrating existing database to M.2 drive"
+        mkdir -p "$M2_MOUNT/data"
+        cp -a "$db_path/." "$M2_MOUNT/data/"
+        ok "Data migrated to $M2_MOUNT/data"
+    else
+        mkdir -p "$M2_MOUNT/data"
+    fi
+
+    # ── Set permissions ───────────────────────────────────────────────────────
+    if id -u "$SERVICE_USER" &>/dev/null; then
+        chown -R "${SERVICE_USER}:${SERVICE_USER}" "$M2_MOUNT"
+    fi
+    chmod 750 "$M2_MOUNT/data"
+    ok "Permissions set on $M2_MOUNT"
+
+    # ── Update DB_PATH in .env ────────────────────────────────────────────────
+    step "Updating DB_PATH in .env to use M.2 drive"
+    local new_db_path="$M2_MOUNT/data/syslog.db"
+    if [[ -f "$ENV_FILE" ]]; then
+        if grep -q "^DB_PATH=" "$ENV_FILE"; then
+            sed -i "s|^DB_PATH=.*|DB_PATH=${new_db_path}|" "$ENV_FILE"
+        else
+            echo "DB_PATH=${new_db_path}" >> "$ENV_FILE"
+        fi
+        ok "DB_PATH set to $new_db_path"
+    else
+        warn ".env not found at $ENV_FILE — create it with option 1 (Install) first."
+        warn "Then manually add: DB_PATH=${new_db_path}"
+    fi
+
+    # ── Disk info ─────────────────────────────────────────────────────────────
+    echo ""
+    echo -e "${GREEN}  ============================================${NC}"
+    echo -e "${GREEN}  M.2 storage ready!${NC}"
+    echo -e "${GREEN}  Drive   : $selected_dev  (${selected_size})${NC}"
+    echo -e "${GREEN}  Mount   : $M2_MOUNT${NC}"
+    echo -e "${GREEN}  DB path : $new_db_path${NC}"
+    echo -e "${GREEN}  UUID    : $uuid${NC}"
+    echo -e "${GREEN}  ============================================${NC}"
+    echo ""
+    echo -e "${YELLOW}  Next: restart the service for the new DB path to take effect.${NC}"
+    read -rp "  Restart service now? (yes/no): " do_restart
+    if [[ "${do_restart,,}" == "yes" || "${do_restart,,}" == "y" ]]; then
+        systemctl restart "$SERVICE_NAME" 2>/dev/null && ok "Service restarted" || warn "Service not running"
+    fi
+    pause
+}
+
+# =============================================================================
+# INSTALL
+# =============================================================================
 do_install() {
     banner
     echo -e "${GREEN}  [ INSTALL / REPAIR ]${NC}\n"
@@ -227,7 +517,7 @@ do_install() {
     apt-get install -y -qq python3 python3-pip python3-venv git ufw curl 2>/dev/null
     ok "System packages ready"
 
-    # Python version check
+    # Python version check — enforce 3.10+ hard requirement
     step "Checking Python version"
     local py_ver
     py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
@@ -236,7 +526,10 @@ do_install() {
     py_minor=$(echo "$py_ver" | cut -d. -f2)
     if [[ "$py_major" -lt 3 || ("$py_major" -eq 3 && "$py_minor" -lt 10) ]]; then
         err "Python 3.10+ required, found $py_ver"
-        echo "  Run: sudo apt-get install python3.11"
+        echo ""
+        echo "  To install Python 3.11 on Raspberry Pi OS:"
+        echo "    sudo apt-get install python3.11 python3.11-venv"
+        echo "    sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1"
         pause; return
     fi
     ok "Python $py_ver found"
@@ -269,7 +562,7 @@ do_install() {
                 ok "rsyslog stopped and disabled"
                 ;;
             B)
-                warn "Remember to change SYSLOG_UDP_PORT in .env to a non-514 value (e.g. 5514)"
+                warn "Remember to change SYSLOG_UDP_PORT in Settings after install"
                 warn "and update your UDM syslog target port to match."
                 ;;
             *)
@@ -324,20 +617,58 @@ do_install() {
     ok "Log directory: $LOG_DIR"
 
     # Data directory
-    mkdir -p "$INSTALL_DIR/data"
-    ok "Data directory: $INSTALL_DIR/data"
+    local db_dir="$INSTALL_DIR/data"
+    # Use M.2 mount if already configured
+    if [[ -f "$ENV_FILE" ]]; then
+        local cfg_db
+        cfg_db=$(grep '^DB_PATH=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "")
+        if [[ -n "$cfg_db" ]]; then
+            db_dir=$(dirname "$cfg_db")
+        fi
+    fi
+    mkdir -p "$db_dir"
+    ok "Data directory: $db_dir"
 
-    # Systemd service
+    # Dedicated service user — runs with least privilege
+    step "Creating service user '$SERVICE_USER'"
+    if ! id -u "$SERVICE_USER" &>/dev/null; then
+        useradd --system --no-create-home --shell /usr/sbin/nologin \
+                --comment "Syslog SIEM service account" "$SERVICE_USER"
+        ok "User '$SERVICE_USER' created"
+    else
+        ok "User '$SERVICE_USER' already exists"
+    fi
+
+    # Set ownership on directories the service needs to write to
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
+    chmod 750 "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
+    # Venv and app code owned by root, readable by service user
+    chown root:root -R "$INSTALL_DIR" 2>/dev/null || true
+    chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
+    # .env readable only by service user
+    if [[ -f "$ENV_FILE" ]]; then
+        chown "${SERVICE_USER}:${SERVICE_USER}" "$ENV_FILE"
+        chmod 600 "$ENV_FILE"
+    fi
+    # Keystore directory
+    mkdir -p /etc/syslog-retention
+    chown "${SERVICE_USER}:${SERVICE_USER}" /etc/syslog-retention
+    chmod 700 /etc/syslog-retention
+    ok "Permissions configured for '$SERVICE_USER'"
+
+    # Systemd service — runs as dedicated user, not root
+    # AmbientCapabilities allows binding to port 514 (<1024) without root
     step "Installing systemd service"
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Syslog Retention and SIEM Service
-After=network.target rsyslog.service
+After=network.target
 Wants=network.target
 
 [Service]
 Type=simple
-User=root
+User=${SERVICE_USER}
+Group=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${PYTHON} main.py
 Restart=on-failure
@@ -349,12 +680,22 @@ CPUQuota=80%
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service_err.log
 
+# Allow binding to privileged ports (e.g. UDP 514) without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+# Harden attack surface
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=${INSTALL_DIR}/data ${LOG_DIR} /etc/syslog-retention
+
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME"
-    ok "Service enabled (starts at boot)"
+    ok "Service enabled (starts at boot, runs as '$SERVICE_USER')"
 
     # Firewall
     step "Configuring firewall (ufw)"
@@ -388,13 +729,14 @@ EOF
     echo -e "${GREEN}  Web console : http://${ip}:${WEB_PORT}${NC}"
     echo -e "${GREEN}  Also at     : http://localhost:${WEB_PORT}${NC}"
     echo -e "${GREEN}  Syslog      : UDP/TCP port ${SYSLOG_PORT}${NC}"
+    echo -e "${GREEN}  Running as  : ${SERVICE_USER} (non-root)${NC}"
     echo -e "${GREEN}  ============================================${NC}"
     echo ""
     echo -e "${YELLOW}  Next steps:${NC}"
     echo "  1. Point your UDM syslog to ${ip} on port ${SYSLOG_PORT}"
     echo "  2. Open http://${ip}:${WEB_PORT} and log in"
-    echo "  3. Add ANTHROPIC_API_KEY to .env for AI analysis"
-    echo "  4. Generate an API key in the web GUI for Claude Projects"
+    echo "  3. Configure your Anthropic API key in Settings > AI Configuration"
+    echo "  4. (Optional) Set up M.2 storage via option 8 in the main menu"
     pause
 }
 
@@ -472,6 +814,13 @@ do_uninstall() {
     ufw delete allow "${SYSLOG_PORT}/tcp" 2>/dev/null || true
     ufw delete allow "${WEB_PORT}/tcp"    2>/dev/null || true
     ok "Firewall rules removed"
+
+    read -rp "  Remove service user '$SERVICE_USER'? (yes/no): " rm_user
+    if [[ "${rm_user,,}" == "yes" || "${rm_user,,}" == "y" ]]; then
+        userdel "$SERVICE_USER" 2>/dev/null && ok "User '$SERVICE_USER' removed" || warn "Could not remove user"
+        rm -rf /etc/syslog-retention 2>/dev/null || true
+        ok "Keystore directory removed"
+    fi
 
     warn "App files, data, and .env at $INSTALL_DIR were NOT deleted."
     warn "Run 'sudo rm -rf $INSTALL_DIR' to remove everything."
@@ -567,6 +916,11 @@ do_diagnostics() {
     echo ""
     header "-- Disk Space --"
     df -h "$INSTALL_DIR" 2>/dev/null | sed 's/^/  /' || true
+    if mountpoint -q "$M2_MOUNT" 2>/dev/null; then
+        echo ""
+        echo -e "  ${GREEN}M.2 drive mounted at $M2_MOUNT:${NC}"
+        df -h "$M2_MOUNT" 2>/dev/null | sed 's/^/  /' || true
+    fi
 
     # Memory
     echo ""
@@ -626,7 +980,8 @@ while true; do
     echo -e "${WHITE}  5. View service status and logs${NC}"
     echo -e "${WHITE}  6. Edit .env configuration${NC}"
     echo -e "${WHITE}  7. Diagnostics and test run${NC}"
-    echo -e "${WHITE}  8. Exit${NC}"
+    echo -e "${CYAN}  8. M.2 / NVMe storage setup${NC}"
+    echo -e "${WHITE}  9. Exit${NC}"
     echo ""
     read -rp "  Select option: " choice
 
@@ -644,7 +999,8 @@ while true; do
         5) show_status ;;
         6) edit_env ;;
         7) do_diagnostics ;;
-        8) exit 0 ;;
+        8) setup_m2_storage ;;
+        9) exit 0 ;;
         *) warn "Invalid choice"; sleep 1 ;;
     esac
 done

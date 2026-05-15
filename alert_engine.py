@@ -37,7 +37,8 @@ def _count_events(db, rule: AlertRule) -> tuple[int, list[SyslogEntry]]:
     elif rule.condition_type == "pattern":
         pattern = params.get("pattern", "")
         if pattern:
-            q = q.filter(SyslogEntry.message.ilike(f"%{pattern}%"))
+            safe = pattern.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            q = q.filter(SyslogEntry.message.ilike(f"%{safe}%", escape="\\"))
 
     elif rule.condition_type == "threshold":
         event_type = params.get("event_type")
@@ -83,7 +84,11 @@ def _should_fire(rule: AlertRule) -> bool:
     last = rule.last_fired_at
     if last.tzinfo is None:
         last = last.replace(tzinfo=timezone.utc)
-    return datetime.now(timezone.utc) - last > timedelta(minutes=rule.cooldown_minutes)
+    now = datetime.now(timezone.utc)
+    # Clamp future timestamps (clock skew) so alerts don't get permanently stuck
+    if last > now:
+        last = now
+    return now - last > timedelta(minutes=rule.cooldown_minutes)
 
 
 def _build_detail(rule: AlertRule, count: int, sample: list) -> str:

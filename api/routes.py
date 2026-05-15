@@ -552,7 +552,7 @@ async def get_settings(_: User = Depends(require_admin)):
     claude_model = get_service_setting("claude_model") or settings.claude_model
     return {
         "anthropic_api_key_set": bool(api_key),
-        "anthropic_api_key_hint": f"...{api_key[-6:]}" if len(api_key) > 6 else ("set" if api_key else "not set"),
+        "anthropic_api_key_hint": "configured" if api_key else "not set",
         "claude_model": claude_model,
         "available_models": [
             "claude-sonnet-4-6",
@@ -609,25 +609,36 @@ async def update_claude_model(
 
 
 @router.post("/admin/settings/test-anthropic-key", tags=["admin"])
-async def test_anthropic_key(_: User = Depends(require_admin)):
+async def test_anthropic_key(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
     """Verify the stored Anthropic API key is valid by making a minimal API call."""
+    import logging as _logging
     from database import get_service_setting
     import anthropic as _anthropic
+    _log = _logging.getLogger("routes")
     api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
     if not api_key:
         raise HTTPException(status_code=400, detail="No Anthropic API key configured.")
+    write_audit(db, admin.username, "settings.test_anthropic_key", "Tested Anthropic API key",
+                request.client.host if request.client else "")
+    db.commit()
     try:
         client = _anthropic.Anthropic(api_key=api_key)
         client.messages.create(
             model=get_service_setting("claude_model") or settings.claude_model,
             max_tokens=10,
             messages=[{"role": "user", "content": "ping"}],
+            timeout=15.0,
         )
         return {"status": "ok", "message": "API key is valid and working."}
     except _anthropic.AuthenticationError:
         raise HTTPException(status_code=400, detail="API key is invalid or expired.")
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Connection failed: {exc}")
+        _log.error("Anthropic connection test failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Connection failed. Check service logs for details.")
 
 
 # ===================== Audit Log =====================
@@ -1120,6 +1131,33 @@ async def analyze_policy_gaps(
     )
 
 
+# ── Webhook SSRF guard ───────────────────────────────────────────────────────
+
+def _validate_webhook_url(url: str) -> None:
+    """Raise 400 if the URL scheme is wrong or resolves to a private/loopback address."""
+    import ipaddress as _iplib
+    import socket as _socket
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Webhook URL must use http or https.")
+    host = parsed.hostname
+    if not host:
+        raise HTTPException(status_code=400, detail="Invalid webhook URL.")
+    try:
+        addr = _socket.getaddrinfo(host, None)[0][4][0]
+        ip_obj = _iplib.ip_address(addr)
+        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local:
+            raise HTTPException(
+                status_code=400,
+                detail="Webhook URL cannot target private or loopback addresses.",
+            )
+    except HTTPException:
+        raise
+    except Exception:
+        pass  # DNS failure — let the actual send attempt surface the error
+
+
 # ===================== Alert Rules =====================
 
 class AlertRuleCreate(BaseModel):
@@ -1160,6 +1198,8 @@ async def create_alert_rule(
     admin: User = Depends(require_admin),
 ):
     from database import AlertRule
+    if body.notify_webhook:
+        _validate_webhook_url(body.notify_webhook)
     rule = AlertRule(**body.model_dump())
     db.add(rule)
     write_audit(db, admin.username, "alert.create", f"Created alert rule '{body.name}'",
@@ -1181,6 +1221,8 @@ async def update_alert_rule(
     rule = db.query(AlertRule).filter_by(id=rule_id).first()
     if not rule:
         raise HTTPException(status_code=404)
+    if body.notify_webhook:
+        _validate_webhook_url(body.notify_webhook)
     for k, v in body.model_dump().items():
         setattr(rule, k, v)
     write_audit(db, admin.username, "alert.update", f"Updated alert rule '{body.name}'",
@@ -1266,10 +1308,13 @@ async def acknowledge_alert(
 @router.post("/admin/alerts/test-webhook", tags=["alerts"])
 async def test_webhook(url: str = Body(embed=True), _: User = Depends(require_admin)):
     import httpx as _httpx
+    _validate_webhook_url(url)
     try:
         async with _httpx.AsyncClient(timeout=10) as client:
             r = await client.post(url, json={"test": True, "source": "SIEM Console"})
             return {"status": r.status_code, "ok": r.is_success}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

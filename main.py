@@ -5,11 +5,19 @@ import asyncio
 import logging
 import os
 import stat
+import sys
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from time import time
 from typing import Callable
+
+if sys.version_info < (3, 10):
+    print(
+        f"ERROR: Python 3.10+ required (found {sys.version_info.major}.{sys.version_info.minor}). Exiting.",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 import uvicorn
 from fastapi import FastAPI, Request, Response
@@ -34,20 +42,22 @@ _tcp_server = None
 # ── Login rate limiter ────────────────────────────────────────────────────────
 # Maps IP → list of attempt timestamps within the window
 _login_attempts: dict[str, list[float]] = defaultdict(list)
+_login_lock = asyncio.Lock()
 
 
-def record_login_attempt(ip: str) -> bool:
+async def record_login_attempt(ip: str) -> bool:
     """Returns True if the attempt is allowed, False if the IP is locked out."""
     from database import get_service_setting
-    now = time()
-    window = int(get_service_setting("login_lockout_seconds") or settings.login_lockout_seconds)
-    max_attempts = int(get_service_setting("login_max_attempts") or settings.login_max_attempts)
-    attempts = [t for t in _login_attempts[ip] if now - t < window]
-    _login_attempts[ip] = attempts
-    if len(attempts) >= max_attempts:
-        return False
-    _login_attempts[ip].append(now)
-    return True
+    async with _login_lock:
+        now = time()
+        window = int(get_service_setting("login_lockout_seconds") or settings.login_lockout_seconds)
+        max_attempts = int(get_service_setting("login_max_attempts") or settings.login_max_attempts)
+        attempts = [t for t in _login_attempts[ip] if now - t < window]
+        _login_attempts[ip] = attempts
+        if len(attempts) >= max_attempts:
+            return False
+        _login_attempts[ip].append(now)
+        return True
 
 
 def clear_login_attempts(ip: str) -> None:
@@ -140,7 +150,7 @@ app.add_middleware(
 async def rate_limit_middleware(request: Request, call_next: Callable) -> Response:
     if request.url.path == "/api/auth/token" and request.method == "POST":
         ip = request.client.host if request.client else "unknown"
-        if not record_login_attempt(ip):
+        if not await record_login_attempt(ip):
             logger.warning("Login rate limit exceeded for %s", ip)
             return JSONResponse(
                 status_code=429,
@@ -155,6 +165,20 @@ app.include_router(router, prefix="/api")
 
 _static_dir = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=str(_static_dir)), name="static")
+
+
+@app.get("/health", include_in_schema=False)
+async def health():
+    """Liveness probe — returns 200 if the service and DB are reachable."""
+    try:
+        from database import SessionLocal, SyslogEntry
+        db = SessionLocal()
+        db.query(SyslogEntry).limit(1).all()
+        db.close()
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.error("Health check failed: %s", exc)
+        return JSONResponse(status_code=503, content={"status": "unhealthy"})
 
 
 @app.get("/", include_in_schema=False)

@@ -521,6 +521,11 @@ SEVERITY_NAMES = [
 _SEARCH_MAX_LEN = 200  # prevent expensive scans on huge search strings
 
 
+def _escape_like(val: str) -> str:
+    """Escape SQL LIKE wildcards so user input cannot alter match scope."""
+    return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def _build_log_query(
     db: Session,
     *,
@@ -543,9 +548,9 @@ def _build_log_query(
     if severity_max is not None:
         q = q.filter(SyslogEntry.severity <= severity_max)
     if hostname:
-        q = q.filter(SyslogEntry.hostname.ilike(f"%{hostname[:_SEARCH_MAX_LEN]}%"))
+        q = q.filter(SyslogEntry.hostname.ilike(f"%{_escape_like(hostname[:_SEARCH_MAX_LEN])}%", escape="\\"))
     if search:
-        q = q.filter(SyslogEntry.message.ilike(f"%{search[:_SEARCH_MAX_LEN]}%"))
+        q = q.filter(SyslogEntry.message.ilike(f"%{_escape_like(search[:_SEARCH_MAX_LEN])}%", escape="\\"))
     if since:
         q = q.filter(SyslogEntry.received_at >= since)
     if until:
