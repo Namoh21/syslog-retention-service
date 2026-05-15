@@ -181,6 +181,12 @@
       <li><a onclick="showPage('logs')" data-page="logs"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Analyze</li>
       <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis</a></li>
+      <li><a onclick="showPage('investigate')" data-page="investigate"><span class="nav-icon">&#x1F50E;</span> Investigate IP</a></li>
+      <li><a onclick="showPage('rulehits')" data-page="rulehits"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
+      <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
+      <li><a onclick="showPage('simulate')" data-page="simulate"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
+      <li><a onclick="showPage('policygaps')" data-page="policygaps"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
+      <li><a onclick="showPage('alertrules')" data-page="alertrules"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
@@ -278,10 +284,24 @@ function startNavPoll() {
 }
 
 async function updateNavCount() {
-  const s = await apiFetch('/api/stats').catch(() => null);
-  if (!s) return;
-  const el = document.getElementById('nav-log-count');
-  if (el) el.textContent = s.total_entries ? s.total_entries.toLocaleString() : '';
+  const [s, alerts] = await Promise.all([
+    apiFetch('/api/stats').catch(() => null),
+    apiFetch('/api/admin/alerts/events?limit=50&unacked_only=true').catch(() => null),
+  ]);
+  if (s) {
+    const el = document.getElementById('nav-log-count');
+    if (el) el.textContent = s.total_entries ? s.total_entries.toLocaleString() : '';
+  }
+  if (alerts) {
+    const badge = document.getElementById('nav-alert-badge');
+    if (badge) {
+      if (alerts.length > 0) {
+        badge.style.display = 'inline'; badge.textContent = alerts.length;
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+  }
 }
 
 async function apiFetch(path, opts={}) {
@@ -304,13 +324,17 @@ function showPage(name) {
     a.classList.toggle('active', a.dataset.page === name));
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
+    investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix',
+    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
   };
   document.title = pageTitles[name] ? `${pageTitles[name]} — SIEM Console` : 'SIEM Console';
-  // Stop live refresh when leaving logs page
   if (name !== 'logs' && _liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
-  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, auditlog, setup, changePassword };
+  const pages = {
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, simulate, policygaps, alertrules,
+    svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
+  };
   pages[name]?.();
 }
 
@@ -414,6 +438,23 @@ async function dashboard() {
       stalenessHtml = `<div style="font-size:12px;margin-top:4px;color:${staleColor}">Last log: ${staleMsg}</div>`;
     }
 
+    // Load timeline in background
+    apiFetch('/api/analysis/timeline?hours=24').then(tl => {
+      const el = document.getElementById('timeline-wrap');
+      if (!el || !tl) return;
+      const buckets = tl.buckets || [];
+      const maxVal = Math.max(1, ...buckets.map(b => b.total));
+      const bars = buckets.map(b => {
+        const h = Math.round((b.total / maxVal) * 40);
+        const col = b.blocks > b.allows ? 'var(--danger)' : b.total > 0 ? 'var(--accent)' : 'var(--border)';
+        return `<div title="${b.hour}: ${b.total} events (${b.blocks} blocks)" style="flex:1;height:${Math.max(2,h)}px;background:${col};border-radius:2px;min-width:2px"></div>`;
+      }).join('');
+      el.innerHTML = `<div style="display:flex;align-items:flex-end;gap:1px;height:40px">${bars}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px;display:flex;justify-content:space-between">
+          <span>24h ago</span><span style="color:var(--danger)">&#x25A0; blocks</span><span style="color:var(--accent)">&#x25A0; allows</span><span>now</span>
+        </div>`;
+    }).catch(() => {});
+
     render(`
       <div class="page-header"><h1>Dashboard</h1><p>Network logging activity and service status.</p></div>
       ${onboarding}
@@ -421,6 +462,10 @@ async function dashboard() {
         <div class="stat"><div class="val">${total.toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
         <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry${stalenessHtml}</div></div>
         <div class="stat"><div class="val" style="color:var(--muted)">${fmtDate(s.oldest_entry)}</div><div class="lbl">Oldest Entry</div></div>
+      </div>
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title"><span class="icon">&#x1F4C8;</span> Activity — Last 24 Hours</div>
+        <div id="timeline-wrap" style="min-height:44px"><div style="color:var(--muted);font-size:12px">Loading timeline...</div></div>
       </div>
       ${connBox}
       <div class="two-col">
@@ -1015,18 +1060,79 @@ async function svcSettings() {
         <div id="settings-msg" style="margin-top:14px"></div>
       </div>
 
+      <div class="card" style="max-width:560px" id="svc-config-card">
+        <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Service Configuration</div>
+        <div id="svc-config-body"><div class="spinner"></div></div>
+      </div>
+
       <div class="card" style="max-width:560px">
         <div class="card-title"><span class="icon">&#x1F512;</span> Security Notes</div>
         <ul style="font-size:13px;line-height:2;padding-left:20px;color:var(--text)">
-          <li>The Anthropic API key is encrypted with AES-256 before being stored in the database</li>
+          <li>All API keys and credentials are encrypted with AES-256 before being stored in the database</li>
           <li>Encryption uses a key derived from your <code>SECRET_KEY</code> in <code>.env</code></li>
           <li>The <code>.env</code> file has owner-only permissions (600 on Linux)</li>
           <li>Admin password is stored as a bcrypt hash — the original is never retained</li>
           <li>API keys for external clients are stored as SHA-256 hashes</li>
+          <li>All settings below are stored encrypted in the database — not in plaintext config files</li>
         </ul>
       </div>
     `);
+    loadSvcConfig();
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function loadSvcConfig() {
+  const out = document.getElementById('svc-config-body');
+  if (!out) return;
+  try {
+    const c = await apiFetch('/api/admin/settings/service');
+    if (!c) return;
+    out.innerHTML = `
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Allowed Syslog Sources <span style="color:var(--muted)">(comma-separated CIDRs, empty = allow all)</span></label>
+        <input type="text" id="sc-sources" value="${esc(c.allowed_syslog_sources||'')}" placeholder="192.168.1.0/24,10.0.0.0/8" style="width:100%;font-family:monospace" />
+        <div class="help-tip">Changes take effect within 60 seconds — no restart required.</div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div class="form-group">
+          <label>Login max attempts</label>
+          <input type="number" id="sc-max-attempts" value="${c.login_max_attempts}" min="3" max="100" />
+        </div>
+        <div class="form-group">
+          <label>Lockout window (seconds)</label>
+          <input type="number" id="sc-lockout-secs" value="${c.login_lockout_seconds}" min="60" max="86400" />
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="form-group">
+          <label>Session timeout (minutes)</label>
+          <input type="number" id="sc-token-exp" value="${c.access_token_expire_minutes}" min="15" max="10080" />
+          <div class="help-tip">Applies to new logins.</div>
+        </div>
+        <div class="form-group">
+          <label>Max logs per AI analysis</label>
+          <input type="number" id="sc-ai-logs" value="${c.ai_analysis_max_logs}" min="50" max="2000" />
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="saveSvcConfig()">Save Configuration</button>
+      <div id="svc-config-msg" style="margin-top:12px"></div>
+    `;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function saveSvcConfig() {
+  const msg = document.getElementById('svc-config-msg');
+  const body = {
+    allowed_syslog_sources: document.getElementById('sc-sources').value.trim(),
+    login_max_attempts: parseInt(document.getElementById('sc-max-attempts').value),
+    login_lockout_seconds: parseInt(document.getElementById('sc-lockout-secs').value),
+    access_token_expire_minutes: parseInt(document.getElementById('sc-token-exp').value),
+    ai_analysis_max_logs: parseInt(document.getElementById('sc-ai-logs').value),
+  };
+  try {
+    await apiFetch('/api/admin/settings/service', { method:'PUT', body:JSON.stringify(body) });
+    msg.innerHTML = '<div class="alert alert-ok">Configuration saved and encrypted in database.</div>';
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 async function saveApiKey() {
@@ -1162,6 +1268,499 @@ async function fetchAudit() {
 function auditNav(dir) {
   auditPage.offset = Math.max(0, auditPage.offset + dir * auditPage.limit);
   fetchAudit();
+}
+
+// ── Investigate IP ────────────────────────────────────────────────────────────
+async function investigate(ip) {
+  const ipVal = ip || '';
+  render(`
+    <div class="page-header"><h1>Investigate IP</h1><p>Deep-dive all activity for a specific IP address across your network logs.</p></div>
+    <div class="card" style="max-width:560px">
+      <div class="card-title"><span class="icon">&#x1F50E;</span> IP Address</div>
+      <div class="form-row" style="align-items:flex-end">
+        <div class="form-group" style="flex:1"><label>IP Address to investigate</label>
+          <input id="inv-ip" value="${esc(ipVal)}" placeholder="e.g. 1.2.3.4" style="width:100%" />
+        </div>
+        <div class="form-group"><label>Time window</label>
+          <select id="inv-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
+        </div>
+        <button class="btn btn-primary" onclick="runInvestigation()">Investigate</button>
+      </div>
+    </div>
+    <div id="inv-result"></div>
+  `);
+  document.getElementById('inv-ip').addEventListener('keydown', e => { if(e.key==='Enter') runInvestigation(); });
+  if (ipVal) runInvestigation();
+}
+
+async function runInvestigation() {
+  const ip = document.getElementById('inv-ip').value.trim();
+  const hours = document.getElementById('inv-hours').value;
+  const out = document.getElementById('inv-result');
+  if (!ip) return;
+  out.innerHTML = '<div class="card"><div class="spinner"></div> Loading investigation...</div>';
+  try {
+    const [data, rep] = await Promise.all([
+      apiFetch(`/api/investigation/${encodeURIComponent(ip)}?hours=${hours}`),
+      apiFetch(`/api/investigation/${encodeURIComponent(ip)}/enrich`).catch(() => null),
+    ]);
+    if (!data) return;
+
+    // Reputation card
+    let repHtml = '';
+    if (rep && !rep.private) {
+      const score = rep.abuse_score ?? null;
+      const scoreColor = score === null ? 'var(--muted)' : score > 50 ? 'var(--danger)' : score > 10 ? 'var(--warn)' : 'var(--accent2)';
+      const cats = (rep.threat_categories || []).join(', ') || '—';
+      repHtml = `<div class="card">
+        <div class="card-title"><span class="icon">&#x1F6AB;</span> IP Reputation</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px">
+          ${score !== null ? `<div class="stat"><div class="val" style="color:${scoreColor}">${score}<span style="font-size:14px">/100</span></div><div class="lbl">Abuse Score</div></div>` : ''}
+          ${rep.country_name ? `<div class="stat"><div class="val" style="font-size:18px">${esc(rep.country_code||'?')}</div><div class="lbl">${esc(rep.country_name)} ${rep.geo_city ? '· '+esc(rep.geo_city) : ''}</div></div>` : ''}
+          ${rep.isp ? `<div class="stat"><div class="val" style="font-size:14px;line-height:1.3">${esc(rep.isp)}</div><div class="lbl">ISP / Org</div></div>` : ''}
+          ${rep.is_tor ? `<div class="stat"><div class="val" style="color:var(--danger)">TOR</div><div class="lbl">Exit Node</div></div>` : ''}
+        </div>
+        ${cats !== '—' ? `<div style="margin-top:10px;font-size:12px;color:var(--warn)">Threat categories: ${esc(cats)}</div>` : ''}
+      </div>`;
+    }
+
+    const typeRows = (data.event_types||[]).map(x=>`<tr><td>${esc(x.type)}</td><td>${x.count.toLocaleString()}</td></tr>`).join('');
+    const ruleRows = (data.rules_triggered||[]).map(x=>`<tr><td style="font-size:12px">${esc(x.rule)}</td><td>${x.count}</td></tr>`).join('');
+    const portRows = (data.ports_targeted||[]).map(x=>`<tr><td>${x.port}</td><td>${x.count}</td></tr>`).join('');
+    const evRows = (data.recent_events||[]).map(e=>`<tr>
+      <td style="font-size:11px;color:var(--muted)">${fmtDate(e.received_at)}</td>
+      <td>${etBadge(e.event_type)}</td>
+      <td>${actionBadge(e.action)}</td>
+      <td style="font-family:monospace;font-size:11px">${esc(e.dst_ip||'')}${e.dst_port?':'+e.dst_port:''}</td>
+      <td style="font-size:11px">${esc(e.rule_name||e.message||'')}</td>
+    </tr>`).join('');
+
+    out.innerHTML = `
+      ${repHtml}
+      <div class="stat-grid">
+        <div class="stat"><div class="val">${data.total_events.toLocaleString()}</div><div class="lbl">Total Events (${hours}h)</div></div>
+        <div class="stat"><div class="val" style="font-size:14px">${fmtDate(data.first_seen)}</div><div class="lbl">First Seen (ever)</div></div>
+        <div class="stat"><div class="val" style="font-size:14px">${fmtDate(data.last_seen)}</div><div class="lbl">Last Seen</div></div>
+      </div>
+      <div class="two-col">
+        <div class="card"><div class="card-title">Event Types</div>
+          <table><thead><tr><th>Type</th><th>Count</th></tr></thead><tbody>${typeRows||'<tr><td colspan=2 style="color:var(--muted)">None</td></tr>'}</tbody></table>
+        </div>
+        <div class="card"><div class="card-title">Rules Triggered</div>
+          <table><thead><tr><th>Rule</th><th>Count</th></tr></thead><tbody>${ruleRows||'<tr><td colspan=2 style="color:var(--muted)">None</td></tr>'}</tbody></table>
+        </div>
+      </div>
+      ${portRows ? `<div class="card"><div class="card-title">Destination Ports Targeted</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Port</th><th>Count</th></tr></thead><tbody>${portRows}</tbody></table></div>
+      </div>` : ''}
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:16px 16px 8px"><div class="card-title" style="margin:0">Recent Events</div></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Action</th><th>Destination</th><th>Rule / Message</th></tr></thead>
+        <tbody>${evRows||'<tr><td colspan=5 style="color:var(--muted);text-align:center;padding:20px">No events</td></tr>'}</tbody></table></div>
+      </div>`;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── Rule Hits ─────────────────────────────────────────────────────────────────
+async function rulehits() {
+  render(`<div class="page-header"><h1>Rule Hit Analysis</h1><p>Which firewall rules are firing, how often, and from where.</p></div>
+    <div class="card" style="max-width:400px;margin-bottom:16px">
+      <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+        <div class="form-group"><label>Time window</label>
+          <select id="rh-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
+        </div>
+        <button class="btn btn-primary" onclick="loadRuleHits()">Load</button>
+      </div>
+    </div>
+    <div id="rh-result"><div class="spinner"></div> Loading...</div>`);
+  loadRuleHits();
+}
+
+async function loadRuleHits() {
+  const hours = document.getElementById('rh-hours')?.value || 168;
+  const out = document.getElementById('rh-result');
+  if (!out) return;
+  out.innerHTML = '<div class="spinner"></div> Loading...';
+  try {
+    const d = await apiFetch(`/api/analysis/rule-hits?hours=${hours}&limit=30`);
+    if (!d) return;
+    const rows = (d.rules||[]).map(r => {
+      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="showPage('investigate');document.getElementById('inv-ip')&&(document.getElementById('inv-ip').value='${s.ip}')&&runInvestigation()">${s.ip}(${s.count})</span>`).join(' ');
+      return `<tr>
+        <td style="font-size:12px;font-weight:600">${esc(r.rule)}</td>
+        <td>${actionBadge(r.action)}</td>
+        <td><strong>${r.count.toLocaleString()}</strong></td>
+        <td style="font-size:11px">${srcList}</td>
+      </tr>`;
+    }).join('');
+    out.innerHTML = d.rules.length ? `<div class="card" style="padding:0;overflow:hidden">
+      <div class="tbl-wrap"><table><thead><tr><th>Rule</th><th>Action</th><th>Hits</th><th>Top Sources (click to investigate)</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div>`
+      : `<div class="empty-state"><div class="empty-icon">&#x1F6E1;</div><h3>No rule hits yet</h3><p>Firewall rules will appear here once your UDM starts sending logs.</p></div>`;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── Traffic Matrix ────────────────────────────────────────────────────────────
+async function trafficmatrix() {
+  render(`<div class="page-header"><h1>Traffic Matrix</h1><p>Top ports, protocols, and source IPs — spot unexpected traffic patterns.</p></div>
+    <div class="card" style="max-width:400px;margin-bottom:16px">
+      <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+        <div class="form-group"><label>Time window</label>
+          <select id="tm-hours"><option value="1">1h</option><option value="24" selected>24h</option><option value="168">7d</option></select>
+        </div>
+        <button class="btn btn-primary" onclick="loadMatrix()">Load</button>
+      </div>
+    </div>
+    <div id="tm-result"><div class="spinner"></div> Loading...</div>`);
+  loadMatrix();
+}
+
+async function loadMatrix() {
+  const hours = document.getElementById('tm-hours')?.value || 24;
+  const out = document.getElementById('tm-result');
+  if (!out) return;
+  out.innerHTML = '<div class="spinner"></div> Loading...';
+  try {
+    const d = await apiFetch(`/api/analysis/traffic-matrix?hours=${hours}`);
+    if (!d) return;
+    const portRows = (d.top_ports||[]).map(p=>`<tr>
+      <td><strong>${p.port}</strong></td><td style="color:var(--muted)">${esc(p.protocol||'')}</td><td>${p.count.toLocaleString()}</td>
+      <td style="cursor:pointer;color:var(--accent)" onclick="showPage('simulate');setTimeout(()=>{const el=document.getElementById('sim-dport');if(el)el.value='${p.port}';},100)">Test rule</td>
+    </tr>`).join('');
+    const srcRows = (d.top_sources||[]).map(s=>`<tr>
+      <td style="font-family:monospace;font-size:12px;cursor:pointer;color:var(--accent)" onclick="investigate('${s.ip}')">${s.ip}</td>
+      <td>${s.count.toLocaleString()}</td>
+    </tr>`).join('');
+    const etRows = (d.event_action_matrix||[]).map(x=>`<tr>
+      <td>${etBadge(x.event_type)}</td><td>${actionBadge(x.action)}</td><td>${x.count.toLocaleString()}</td>
+    </tr>`).join('');
+    out.innerHTML = `<div class="two-col" style="margin-bottom:0">
+      <div class="card"><div class="card-title">Top Destination Ports</div>
+        <div class="tbl-wrap"><table><thead><tr><th>Port</th><th>Proto</th><th>Count</th><th></th></tr></thead>
+        <tbody>${portRows||'<tr><td colspan=4 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div>
+      </div>
+      <div class="card"><div class="card-title">Top Source IPs (click to investigate)</div>
+        <div class="tbl-wrap"><table><thead><tr><th>IP</th><th>Count</th></tr></thead>
+        <tbody>${srcRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div>
+      </div>
+    </div>
+    <div class="card"><div class="card-title">Event Type / Action Matrix</div>
+      <div class="tbl-wrap"><table><thead><tr><th>Event Type</th><th>Action</th><th>Count</th></tr></thead>
+      <tbody>${etRows||'<tr><td colspan=3 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div>
+    </div>`;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── Rule Simulator ────────────────────────────────────────────────────────────
+async function simulate() {
+  render(`
+    <div class="page-header"><h1>Rule Simulator</h1><p>Test a hypothetical firewall rule against your historical logs before deploying it to your UDM.</p></div>
+    <div class="card" style="max-width:600px">
+      <div class="card-title"><span class="icon">&#x1F9EA;</span> Rule Parameters</div>
+      <div class="form-row">
+        <div class="form-group"><label>Source CIDR <span style="color:var(--muted)">(optional)</span></label><input id="sim-src" placeholder="e.g. 192.168.1.0/24" /></div>
+        <div class="form-group"><label>Destination CIDR <span style="color:var(--muted)">(optional)</span></label><input id="sim-dst" placeholder="e.g. 0.0.0.0/0" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>Destination Port</label><input type="number" id="sim-dport" placeholder="e.g. 22" style="width:110px" /></div>
+        <div class="form-group"><label>Protocol</label>
+          <select id="sim-proto"><option value="">Any</option><option>TCP</option><option>UDP</option><option>ICMP</option></select>
+        </div>
+        <div class="form-group"><label>Existing Action</label>
+          <select id="sim-action"><option value="">Any</option><option>BLOCK</option><option>ALLOW</option></select>
+        </div>
+        <div class="form-group"><label>Time window</label>
+          <select id="sim-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="runSimulation()">Simulate Rule</button>
+      <div id="sim-result" style="margin-top:16px"></div>
+    </div>
+  `);
+}
+
+async function runSimulation() {
+  const out = document.getElementById('sim-result');
+  out.innerHTML = '<div class="spinner"></div> Simulating...';
+  const body = {
+    src_cidr: document.getElementById('sim-src').value.trim() || null,
+    dst_cidr: document.getElementById('sim-dst').value.trim() || null,
+    dst_port: parseInt(document.getElementById('sim-dport').value) || null,
+    protocol: document.getElementById('sim-proto').value || null,
+    action_filter: document.getElementById('sim-action').value || null,
+    hours: parseInt(document.getElementById('sim-hours').value),
+  };
+  try {
+    const d = await apiFetch('/api/analysis/simulate-rule', { method:'POST', body:JSON.stringify(body) });
+    if (!d) return;
+    const sampleRows = (d.sample_events||[]).map(e=>`<tr>
+      <td style="font-size:11px;color:var(--muted)">${fmtDate(e.received_at)}</td>
+      <td style="font-family:monospace;font-size:11px">${esc(e.src_ip||'')}</td>
+      <td style="font-family:monospace;font-size:11px">${esc(e.dst_ip||'')}${e.dst_port?':'+e.dst_port:''}</td>
+      <td style="font-size:11px">${esc(e.protocol||'')}</td>
+      <td>${actionBadge(e.action)}</td>
+      <td style="font-size:11px">${esc(e.rule_name||'')}</td>
+    </tr>`).join('');
+    const impactColor = d.matched_count > 1000 ? 'var(--danger)' : d.matched_count > 100 ? 'var(--warn)' : 'var(--accent2)';
+    out.innerHTML = `
+      <div class="alert ${d.matched_count > 0 ? 'alert-warn' : 'alert-ok'}">
+        <strong>This rule would have matched ${d.matched_count.toLocaleString()} events</strong> in the last ${d.hours}h.
+        ${d.matched_count === 0 ? ' — Safe to deploy, no historical traffic would be affected.' : ''}
+      </div>
+      ${sampleRows ? `<div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:12px 16px 8px"><strong style="font-size:13px">Sample Matching Events</strong></div>
+        <div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Src IP</th><th>Dst IP:Port</th><th>Proto</th><th>Action</th><th>Rule</th></tr></thead>
+        <tbody>${sampleRows}</tbody></table></div>
+      </div>` : ''}`;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── Policy Gaps ───────────────────────────────────────────────────────────────
+async function policygaps() {
+  render(`
+    <div class="page-header"><h1>Policy Gap Finder</h1><p>Claude analyzes your <em>allowed</em> traffic to identify connections that look suspicious or should potentially be blocked.</p></div>
+    <div class="card">
+      <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+        <div class="form-group"><label>Time window</label>
+          <select id="pg-hours"><option value="6">6h</option><option value="24" selected>24h</option><option value="72">3d</option></select>
+        </div>
+        <button class="btn btn-primary" id="pg-btn" onclick="runPolicyGaps()">&#x1F916; Analyze Allowed Traffic</button>
+      </div>
+      <p class="help-tip" style="margin-top:8px">This sends ALLOW events to Claude. Useful after changing firewall rules to verify nothing unexpected is being permitted.</p>
+    </div>
+    <div id="pg-output"></div>
+  `);
+}
+
+async function runPolicyGaps() {
+  if (!localStorage.getItem('ai_consent_given')) {
+    const ok = confirm('This sends log data to Anthropic\'s API. Continue?');
+    if (!ok) return;
+    localStorage.setItem('ai_consent_given', '1');
+  }
+  const btn = document.getElementById('pg-btn');
+  const out = document.getElementById('pg-output');
+  const hours = document.getElementById('pg-hours').value;
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Analyzing...';
+  out.innerHTML = '';
+  try {
+    const d = await apiFetch('/api/analysis/policy-gaps', { method:'POST', body:JSON.stringify({hours:parseInt(hours)}) });
+    if (!d) return;
+    renderAnalysis(d, out);
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+  finally { btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Allowed Traffic'; }
+}
+
+// ── Alert Rules ───────────────────────────────────────────────────────────────
+async function alertrules() {
+  render(`<div class="page-header"><h1>Alert Rules</h1><p>Define conditions that trigger webhook or email notifications.</p></div>
+    <div id="ar-list"><div class="spinner"></div> Loading...</div>
+    <div class="card" style="max-width:560px">
+      <div class="card-title"><span class="icon">&#x2795;</span> New Alert Rule</div>
+      <div class="form-group" style="margin-bottom:10px"><label>Rule name</label><input id="ar-name" placeholder="e.g. SSH Brute Force" /></div>
+      <div class="form-row">
+        <div class="form-group"><label>Condition type</label>
+          <select id="ar-type" onchange="updateAlertParams()">
+            <option value="threshold">Event count threshold</option>
+            <option value="severity">High severity event</option>
+            <option value="pattern">Message pattern match</option>
+            <option value="new_ip">New IP address seen</option>
+          </select>
+        </div>
+        <div class="form-group"><label>Window (minutes)</label><input type="number" id="ar-window" value="5" style="width:80px" /></div>
+        <div class="form-group"><label>Trigger at</label><input type="number" id="ar-threshold" value="10" style="width:80px" /><div class="help-tip">events in window</div></div>
+        <div class="form-group"><label>Cooldown (min)</label><input type="number" id="ar-cooldown" value="60" style="width:80px" /></div>
+      </div>
+      <div id="ar-params-wrap" style="margin-bottom:12px">
+        <div class="form-group"><label>Event type filter <span style="color:var(--muted)">(optional)</span></label>
+          <select id="ar-event-type"><option value="">Any</option>${EVENT_TYPES.map(t=>`<option>${t}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:10px"><label>Webhook URL <span style="color:var(--muted)">(optional — Discord, Slack, Home Assistant, etc.)</span></label>
+        <input id="ar-webhook" placeholder="https://..." style="width:100%" />
+      </div>
+      <div class="form-group" style="margin-bottom:16px"><label>Email notification <span style="color:var(--muted)">(optional)</span></label>
+        <input id="ar-email" type="email" placeholder="you@example.com" style="width:100%" />
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="createAlertRule()">Create Rule</button>
+        <button class="btn btn-ghost" onclick="testWebhook()">Test Webhook</button>
+      </div>
+      <div id="ar-msg" style="margin-top:10px"></div>
+    </div>
+    <div class="card" style="max-width:560px">
+      <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Email & SMTP Settings</div>
+      <div id="notif-settings"><div class="spinner"></div></div>
+    </div>`);
+  loadAlertList();
+  loadNotifSettings();
+}
+
+function updateAlertParams() {
+  const t = document.getElementById('ar-type').value;
+  const wrap = document.getElementById('ar-params-wrap');
+  if (t === 'pattern') {
+    wrap.innerHTML = `<div class="form-group"><label>Message pattern (substring match)</label><input id="ar-pattern" placeholder="e.g. authentication failure" style="width:100%" /></div>`;
+  } else if (t === 'severity') {
+    wrap.innerHTML = `<div class="form-group"><label>Max severity level (0=Emergency, 3=Error)</label><select id="ar-sev-max"><option value="0">0 Emergency</option><option value="1">1 Alert</option><option value="2">2 Critical</option><option value="3" selected>3 Error</option></select></div>`;
+  } else if (t === 'new_ip') {
+    wrap.innerHTML = `<div class="alert alert-info" style="font-size:12px">Fires when an IP is seen for the first time in your logs. No additional parameters needed.</div>`;
+  } else {
+    wrap.innerHTML = `<div class="form-group"><label>Event type filter <span style="color:var(--muted)">(optional)</span></label>
+      <select id="ar-event-type"><option value="">Any</option>${EVENT_TYPES.map(t=>`<option>${t}</option>`).join('')}</select></div>`;
+  }
+}
+
+async function loadAlertList() {
+  const out = document.getElementById('ar-list');
+  if (!out) return;
+  try {
+    const [rules, events] = await Promise.all([
+      apiFetch('/api/admin/alerts/rules'),
+      apiFetch('/api/admin/alerts/events?limit=5&unacked_only=true'),
+    ]);
+    if (!rules) return;
+    const unacked = events || [];
+    const rows = rules.map(r => `<tr>
+      <td><strong>${esc(r.name)}</strong></td>
+      <td><span class="tag">${r.condition_type}</span></td>
+      <td>${r.threshold} / ${r.window_minutes}min</td>
+      <td>${r.enabled ? '<span style="color:var(--accent2)">On</span>' : '<span style="color:var(--muted)">Off</span>'}</td>
+      <td style="color:var(--muted)">${r.last_fired_at ? fmtDate(r.last_fired_at) : 'Never'}</td>
+      <td style="display:flex;gap:4px">
+        <button class="btn btn-ghost btn-sm" onclick="toggleRule(${r.id})">${r.enabled?'Disable':'Enable'}</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteRule(${r.id},'${esc(r.name)}')">Delete</button>
+      </td>
+    </tr>`).join('');
+    let html = `<div class="card">
+      <div class="card-title"><span class="icon">&#x1F514;</span> Active Rules</div>
+      ${rules.length ? `<div class="tbl-wrap"><table><thead><tr><th>Name</th><th>Type</th><th>Trigger</th><th>Status</th><th>Last Fired</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+        : `<div style="color:var(--muted);font-size:13px">No alert rules yet.</div>`}
+    </div>`;
+    if (unacked.length) {
+      const eventRows = unacked.map(e=>`<div style="padding:8px 0;border-bottom:1px solid var(--border)">
+        <strong style="color:var(--warn)">${esc(e.rule_name)}</strong>
+        <span style="color:var(--muted);font-size:12px;margin-left:8px">${fmtDate(e.fired_at)}</span>
+        <pre style="font-size:11px;white-space:pre-wrap;margin:4px 0 6px;color:var(--text)">${esc(e.detail)}</pre>
+        <button class="btn btn-ghost btn-sm" onclick="ackAlert(${e.id})">Acknowledge</button>
+      </div>`).join('');
+      html = `<div class="card" style="border-color:rgba(210,153,34,.4)">
+        <div class="card-title" style="color:var(--warn)"><span class="icon">&#x26A0;&#xFE0F;</span> Unacknowledged Alerts (${unacked.length})</div>
+        ${eventRows}
+      </div>` + html;
+    }
+    out.innerHTML = html;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function loadNotifSettings() {
+  const out = document.getElementById('notif-settings');
+  if (!out) return;
+  try {
+    const s = await apiFetch('/api/admin/settings/notifications');
+    if (!s) return;
+    out.innerHTML = `
+      <div class="form-row">
+        <div class="form-group"><label>SMTP Host</label><input id="ns-host" value="${esc(s.smtp_host||'')}" placeholder="smtp.gmail.com" /></div>
+        <div class="form-group"><label>Port</label><input type="number" id="ns-port" value="${esc(s.smtp_port||'587')}" style="width:80px" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>SMTP Username</label><input id="ns-user" value="${esc(s.smtp_user||'')}" placeholder="you@gmail.com" /></div>
+        <div class="form-group"><label>SMTP Password</label><input type="password" id="ns-pass" placeholder="${s.smtp_password_set?'(set — leave blank to keep)':'password'}" /></div>
+      </div>
+      <div class="form-row">
+        <div class="form-group"><label>From address</label><input id="ns-from" value="${esc(s.smtp_from||'')}" placeholder="siem@yourdomain.com" /></div>
+        <div class="form-group"><label>Daily digest email</label><input id="ns-digest" type="email" value="${esc(s.digest_email||'')}" placeholder="you@example.com" /></div>
+      </div>
+      <div class="form-group" style="margin-bottom:14px"><label>AbuseIPDB API key <span style="color:var(--muted)">(for IP reputation — free at abuseipdb.com)</span></label>
+        <input type="password" id="ns-abuse" placeholder="${s.abuseipdb_key_set?'(set — leave blank to keep)':'sk-...'}" style="width:100%" />
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="saveNotifSettings()">Save</button>
+        <button class="btn btn-ghost" onclick="sendTestDigest()">Send Test Digest</button>
+      </div>
+      <div id="ns-msg" style="margin-top:10px"></div>`;
+  } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function saveNotifSettings() {
+  const msg = document.getElementById('ns-msg');
+  const body = {
+    smtp_host: document.getElementById('ns-host').value.trim(),
+    smtp_port: document.getElementById('ns-port').value.trim(),
+    smtp_user: document.getElementById('ns-user').value.trim(),
+    smtp_from: document.getElementById('ns-from').value.trim(),
+    digest_email: document.getElementById('ns-digest').value.trim(),
+  };
+  const pass = document.getElementById('ns-pass').value;
+  const abuse = document.getElementById('ns-abuse').value.trim();
+  if (pass) body.smtp_password = pass;
+  if (abuse) body.abuseipdb_api_key = abuse;
+  try {
+    await apiFetch('/api/admin/settings/notifications', { method:'PUT', body:JSON.stringify(body) });
+    msg.innerHTML = '<div class="alert alert-ok">Settings saved.</div>';
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function sendTestDigest() {
+  const msg = document.getElementById('ns-msg');
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Generating and sending digest...</div>';
+  try {
+    const d = await apiFetch('/api/admin/digest/send', { method:'POST' });
+    msg.innerHTML = `<div class="alert alert-ok">Digest sent! Threat level: ${d.threat_level}, ${d.log_count} entries analyzed.</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function createAlertRule() {
+  const msg = document.getElementById('ar-msg');
+  const type = document.getElementById('ar-type').value;
+  let params = {};
+  if (type === 'threshold') params.event_type = document.getElementById('ar-event-type')?.value || '';
+  if (type === 'pattern') params.pattern = document.getElementById('ar-pattern')?.value || '';
+  if (type === 'severity') params.severity_max = parseInt(document.getElementById('ar-sev-max')?.value || '3');
+  const body = {
+    name: document.getElementById('ar-name').value.trim(),
+    condition_type: type,
+    condition_params: JSON.stringify(params),
+    window_minutes: parseInt(document.getElementById('ar-window').value) || 5,
+    threshold: parseInt(document.getElementById('ar-threshold').value) || 1,
+    cooldown_minutes: parseInt(document.getElementById('ar-cooldown').value) || 60,
+    notify_webhook: document.getElementById('ar-webhook').value.trim() || null,
+    notify_email: document.getElementById('ar-email').value.trim() || null,
+  };
+  if (!body.name) { msg.innerHTML = '<div class="alert alert-warn">Please enter a rule name.</div>'; return; }
+  try {
+    await apiFetch('/api/admin/alerts/rules', { method:'POST', body:JSON.stringify(body) });
+    msg.innerHTML = '<div class="alert alert-ok">Rule created.</div>';
+    loadAlertList();
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function toggleRule(id) {
+  await apiFetch(`/api/admin/alerts/rules/${id}/toggle`, { method:'PATCH' });
+  loadAlertList();
+}
+
+async function deleteRule(id, name) {
+  if (!confirm(`Delete alert rule "${name}"?`)) return;
+  await apiFetch(`/api/admin/alerts/rules/${id}`, { method:'DELETE' });
+  loadAlertList();
+}
+
+async function ackAlert(id) {
+  await apiFetch(`/api/admin/alerts/events/${id}/acknowledge`, { method:'POST' });
+  loadAlertList();
+  updateNavCount();
+}
+
+async function testWebhook() {
+  const url = document.getElementById('ar-webhook').value.trim();
+  if (!url) { alert('Enter a webhook URL first.'); return; }
+  const msg = document.getElementById('ar-msg');
+  try {
+    const d = await apiFetch('/api/admin/alerts/test-webhook', { method:'POST', body:JSON.stringify({url}) });
+    msg.innerHTML = `<div class="alert ${d.ok?'alert-ok':'alert-warn'}">Webhook responded with HTTP ${d.status}</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 // ── Setup Guide ───────────────────────────────────────────────────────────────

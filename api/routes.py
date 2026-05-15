@@ -311,8 +311,10 @@ async def ai_analyze(
     _: User = Depends(get_current_user),
 ):
     from ai_analysis import analyze_logs
+    from database import get_service_setting
     since = datetime.now(timezone.utc) - timedelta(hours=body.hours)
-    entries, _ = query_logs(db, since=since, limit=settings.ai_analysis_max_logs)
+    max_logs = int(get_service_setting("ai_analysis_max_logs", db=db) or settings.ai_analysis_max_logs)
+    entries, _ = query_logs(db, since=since, limit=max_logs)
     if not entries:
         return {"analysis": "No log entries found for the requested time window.", "log_count": 0}
     result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
@@ -719,3 +721,607 @@ async def export_logs_csv(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# ===================== Service Configuration =====================
+
+class ServiceConfigUpdate(BaseModel):
+    allowed_syslog_sources: Optional[str] = None
+    login_max_attempts: Optional[int] = None
+    login_lockout_seconds: Optional[int] = None
+    access_token_expire_minutes: Optional[int] = None
+    ai_analysis_max_logs: Optional[int] = None
+
+
+@router.get("/admin/settings/service", tags=["admin"])
+async def get_service_config(_: User = Depends(require_admin)):
+    from database import get_service_setting
+    return {
+        "allowed_syslog_sources": get_service_setting("allowed_syslog_sources"),
+        "login_max_attempts": int(get_service_setting("login_max_attempts") or settings.login_max_attempts),
+        "login_lockout_seconds": int(get_service_setting("login_lockout_seconds") or settings.login_lockout_seconds),
+        "access_token_expire_minutes": int(get_service_setting("access_token_expire_minutes") or settings.access_token_expire_minutes),
+        "ai_analysis_max_logs": int(get_service_setting("ai_analysis_max_logs") or settings.ai_analysis_max_logs),
+    }
+
+
+@router.put("/admin/settings/service", tags=["admin"])
+async def update_service_config(
+    request: Request,
+    body: ServiceConfigUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import set_service_setting
+    changed = []
+    if body.allowed_syslog_sources is not None:
+        set_service_setting("allowed_syslog_sources", body.allowed_syslog_sources, db)
+        changed.append("allowed_syslog_sources")
+    if body.login_max_attempts is not None:
+        set_service_setting("login_max_attempts", str(body.login_max_attempts), db)
+        changed.append("login_max_attempts")
+    if body.login_lockout_seconds is not None:
+        set_service_setting("login_lockout_seconds", str(body.login_lockout_seconds), db)
+        changed.append("login_lockout_seconds")
+    if body.access_token_expire_minutes is not None:
+        set_service_setting("access_token_expire_minutes", str(body.access_token_expire_minutes), db)
+        changed.append("access_token_expire_minutes")
+    if body.ai_analysis_max_logs is not None:
+        set_service_setting("ai_analysis_max_logs", str(body.ai_analysis_max_logs), db)
+        changed.append("ai_analysis_max_logs")
+    write_audit(db, admin.username, "settings.service",
+                f"Service config updated: {', '.join(changed)}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"message": "Service configuration saved."}
+
+
+# ===================== Investigation =====================
+
+@router.get("/investigation/{ip}", tags=["investigation"])
+async def investigate_ip(
+    ip: str,
+    hours: int = Query(168, ge=1, le=8760),  # default 7 days
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """All activity for a specific IP — timeline, event types, rules triggered, sample logs."""
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(SyslogEntry).filter(
+        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
+        SyslogEntry.received_at >= since,
+    )
+    total = q.count()
+    entries = q.order_by(SyslogEntry.received_at.desc()).limit(500).all()
+
+    # Event type breakdown
+    from sqlalchemy import func as sqlfunc
+    type_counts = (
+        db.query(SyslogEntry.event_type, sqlfunc.count(SyslogEntry.id))
+        .filter(
+            (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
+            SyslogEntry.received_at >= since,
+        )
+        .group_by(SyslogEntry.event_type)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .all()
+    )
+
+    # Rules triggered
+    rule_counts = (
+        db.query(SyslogEntry.rule_name, sqlfunc.count(SyslogEntry.id))
+        .filter(
+            (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip),
+            SyslogEntry.received_at >= since,
+            SyslogEntry.rule_name.isnot(None),
+        )
+        .group_by(SyslogEntry.rule_name)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(10)
+        .all()
+    )
+
+    # Ports targeted
+    port_counts = (
+        db.query(SyslogEntry.dst_port, sqlfunc.count(SyslogEntry.id))
+        .filter(
+            SyslogEntry.src_ip == ip,
+            SyslogEntry.received_at >= since,
+            SyslogEntry.dst_port.isnot(None),
+        )
+        .group_by(SyslogEntry.dst_port)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(15)
+        .all()
+    )
+
+    # First / last seen
+    first_seen = db.query(sqlfunc.min(SyslogEntry.received_at)).filter(
+        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip)
+    ).scalar()
+    last_seen = db.query(sqlfunc.max(SyslogEntry.received_at)).filter(
+        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip)
+    ).scalar()
+
+    return {
+        "ip": ip,
+        "hours": hours,
+        "total_events": total,
+        "first_seen": first_seen.isoformat() if first_seen else None,
+        "last_seen": last_seen.isoformat() if last_seen else None,
+        "event_types": [{"type": t or "unknown", "count": c} for t, c in type_counts],
+        "rules_triggered": [{"rule": r or "unknown", "count": c} for r, c in rule_counts],
+        "ports_targeted": [{"port": p, "count": c} for p, c in port_counts],
+        "recent_events": [
+            {
+                "id": e.id,
+                "received_at": e.received_at,
+                "event_type": e.event_type,
+                "action": e.action,
+                "src_ip": e.src_ip,
+                "dst_ip": e.dst_ip,
+                "dst_port": e.dst_port,
+                "protocol": e.protocol,
+                "rule_name": e.rule_name,
+                "message": (e.message or "")[:200],
+                "severity": e.severity,
+            }
+            for e in entries[:100]
+        ],
+    }
+
+
+@router.get("/investigation/{ip}/enrich", tags=["investigation"])
+async def enrich_ip_route(
+    ip: str,
+    _: User = Depends(get_current_user),
+):
+    """Fetch AbuseIPDB reputation score and GeoIP data for an IP."""
+    from enrichment import enrich_ip
+    return await enrich_ip(ip)
+
+
+# ===================== Analysis =====================
+
+@router.get("/analysis/timeline", tags=["analysis"])
+async def get_timeline(
+    hours: int = Query(24, ge=1, le=168),
+    event_type: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Hourly event counts for the dashboard sparkline."""
+    from sqlalchemy import func as sqlfunc, text as sqtext
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(SyslogEntry).filter(SyslogEntry.received_at >= since)
+    if event_type:
+        q = q.filter(SyslogEntry.event_type == event_type)
+
+    # Build hourly buckets
+    all_entries = q.with_entities(SyslogEntry.received_at, SyslogEntry.action).all()
+    buckets: dict[str, dict] = {}
+    for ts, action in all_entries:
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        hour_key = ts.strftime("%Y-%m-%dT%H:00")
+        if hour_key not in buckets:
+            buckets[hour_key] = {"total": 0, "blocks": 0, "allows": 0}
+        buckets[hour_key]["total"] += 1
+        if action == "BLOCK":
+            buckets[hour_key]["blocks"] += 1
+        elif action == "ALLOW":
+            buckets[hour_key]["allows"] += 1
+
+    # Fill missing hours with zeros
+    result = []
+    for h in range(hours - 1, -1, -1):
+        ts = datetime.now(timezone.utc) - timedelta(hours=h)
+        key = ts.strftime("%Y-%m-%dT%H:00")
+        b = buckets.get(key, {"total": 0, "blocks": 0, "allows": 0})
+        result.append({"hour": key, **b})
+
+    return {"hours": hours, "buckets": result}
+
+
+@router.get("/analysis/rule-hits", tags=["analysis"])
+async def get_rule_hits(
+    hours: int = Query(168, ge=1, le=8760),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Which firewall rules have fired most, with top source IPs per rule."""
+    from sqlalchemy import func as sqlfunc
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rule_counts = (
+        db.query(SyslogEntry.rule_name, SyslogEntry.action, sqlfunc.count(SyslogEntry.id))
+        .filter(
+            SyslogEntry.received_at >= since,
+            SyslogEntry.rule_name.isnot(None),
+        )
+        .group_by(SyslogEntry.rule_name, SyslogEntry.action)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(limit)
+        .all()
+    )
+
+    results = []
+    for rule, action, count in rule_counts:
+        top_sources = (
+            db.query(SyslogEntry.src_ip, sqlfunc.count(SyslogEntry.id))
+            .filter(
+                SyslogEntry.received_at >= since,
+                SyslogEntry.rule_name == rule,
+                SyslogEntry.src_ip.isnot(None),
+            )
+            .group_by(SyslogEntry.src_ip)
+            .order_by(sqlfunc.count(SyslogEntry.id).desc())
+            .limit(5)
+            .all()
+        )
+        results.append({
+            "rule": rule,
+            "action": action,
+            "count": count,
+            "top_sources": [{"ip": ip, "count": c} for ip, c in top_sources],
+        })
+    return {"hours": hours, "rules": results}
+
+
+@router.get("/analysis/traffic-matrix", tags=["analysis"])
+async def get_traffic_matrix(
+    hours: int = Query(24, ge=1, le=168),
+    top_n: int = Query(15, ge=5, le=50),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Top destination ports × source subnets — for identifying unexpected traffic patterns."""
+    from sqlalchemy import func as sqlfunc
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    port_counts = (
+        db.query(SyslogEntry.dst_port, SyslogEntry.protocol, sqlfunc.count(SyslogEntry.id))
+        .filter(
+            SyslogEntry.received_at >= since,
+            SyslogEntry.dst_port.isnot(None),
+        )
+        .group_by(SyslogEntry.dst_port, SyslogEntry.protocol)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(top_n)
+        .all()
+    )
+
+    event_type_counts = (
+        db.query(SyslogEntry.event_type, SyslogEntry.action, sqlfunc.count(SyslogEntry.id))
+        .filter(SyslogEntry.received_at >= since)
+        .group_by(SyslogEntry.event_type, SyslogEntry.action)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .all()
+    )
+
+    src_counts = (
+        db.query(SyslogEntry.src_ip, sqlfunc.count(SyslogEntry.id))
+        .filter(SyslogEntry.received_at >= since, SyslogEntry.src_ip.isnot(None))
+        .group_by(SyslogEntry.src_ip)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(top_n)
+        .all()
+    )
+
+    return {
+        "hours": hours,
+        "top_ports": [{"port": p, "protocol": pr or "", "count": c} for p, pr, c in port_counts],
+        "event_action_matrix": [
+            {"event_type": et or "unknown", "action": a or "", "count": c}
+            for et, a, c in event_type_counts
+        ],
+        "top_sources": [{"ip": ip, "count": c} for ip, c in src_counts],
+    }
+
+
+@router.post("/analysis/simulate-rule", tags=["analysis"])
+async def simulate_rule(
+    src_cidr: Optional[str] = Body(None, embed=True),
+    dst_cidr: Optional[str] = Body(None, embed=True),
+    dst_port: Optional[int] = Body(None, embed=True),
+    protocol: Optional[str] = Body(None, embed=True),
+    action_filter: Optional[str] = Body(None, embed=True),
+    hours: int = Body(168, embed=True, ge=1, le=8760),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Test a hypothetical firewall rule against historical logs — shows how many events it would match."""
+    import ipaddress as _iplib
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(SyslogEntry).filter(SyslogEntry.received_at >= since)
+
+    if dst_port:
+        q = q.filter(SyslogEntry.dst_port == dst_port)
+    if protocol:
+        q = q.filter(SyslogEntry.protocol.ilike(protocol))
+    if action_filter:
+        q = q.filter(SyslogEntry.action == action_filter.upper())
+
+    all_entries = q.with_entities(
+        SyslogEntry.id, SyslogEntry.src_ip, SyslogEntry.dst_ip,
+        SyslogEntry.dst_port, SyslogEntry.protocol, SyslogEntry.action,
+        SyslogEntry.received_at, SyslogEntry.rule_name, SyslogEntry.event_type,
+    ).all()
+
+    # Filter by CIDR in Python (SQLite has no native CIDR matching)
+    matched = []
+    src_net = dst_net = None
+    try:
+        if src_cidr:
+            src_net = _iplib.ip_network(src_cidr, strict=False)
+        if dst_cidr:
+            dst_net = _iplib.ip_network(dst_cidr, strict=False)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid CIDR: {e}")
+
+    for e in all_entries:
+        try:
+            if src_net and e.src_ip:
+                if _iplib.ip_address(e.src_ip) not in src_net:
+                    continue
+            if dst_net and e.dst_ip:
+                if _iplib.ip_address(e.dst_ip) not in dst_net:
+                    continue
+        except ValueError:
+            continue
+        matched.append(e)
+
+    sample = matched[:20]
+    return {
+        "matched_count": len(matched),
+        "hours": hours,
+        "rule": {
+            "src_cidr": src_cidr,
+            "dst_cidr": dst_cidr,
+            "dst_port": dst_port,
+            "protocol": protocol,
+            "action": action_filter,
+        },
+        "sample_events": [
+            {
+                "id": e.id,
+                "received_at": e.received_at,
+                "src_ip": e.src_ip,
+                "dst_ip": e.dst_ip,
+                "dst_port": e.dst_port,
+                "protocol": e.protocol,
+                "action": e.action,
+                "event_type": e.event_type,
+                "rule_name": e.rule_name,
+            }
+            for e in sample
+        ],
+    }
+
+
+@router.post("/analysis/policy-gaps", tags=["analysis"])
+async def analyze_policy_gaps(
+    hours: int = Body(24, embed=True, ge=1, le=168),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """AI analysis of ALLOWED traffic to find unexpected or suspicious connections."""
+    from ai_analysis import analyze_logs
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    entries, _ = query_logs(db, since=since, action="ALLOW", limit=300)
+    if not entries:
+        return {"analysis": "No ALLOW events found in the requested window.", "log_count": 0}
+    return await analyze_logs(
+        entries,
+        focus="identify unexpected, suspicious, or risky ALLOWED connections that should potentially be blocked",
+        hours=hours,
+    )
+
+
+# ===================== Alert Rules =====================
+
+class AlertRuleCreate(BaseModel):
+    name: str
+    condition_type: str
+    condition_params: Optional[str] = "{}"
+    window_minutes: int = 5
+    threshold: int = 1
+    cooldown_minutes: int = 60
+    notify_webhook: Optional[str] = None
+    notify_email: Optional[str] = None
+
+
+class AlertRuleOut(AlertRuleCreate):
+    id: int
+    enabled: bool
+    last_fired_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+@router.get("/admin/alerts/rules", response_model=List[AlertRuleOut], tags=["alerts"])
+async def list_alert_rules(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from database import AlertRule
+    return db.query(AlertRule).order_by(AlertRule.created_at.desc()).all()
+
+
+@router.post("/admin/alerts/rules", response_model=AlertRuleOut, status_code=201, tags=["alerts"])
+async def create_alert_rule(
+    request: Request,
+    body: AlertRuleCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import AlertRule
+    rule = AlertRule(**body.model_dump())
+    db.add(rule)
+    write_audit(db, admin.username, "alert.create", f"Created alert rule '{body.name}'",
+                request.client.host if request.client else "")
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@router.put("/admin/alerts/rules/{rule_id}", response_model=AlertRuleOut, tags=["alerts"])
+async def update_alert_rule(
+    request: Request,
+    rule_id: int,
+    body: AlertRuleCreate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import AlertRule
+    rule = db.query(AlertRule).filter_by(id=rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404)
+    for k, v in body.model_dump().items():
+        setattr(rule, k, v)
+    write_audit(db, admin.username, "alert.update", f"Updated alert rule '{body.name}'",
+                request.client.host if request.client else "")
+    db.commit()
+    return rule
+
+
+@router.patch("/admin/alerts/rules/{rule_id}/toggle", tags=["alerts"])
+async def toggle_alert_rule(
+    request: Request,
+    rule_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import AlertRule
+    rule = db.query(AlertRule).filter_by(id=rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404)
+    rule.enabled = not rule.enabled
+    write_audit(db, admin.username, "alert.toggle",
+                f"Alert rule '{rule.name}' {'enabled' if rule.enabled else 'disabled'}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"enabled": rule.enabled}
+
+
+@router.delete("/admin/alerts/rules/{rule_id}", status_code=204, tags=["alerts"])
+async def delete_alert_rule(
+    request: Request,
+    rule_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import AlertRule
+    rule = db.query(AlertRule).filter_by(id=rule_id).first()
+    if not rule:
+        raise HTTPException(status_code=404)
+    write_audit(db, admin.username, "alert.delete", f"Deleted alert rule '{rule.name}'",
+                request.client.host if request.client else "")
+    db.delete(rule)
+    db.commit()
+
+
+@router.get("/admin/alerts/events", tags=["alerts"])
+async def get_alert_events(
+    limit: int = Query(100, ge=1, le=500),
+    unacked_only: bool = Query(False),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from database import AlertEvent
+    q = db.query(AlertEvent)
+    if unacked_only:
+        q = q.filter_by(acknowledged=False)
+    events = q.order_by(AlertEvent.fired_at.desc()).limit(limit).all()
+    return [
+        {
+            "id": e.id, "rule_id": e.rule_id, "rule_name": e.rule_name,
+            "fired_at": e.fired_at, "detail": e.detail, "acknowledged": e.acknowledged,
+        }
+        for e in events
+    ]
+
+
+@router.post("/admin/alerts/events/{event_id}/acknowledge", tags=["alerts"])
+async def acknowledge_alert(
+    event_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from database import AlertEvent
+    event = db.query(AlertEvent).filter_by(id=event_id).first()
+    if not event:
+        raise HTTPException(status_code=404)
+    event.acknowledged = True
+    db.commit()
+    return {"acknowledged": True}
+
+
+# ===================== Notifications / Digest =====================
+
+@router.post("/admin/alerts/test-webhook", tags=["alerts"])
+async def test_webhook(url: str = Body(embed=True), _: User = Depends(require_admin)):
+    import httpx as _httpx
+    try:
+        async with _httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(url, json={"test": True, "source": "SIEM Console"})
+            return {"status": r.status_code, "ok": r.is_success}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/admin/digest/send", tags=["alerts"])
+async def trigger_digest(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from alert_engine import send_daily_digest
+    from database import get_service_setting
+    to_email = get_service_setting("digest_email", db=db)
+    if not to_email:
+        raise HTTPException(status_code=400, detail="No digest email configured. Add it in Service Settings.")
+    write_audit(db, admin.username, "digest.send", f"Manual digest triggered to {to_email}",
+                request.client.host if request.client else "")
+    db.commit()
+    result = await send_daily_digest(to_email)
+    return result
+
+
+# ===================== Service Settings (SMTP + enrichment keys) =====================
+
+@router.get("/admin/settings/notifications", tags=["admin"])
+async def get_notification_settings(_: User = Depends(require_admin)):
+    from database import get_service_setting
+    return {
+        "smtp_host": get_service_setting("smtp_host"),
+        "smtp_port": get_service_setting("smtp_port") or "587",
+        "smtp_user": get_service_setting("smtp_user"),
+        "smtp_from": get_service_setting("smtp_from"),
+        "smtp_password_set": bool(get_service_setting("smtp_password")),
+        "digest_email": get_service_setting("digest_email"),
+        "abuseipdb_key_set": bool(get_service_setting("abuseipdb_api_key")),
+    }
+
+
+@router.put("/admin/settings/notifications", tags=["admin"])
+async def update_notification_settings(
+    request: Request,
+    body: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import set_service_setting
+    allowed = ["smtp_host", "smtp_port", "smtp_user", "smtp_from",
+               "smtp_password", "digest_email", "abuseipdb_api_key"]
+    for key in allowed:
+        if key in body:
+            set_service_setting(key, str(body[key]), db)
+    write_audit(db, admin.username, "settings.notifications", "Notification settings updated",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"message": "Notification settings saved."}

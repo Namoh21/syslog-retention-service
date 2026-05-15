@@ -43,10 +43,12 @@ def validate_password_strength(password: str) -> str | None:
 
 
 def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    from database import get_service_setting
     payload = data.copy()
-    payload["exp"] = datetime.now(timezone.utc) + (
-        expires_delta or timedelta(minutes=settings.access_token_expire_minutes)
-    )
+    if expires_delta is None:
+        minutes = int(get_service_setting("access_token_expire_minutes") or settings.access_token_expire_minutes)
+        expires_delta = timedelta(minutes=minutes)
+    payload["exp"] = datetime.now(timezone.utc) + expires_delta
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 

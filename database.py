@@ -170,9 +170,57 @@ class AuditLog(Base):
     id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
     username = Column(String(64), index=True)
-    action = Column(String(64), index=True)   # e.g. "user.create", "apikey.revoke"
-    detail = Column(Text)                      # human-readable description
+    action = Column(String(64), index=True)
+    detail = Column(Text)
     ip_address = Column(String(45))
+
+
+class AlertRule(Base):
+    """User-defined condition that triggers a notification."""
+    __tablename__ = "alert_rules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(128), nullable=False)
+    enabled = Column(Boolean, default=True)
+    # condition_type: threshold | pattern | severity | new_ip
+    condition_type = Column(String(32), nullable=False)
+    condition_params = Column(Text)          # JSON: filters to apply
+    window_minutes = Column(Integer, default=5)
+    threshold = Column(Integer, default=1)   # events in window to trigger
+    cooldown_minutes = Column(Integer, default=60)
+    notify_webhook = Column(String(512))
+    notify_email = Column(String(256))
+    last_fired_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AlertEvent(Base):
+    """Record of a fired alert rule."""
+    __tablename__ = "alert_events"
+
+    id = Column(Integer, primary_key=True, index=True)
+    rule_id = Column(Integer, nullable=False, index=True)
+    rule_name = Column(String(128))
+    fired_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    detail = Column(Text)
+    acknowledged = Column(Boolean, default=False)
+
+
+class IpReputationCache(Base):
+    """Cached AbuseIPDB + GeoIP results — avoids re-querying the same IP repeatedly."""
+    __tablename__ = "ip_reputation_cache"
+
+    ip = Column(String(45), primary_key=True)
+    abuse_score = Column(Integer, nullable=True)     # 0-100
+    abuse_reports = Column(Integer, nullable=True)
+    country_code = Column(String(4), nullable=True)
+    country_name = Column(String(64), nullable=True)
+    isp = Column(String(128), nullable=True)
+    is_tor = Column(Boolean, nullable=True)
+    is_vpn = Column(Boolean, nullable=True)
+    threat_categories = Column(Text, nullable=True)  # JSON list
+    geo_city = Column(String(64), nullable=True)
+    fetched_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 def _migrate_db():
@@ -258,9 +306,25 @@ def _seed_defaults():
         # Import ANTHROPIC_API_KEY from .env into encrypted DB storage
         _import_setting(db, "anthropic_api_key", settings.anthropic_api_key)
 
+        # Seed configurable service settings (only if not already in DB — never overwrite)
+        _seed_setting_if_missing(db, "allowed_syslog_sources", settings.allowed_syslog_sources)
+        _seed_setting_if_missing(db, "login_max_attempts", str(settings.login_max_attempts))
+        _seed_setting_if_missing(db, "login_lockout_seconds", str(settings.login_lockout_seconds))
+        _seed_setting_if_missing(db, "access_token_expire_minutes", str(settings.access_token_expire_minutes))
+        _seed_setting_if_missing(db, "ai_analysis_max_logs", str(settings.ai_analysis_max_logs))
+
         db.commit()
     finally:
         db.close()
+
+
+def _seed_setting_if_missing(db, key: str, value: str) -> None:
+    """Store a setting in DB only if not already present — never overwrites user changes."""
+    if not value:
+        return
+    if db.query(ServiceSetting).filter_by(key=key).first():
+        return
+    db.add(ServiceSetting(key=key, encrypted_value=encrypt_value(str(value))))
 
 
 def _import_setting(db, key: str, env_value: str) -> None:

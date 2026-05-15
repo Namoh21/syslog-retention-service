@@ -7,6 +7,7 @@ import ipaddress
 import json
 import logging
 import re
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -15,31 +16,37 @@ from normalizer import normalize
 
 logger = logging.getLogger("syslog_listener")
 
-# Build allowed-source network list once at import time
-def _build_allowed_networks():
-    from config import settings
-    sources = settings.get_allowed_syslog_sources()
-    if not sources:
-        return []
-    nets = []
-    for cidr in sources:
-        try:
-            nets.append(ipaddress.ip_network(cidr, strict=False))
-        except ValueError:
-            logger.warning("Invalid ALLOWED_SYSLOG_SOURCES entry: %s", cidr)
-    return nets
+_ALLOW_CACHE: tuple[list, float] = ([], 0.0)
+_ALLOW_CACHE_TTL = 60.0  # seconds
 
-_ALLOWED_NETWORKS: list = []  # populated lazily on first packet
+
+def _get_allowed_networks() -> list:
+    """Return the current allowed-source network list, refreshed from DB every 60 s."""
+    global _ALLOW_CACHE
+    networks, ts = _ALLOW_CACHE
+    if time.monotonic() - ts > _ALLOW_CACHE_TTL:
+        from database import get_service_setting
+        from config import settings
+        raw = get_service_setting("allowed_syslog_sources") or settings.allowed_syslog_sources
+        sources = [s.strip() for s in raw.split(",") if s.strip()] if raw else []
+        nets = []
+        for cidr in sources:
+            try:
+                nets.append(ipaddress.ip_network(cidr, strict=False))
+            except ValueError:
+                logger.warning("Invalid allowed_syslog_sources entry: %s", cidr)
+        _ALLOW_CACHE = (nets, time.monotonic())
+        return nets
+    return networks
+
 
 def _is_allowed(ip: str) -> bool:
-    global _ALLOWED_NETWORKS
-    if not _ALLOWED_NETWORKS:
-        _ALLOWED_NETWORKS = _build_allowed_networks()
-    if not _ALLOWED_NETWORKS:
-        return True  # no filter configured — allow all
+    nets = _get_allowed_networks()
+    if not nets:
+        return True  # no filter — allow all
     try:
         addr = ipaddress.ip_address(ip)
-        return any(addr in net for net in _ALLOWED_NETWORKS)
+        return any(addr in net for net in nets)
     except ValueError:
         return False
 

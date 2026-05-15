@@ -38,11 +38,13 @@ _login_attempts: dict[str, list[float]] = defaultdict(list)
 
 def record_login_attempt(ip: str) -> bool:
     """Returns True if the attempt is allowed, False if the IP is locked out."""
+    from database import get_service_setting
     now = time()
-    window = settings.login_lockout_seconds
+    window = int(get_service_setting("login_lockout_seconds") or settings.login_lockout_seconds)
+    max_attempts = int(get_service_setting("login_max_attempts") or settings.login_max_attempts)
     attempts = [t for t in _login_attempts[ip] if now - t < window]
     _login_attempts[ip] = attempts
-    if len(attempts) >= settings.login_max_attempts:
+    if len(attempts) >= max_attempts:
         return False
     _login_attempts[ip].append(now)
     return True
@@ -93,6 +95,8 @@ async def lifespan(app: FastAPI):
         logger.warning("TCP listener failed (port %d): %s", settings.syslog_tcp_port, exc)
 
     asyncio.create_task(_scheduled_purge())
+    from alert_engine import run_alert_engine
+    asyncio.create_task(run_alert_engine())
     logger.info(
         "Web console: http://%s:%d",
         "localhost" if settings.api_host == "0.0.0.0" else settings.api_host,
