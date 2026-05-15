@@ -3,16 +3,45 @@ RFC 5424 / RFC 3164 syslog listener over UDP and TCP.
 Runs as asyncio tasks alongside FastAPI.
 """
 import asyncio
+import ipaddress
+import json
 import logging
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
-import json
 from database import SessionLocal, SyslogEntry
 from normalizer import normalize
 
 logger = logging.getLogger("syslog_listener")
+
+# Build allowed-source network list once at import time
+def _build_allowed_networks():
+    from config import settings
+    sources = settings.get_allowed_syslog_sources()
+    if not sources:
+        return []
+    nets = []
+    for cidr in sources:
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            logger.warning("Invalid ALLOWED_SYSLOG_SOURCES entry: %s", cidr)
+    return nets
+
+_ALLOWED_NETWORKS: list = []  # populated lazily on first packet
+
+def _is_allowed(ip: str) -> bool:
+    global _ALLOWED_NETWORKS
+    if not _ALLOWED_NETWORKS:
+        _ALLOWED_NETWORKS = _build_allowed_networks()
+    if not _ALLOWED_NETWORKS:
+        return True  # no filter configured — allow all
+    try:
+        addr = ipaddress.ip_address(ip)
+        return any(addr in net for net in _ALLOWED_NETWORKS)
+    except ValueError:
+        return False
 
 # RFC 5424  <PRI>VERSION TIMESTAMP HOSTNAME APP-NAME PROCID MSGID STRUCTURED-DATA MSG
 _RFC5424 = re.compile(
@@ -115,12 +144,16 @@ def _store(entry: SyslogEntry) -> None:
 
 class _SyslogUDPProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr: tuple) -> None:
+        source_ip = addr[0]
+        if not _is_allowed(source_ip):
+            logger.debug("Dropped UDP syslog from disallowed source %s", source_ip)
+            return
         try:
             raw = data.decode("utf-8", errors="replace")
-            entry = _parse(raw, addr[0])
+            entry = _parse(raw, source_ip)
             _store(entry)
         except Exception as exc:
-            logger.warning("UDP parse error from %s: %s", addr[0], exc)
+            logger.warning("UDP parse error from %s: %s", source_ip, exc)
 
     def error_received(self, exc: Exception) -> None:
         logger.warning("UDP transport error: %s", exc)
@@ -141,6 +174,10 @@ async def start_udp_listener(host: str, port: int) -> asyncio.DatagramTransport:
 async def _handle_tcp_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     peer = writer.get_extra_info("peername")
     source_ip = peer[0] if peer else "unknown"
+    if not _is_allowed(source_ip):
+        logger.debug("Rejected TCP syslog connection from disallowed source %s", source_ip)
+        writer.close()
+        return
     try:
         while True:
             line = await reader.readline()

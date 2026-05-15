@@ -140,10 +140,14 @@ configure_env() {
     # Syslog ports
     echo ""
     header "-- Syslog Ports --"
-    echo -e "${GRAY}  Port 514 is the standard syslog port (root access required - OK on Pi).${NC}"
-    local udp_port tcp_port
+    echo -e "${GRAY}  UDP 514 is the standard syslog port. TCP 6514 avoids privileged-port issues.${NC}"
+    echo -e "${GRAY}  On your UDM: Settings > System > Logging > Remote Syslog.${NC}"
+    local udp_port tcp_port allowed_sources
     udp_port=$(read_input "Syslog UDP port" "514")
-    tcp_port=$(read_input "Syslog TCP port" "514")
+    tcp_port=$(read_input "Syslog TCP port" "6514")
+    echo -e "${GRAY}  Restrict which IPs can send logs (recommended). Leave blank to allow all.${NC}"
+    echo -e "${GRAY}  Example: 192.168.1.0/24${NC}"
+    allowed_sources=$(read_input "Allowed syslog source CIDRs" "")
 
     # Web console
     echo ""
@@ -185,6 +189,7 @@ CLAUDE_MODEL=${claude_model}
 
 SYSLOG_UDP_PORT=${udp_port}
 SYSLOG_TCP_PORT=${tcp_port}
+ALLOWED_SYSLOG_SOURCES=${allowed_sources}
 
 API_HOST=${api_host}
 API_PORT=${api_port}
@@ -244,6 +249,37 @@ do_install() {
         warn "Git not found - update feature unavailable"
     fi
 
+    # rsyslog conflict check — rsyslog binds UDP 514 by default on Debian/Pi OS
+    # If we try to bind 514 too, the service crashes and restarts in a tight loop
+    # which makes the Pi unresponsive.
+    step "Checking for port 514 conflict (rsyslog)"
+    if ss -ulnp 2>/dev/null | grep -q ":514 " && systemctl is-active --quiet rsyslog 2>/dev/null; then
+        warn "rsyslog is running and has UDP port 514 bound."
+        warn "If your syslog UDP port is also 514, the service will conflict and restart rapidly."
+        echo ""
+        echo -e "  Options:"
+        echo -e "  ${CYAN}A)${NC} Disable rsyslog (recommended if this Pi is dedicated to SIEM)"
+        echo -e "  ${CYAN}B)${NC} Keep rsyslog and use a different UDP port (e.g. 5514)"
+        echo -e "  ${CYAN}C)${NC} Skip - I will resolve this manually"
+        read -rp "  Choice [A/B/C]: " conflict_choice
+        case "${conflict_choice^^}" in
+            A)
+                systemctl stop rsyslog
+                systemctl disable rsyslog
+                ok "rsyslog stopped and disabled"
+                ;;
+            B)
+                warn "Remember to change SYSLOG_UDP_PORT in .env to a non-514 value (e.g. 5514)"
+                warn "and update your UDM syslog target port to match."
+                ;;
+            *)
+                warn "Skipped. If the service fails to start, check for port conflicts with: ss -ulnp | grep 514"
+                ;;
+        esac
+    else
+        ok "No port 514 conflict detected"
+    fi
+
     # Copy files to install dir
     step "Installing application files to $INSTALL_DIR"
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
@@ -296,7 +332,7 @@ do_install() {
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Syslog Retention and SIEM Service
-After=network.target
+After=network.target rsyslog.service
 Wants=network.target
 
 [Service]
@@ -305,7 +341,11 @@ User=root
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${PYTHON} main.py
 Restart=on-failure
-RestartSec=5
+RestartSec=30
+StartLimitIntervalSec=120
+StartLimitBurst=3
+MemoryMax=512M
+CPUQuota=80%
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service_err.log
 

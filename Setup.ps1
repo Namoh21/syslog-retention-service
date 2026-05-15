@@ -221,9 +221,13 @@ function Initialize-EnvFile {
     # Syslog ports
     Write-Host ""
     Write-Host "  -- Syslog Ports --" -ForegroundColor Cyan
-    Write-Host "  Port 514 requires Administrator. Use 5514 if you have issues." -ForegroundColor Gray
+    Write-Host "  UDP 514 is standard syslog. TCP 6514 avoids privileged-port issues." -ForegroundColor Gray
+    Write-Host "  On your UDM: Settings > System > Logging > Remote Syslog." -ForegroundColor Gray
     $udpPort = Read-EnvInput "Syslog UDP port" "514"
-    $tcpPort = Read-EnvInput "Syslog TCP port" "514"
+    $tcpPort = Read-EnvInput "Syslog TCP port" "6514"
+    Write-Host "  Restrict which IPs can send logs (recommended). Leave blank to allow all." -ForegroundColor Gray
+    Write-Host "  Example: 192.168.1.0/24" -ForegroundColor Gray
+    $allowedSources = Read-EnvInput "Allowed syslog source CIDRs" ""
 
     # Web console
     Write-Host ""
@@ -261,6 +265,7 @@ CLAUDE_MODEL=$claudeModel
 
 SYSLOG_UDP_PORT=$udpPort
 SYSLOG_TCP_PORT=$tcpPort
+ALLOWED_SYSLOG_SOURCES=$allowedSources
 
 API_HOST=$apiHost
 API_PORT=$apiPort

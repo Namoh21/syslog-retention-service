@@ -129,6 +129,8 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_admin = Column(Boolean, default=False)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    # Incremented on password change to invalidate outstanding JWTs
+    token_version = Column(Integer, default=0, nullable=False)
 
 
 class ApiKey(Base):
@@ -162,8 +164,9 @@ class ServiceSetting(Base):
 
 
 def _migrate_db():
-    """Add any missing normalized columns to an existing database (safe to re-run)."""
+    """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:
+        # syslog_entries normalized columns
         existing = {
             row[1]
             for row in conn.execute(text("PRAGMA table_info(syslog_entries)")).fetchall()
@@ -171,6 +174,15 @@ def _migrate_db():
         for col_name, col_type in _NORMALIZED_COLUMNS:
             if col_name not in existing:
                 conn.execute(text(f"ALTER TABLE syslog_entries ADD COLUMN {col_name} {col_type}"))
+
+        # users.token_version — added v1.2 for JWT revocation
+        user_cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(users)")).fetchall()
+        }
+        if "token_version" not in user_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
+
         conn.commit()
 
 

@@ -192,7 +192,9 @@
     <div class="user-info">
       <span class="status-dot"></span>Service running<br/>
       Signed in as <strong id="nav-user"></strong><br/>
-      <a href="#" onclick="doLogout()">Sign out</a>
+      <a href="#" onclick="showPage('changePassword')" style="color:var(--muted);font-size:11px;">Change password</a>
+      &nbsp;&middot;&nbsp;
+      <a href="#" onclick="confirmLogout()" style="color:var(--danger);font-size:11px;">Sign out</a>
     </div>
   </nav>
 
@@ -231,9 +233,14 @@ async function doLogin() {
 }
 
 function doLogout() {
-  token = null; currentUser = null;
+  token = null; currentUser = null; serviceInfo = null;
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
+  document.title = 'Syslog SIEM Console';
+}
+
+function confirmLogout() {
+  if (confirm('Sign out of the SIEM Console?')) doLogout();
 }
 
 document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
@@ -256,7 +263,18 @@ async function apiFetch(path, opts={}) {
 function showPage(name) {
   document.querySelectorAll('nav ul li a').forEach(a =>
     a.classList.toggle('active', a.dataset.page === name));
-  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, setup };
+  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, setup, changePassword };
+  document.title = {
+    dashboard: 'Dashboard',
+    logs: 'Log Viewer',
+    ai: 'AI Analysis',
+    svcSettings: 'Service Settings',
+    retention: 'Retention',
+    users: 'Users',
+    apikeys: 'API Keys',
+    setup: 'Setup Guide',
+    changePassword: 'Change Password',
+  }[name] ? `${({dashboard:'Dashboard',logs:'Log Viewer',ai:'AI Analysis',svcSettings:'Service Settings',retention:'Retention',users:'Users',apikeys:'API Keys',setup:'Setup Guide',changePassword:'Change Password'}[name])} — SIEM Console` : 'SIEM Console';
   pages[name]?.();
 }
 
@@ -329,12 +347,22 @@ async function dashboard() {
         </div>
       </div>`;
 
+    // Staleness indicator
+    let stalenessHtml = '';
+    if (s.newest_entry) {
+      const minsAgo = Math.floor((Date.now() - new Date(s.newest_entry).getTime()) / 60000);
+      let staleColor = 'var(--accent2)', staleMsg = `${minsAgo}m ago`;
+      if (minsAgo > 60) { staleColor = 'var(--warn)'; staleMsg = `${Math.floor(minsAgo/60)}h ago — check UDM syslog config`; }
+      if (minsAgo > 360) { staleColor = 'var(--danger)'; staleMsg = `${Math.floor(minsAgo/60)}h ago — no recent logs, UDM may have stopped sending`; }
+      stalenessHtml = `<div style="font-size:12px;margin-top:4px;color:${staleColor}">Last log: ${staleMsg}</div>`;
+    }
+
     render(`
       <div class="page-header"><h1>Dashboard</h1><p>Network logging activity and service status.</p></div>
       ${onboarding}
       <div class="stat-grid">
         <div class="stat"><div class="val">${total.toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
-        <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry</div></div>
+        <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry${stalenessHtml}</div></div>
         <div class="stat"><div class="val" style="color:var(--muted)">${fmtDate(s.oldest_entry)}</div><div class="lbl">Oldest Entry</div></div>
       </div>
       ${connBox}
@@ -342,12 +370,12 @@ async function dashboard() {
         <div class="card">
           <div class="card-title"><span class="icon">&#x26A0;&#xFE0F;</span> Events by Severity</div>
           ${sevRows ? `<div class="tbl-wrap"><table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>${sevRows}</tbody></table></div>`
-            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No events yet</p></div>`}
+            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>Waiting for logs from your UDM</p></div>`}
         </div>
         <div class="card">
           <div class="card-title"><span class="icon">&#x1F5A7;</span> Top Source Devices</div>
           ${srcRows ? `<div class="tbl-wrap"><table><thead><tr><th>IP Address</th><th>Log Count</th></tr></thead><tbody>${srcRows}</tbody></table></div>`
-            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No sources yet</p></div>`}
+            : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No devices seen yet — point your UDM at this server</p></div>`}
         </div>
       </div>
       ${hasLogs ? `<div class="checklist" style="margin-top:0">${checkAI}${checkAPI}</div>` : ''}
@@ -556,12 +584,24 @@ async function ai() {
         </div>
       </div>
       <p class="help-tip">Claude will review up to 500 log entries from the selected window and return structured threat findings.</p>
+      <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis.</p>
     </div>
     <div id="ai-output"></div>
   `);
 }
 
 async function runAnalysis() {
+  // One-time consent notice — stored in localStorage so it only shows once
+  if (!localStorage.getItem('ai_consent_given')) {
+    const ok = confirm(
+      'AI Analysis sends a sample of your log data to Anthropic\'s API (Claude).\n\n' +
+      'Logs may contain IP addresses, hostnames, usernames, and other network details.\n\n' +
+      'By clicking OK you confirm you are comfortable sending this data to Anthropic.\n' +
+      'See Anthropic\'s privacy policy at anthropic.com/privacy.'
+    );
+    if (!ok) return;
+    localStorage.setItem('ai_consent_given', '1');
+  }
   const btn = document.getElementById('ai-btn');
   const out = document.getElementById('ai-output');
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Analyzing...';
@@ -803,6 +843,7 @@ async function svcSettings() {
               <input type="password" id="new-api-key" placeholder="sk-ant-..." style="width:100%;font-family:monospace" autocomplete="off" />
             </div>
             <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
+            ${s.anthropic_api_key_set ? `<button class="btn btn-ghost" onclick="testApiKey()">Test Connection</button>` : ''}
             ${s.anthropic_api_key_set ? `<button class="btn btn-danger" onclick="removeApiKey()">Remove</button>` : ''}
           </div>
           <div class="help-tip">Get a key at <strong>console.anthropic.com</strong>. Stored encrypted in the database using AES-256.</div>
@@ -866,7 +907,55 @@ async function saveModel() {
   const val = document.getElementById('claude-model').value;
   try {
     await apiFetch('/api/admin/settings/claude-model', { method:'PUT', body:JSON.stringify({value:val}) });
-    msg.innerHTML = `<div class="alert alert-ok">Model updated to ${esc(val)}.</div>`;
+    msg.innerHTML = `<div class="alert alert-ok">Model updated to ${esc(val)}. Takes effect on next analysis.</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function testApiKey() {
+  const msg = document.getElementById('settings-msg');
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Testing connection to Anthropic...</div>';
+  try {
+    const d = await apiFetch('/api/admin/settings/test-anthropic-key', { method:'POST' });
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${d.message}</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`; }
+}
+
+// ── Change Password ───────────────────────────────────────────────────────────
+async function changePassword() {
+  render(`
+    <div class="page-header"><h1>Change Password</h1><p>Update your login password. You will be signed out after changing it.</p></div>
+    <div class="card" style="max-width:440px">
+      <div class="card-title"><span class="icon">&#x1F512;</span> Change Password</div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Current password</label>
+        <input type="password" id="cp-current" placeholder="Enter current password" autocomplete="current-password" />
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>New password</label>
+        <input type="password" id="cp-new" placeholder="At least 8 characters" autocomplete="new-password" />
+      </div>
+      <div class="form-group" style="margin-bottom:20px">
+        <label>Confirm new password</label>
+        <input type="password" id="cp-confirm" placeholder="Repeat new password" autocomplete="new-password" />
+      </div>
+      <button class="btn btn-primary" onclick="submitPasswordChange()">Update Password</button>
+      <button class="btn btn-ghost" onclick="showPage('dashboard')" style="margin-left:8px">Cancel</button>
+      <div id="cp-msg" style="margin-top:12px"></div>
+    </div>
+  `);
+}
+
+async function submitPasswordChange() {
+  const msg = document.getElementById('cp-msg');
+  const cur = document.getElementById('cp-current').value;
+  const nw  = document.getElementById('cp-new').value;
+  const cnf = document.getElementById('cp-confirm').value;
+  if (nw !== cnf) { msg.innerHTML = '<div class="alert alert-warn">New passwords do not match.</div>'; return; }
+  if (nw.length < 8) { msg.innerHTML = '<div class="alert alert-warn">Password must be at least 8 characters.</div>'; return; }
+  try {
+    await apiFetch('/api/auth/change-password', { method:'POST', body:JSON.stringify({current_password:cur, new_password:nw}) });
+    msg.innerHTML = '<div class="alert alert-ok">Password updated. Signing you out...</div>';
+    setTimeout(doLogout, 1500);
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 

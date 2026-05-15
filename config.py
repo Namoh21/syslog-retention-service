@@ -6,12 +6,12 @@ from pydantic import Field
 BASE_DIR = Path(__file__).parent
 ENV_FILE = BASE_DIR / ".env"
 
-# Sentinel written to .env after first-run seeding — never treated as a real value
 _SEEDED_SENTINEL = "(seeded-manage-via-web-console)"
+
+PASSWORD_MIN_LENGTH = 8
 
 
 class Settings(BaseSettings):
-    # Service identity
     service_name: str = "SyslogRetentionService"
     service_display_name: str = "Syslog Retention & SIEM Service"
 
@@ -19,12 +19,19 @@ class Settings(BaseSettings):
     syslog_udp_host: str = "0.0.0.0"
     syslog_udp_port: int = 514
     syslog_tcp_host: str = "0.0.0.0"
-    syslog_tcp_port: int = 514
+    syslog_tcp_port: int = 6514  # non-privileged default; UDM supports custom ports
+
+    # Comma-separated CIDRs allowed to send syslog (empty = allow all)
+    # Example: "192.168.1.0/24,10.0.0.0/8"
+    allowed_syslog_sources: str = ""
 
     # Web / API server
     api_host: str = "0.0.0.0"
     api_port: int = 8080
-    api_base_url: str = "http://localhost:8080"
+
+    # Comma-separated allowed CORS origins for the REST API
+    # Default: same-origin only (browser direct). Add http://<pi-ip>:8080 if needed.
+    cors_origins: str = ""
 
     # Database
     db_path: str = str(BASE_DIR / "data" / "syslog.db")
@@ -32,7 +39,7 @@ class Settings(BaseSettings):
     # Security
     secret_key: str = Field(default_factory=lambda: secrets.token_hex(32))
     algorithm: str = "HS256"
-    access_token_expire_minutes: int = 60
+    access_token_expire_minutes: int = 480  # 8 hours — avoids hourly logouts
 
     # Admin credentials — used only on first run to seed the DB, then scrubbed
     admin_username: str = "admin"
@@ -47,6 +54,10 @@ class Settings(BaseSettings):
     claude_model: str = "claude-sonnet-4-6"
     ai_analysis_max_logs: int = 500
 
+    # Login rate limiting
+    login_max_attempts: int = 10
+    login_lockout_seconds: int = 300  # 5 minutes
+
     # Static API keys — imported to DB on first run, then scrubbed from .env
     external_api_keys: str = ""
 
@@ -57,13 +68,28 @@ class Settings(BaseSettings):
     }
 
     def is_seeded(self) -> bool:
-        """True when the password has already been moved to the DB."""
         return self.admin_password in ("", _SEEDED_SENTINEL, "changeme")
 
     def get_external_api_keys(self) -> list[str]:
         if not self.external_api_keys or self.external_api_keys == _SEEDED_SENTINEL:
             return []
         return [k.strip() for k in self.external_api_keys.split(",") if k.strip()]
+
+    def get_cors_origins(self) -> list[str]:
+        """Returns allowed CORS origins. Always includes localhost variants."""
+        base = [
+            f"http://localhost:{self.api_port}",
+            f"http://127.0.0.1:{self.api_port}",
+        ]
+        if self.cors_origins:
+            extra = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+            base.extend(extra)
+        return base
+
+    def get_allowed_syslog_sources(self) -> list[str]:
+        if not self.allowed_syslog_sources:
+            return []
+        return [s.strip() for s in self.allowed_syslog_sources.split(",") if s.strip()]
 
 
 settings = Settings()

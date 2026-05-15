@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from auth import (
     authenticate_user, create_access_token, generate_api_key,
     get_current_user, get_password_hash, require_admin,
+    validate_password_strength,
 )
 from config import settings
 from database import (
@@ -140,7 +141,11 @@ async def login(
             detail="Incorrect username or password",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = create_access_token({"sub": user.username})
+    # Clear rate-limit counter on successful login
+    from main import clear_login_attempts
+    # (request IP not available here — cleared by middleware on next success)
+    token_version = getattr(user, "token_version", 0)
+    token = create_access_token({"sub": user.username, "ver": token_version})
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -358,6 +363,9 @@ async def create_user(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    err = validate_password_strength(body.password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     if db.query(User).filter_by(username=body.username).first():
         raise HTTPException(status_code=409, detail="Username already exists")
     user = User(
@@ -392,6 +400,9 @@ async def change_password(
     db: Session = Depends(get_db),
     current: User = Depends(get_current_user),
 ):
+    err = validate_password_strength(body.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
     user = db.query(User).filter_by(username=current.username).first()
     if not user:
         raise HTTPException(status_code=404)
@@ -399,8 +410,10 @@ async def change_password(
     if not verify_password(body.current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     user.hashed_password = get_password_hash(body.new_password)
+    # Increment token_version to invalidate all existing JWTs for this user
+    user.token_version = (getattr(user, "token_version", 0) or 0) + 1
     db.commit()
-    return {"message": "Password updated"}
+    return {"message": "Password updated. Please sign in again."}
 
 
 # ===================== API Keys =====================
@@ -516,3 +529,25 @@ async def update_claude_model(
     from database import set_service_setting
     set_service_setting("claude_model", body.value.strip())
     return {"message": f"Claude model updated to {body.value.strip()}"}
+
+
+@router.post("/admin/settings/test-anthropic-key", tags=["admin"])
+async def test_anthropic_key(_: User = Depends(require_admin)):
+    """Verify the stored Anthropic API key is valid by making a minimal API call."""
+    from database import get_service_setting
+    import anthropic as _anthropic
+    api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No Anthropic API key configured.")
+    try:
+        client = _anthropic.Anthropic(api_key=api_key)
+        client.messages.create(
+            model=get_service_setting("claude_model") or settings.claude_model,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "ping"}],
+        )
+        return {"status": "ok", "message": "API key is valid and working."}
+    except _anthropic.AuthenticationError:
+        raise HTTPException(status_code=400, detail="API key is invalid or expired.")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Connection failed: {exc}")
