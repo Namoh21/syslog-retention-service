@@ -93,3 +93,19 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def _resolve_secret_key() -> str:
+    """Return the effective SECRET_KEY: OS keystore > .env > generated fallback."""
+    try:
+        from keystore import load_secret
+        ks = load_secret()
+        if ks:
+            return ks
+    except Exception:
+        pass
+    return settings.secret_key
+
+
+# All crypto that needs the root secret should use this, not settings.secret_key
+EFFECTIVE_SECRET_KEY: str = _resolve_secret_key()

@@ -13,10 +13,11 @@ logger = logging.getLogger("database")
 
 
 def _fernet():
-    """Fernet cipher derived from SECRET_KEY — used to encrypt sensitive DB values."""
+    """Fernet cipher derived from the effective SECRET_KEY (OS keystore preferred)."""
     from cryptography.fernet import Fernet
+    from config import EFFECTIVE_SECRET_KEY
     key = base64.urlsafe_b64encode(
-        hashlib.sha256(settings.secret_key.encode()).digest()
+        hashlib.sha256(EFFECTIVE_SECRET_KEY.encode()).digest()
     )
     return Fernet(key)
 
@@ -246,10 +247,61 @@ def _migrate_db():
         conn.commit()
 
 
+def _migrate_secret_key_to_keystore():
+    """
+    On first run (or after upgrade), move SECRET_KEY from .env into the OS
+    keystore (DPAPI on Windows, chmod-600 file on Linux) so the raw key no
+    longer lives next to the database it protects.
+
+    Skips silently if already stored or if the keystore is unavailable.
+    """
+    from keystore import is_stored, store_secret, load_secret
+    if is_stored():
+        return  # already migrated
+
+    raw = settings.secret_key
+    if not raw:
+        return
+
+    try:
+        store_secret(raw)
+        # Verify the round-trip before scrubbing .env
+        if load_secret() != raw:
+            logger.error("Keystore round-trip verification failed — SECRET_KEY NOT removed from .env")
+            return
+
+        # Scrub SECRET_KEY from .env now that it lives in the keystore
+        from config import ENV_FILE
+        env_path = ENV_FILE
+        if env_path.exists():
+            text = env_path.read_text(encoding="utf-8")
+            import re as _re
+            new_text = _re.sub(
+                r"^(SECRET_KEY=).+$",
+                r"\1(stored-in-os-keystore)",
+                text,
+                flags=_re.MULTILINE,
+            )
+            if new_text != text:
+                env_path.write_text(new_text, encoding="utf-8")
+                logger.info(
+                    "SECRET_KEY migrated to OS keystore and removed from %s. "
+                    "Raw key no longer stored on disk in plaintext.",
+                    env_path,
+                )
+    except Exception as exc:
+        logger.warning(
+            "Could not migrate SECRET_KEY to OS keystore: %s — "
+            "key remains in .env (install pywin32 on Windows or check /etc permissions on Linux)",
+            exc,
+        )
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
     _seed_defaults()
+    _migrate_secret_key_to_keystore()
     _secure_env_file()
 
 

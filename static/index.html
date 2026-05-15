@@ -1066,14 +1066,19 @@ async function svcSettings() {
       </div>
 
       <div class="card" style="max-width:560px">
-        <div class="card-title"><span class="icon">&#x1F512;</span> Security Notes</div>
+        <div class="card-title"><span class="icon">&#x1F512;</span> Security Architecture</div>
         <ul style="font-size:13px;line-height:2;padding-left:20px;color:var(--text)">
-          <li>All API keys and credentials are encrypted with AES-256 before being stored in the database</li>
-          <li>Encryption uses a key derived from your <code>SECRET_KEY</code> in <code>.env</code></li>
-          <li>The <code>.env</code> file has owner-only permissions (600 on Linux)</li>
-          <li>Admin password is stored as a bcrypt hash — the original is never retained</li>
-          <li>API keys for external clients are stored as SHA-256 hashes</li>
-          <li>All settings below are stored encrypted in the database — not in plaintext config files</li>
+          <li>All API keys and credentials are encrypted with AES-256 (Fernet) in the database</li>
+          <li><strong>SECRET_KEY</strong> is stored in the OS keystore on first startup — not in <code>.env</code>
+            <ul style="margin-top:4px">
+              <li>Windows: DPAPI (<code>CryptProtectData</code>) — tied to your Windows user account</li>
+              <li>Linux: <code>/etc/syslog-retention/secret.key</code> with chmod 600</li>
+            </ul>
+          </li>
+          <li>Copying the database file alone is not enough to decrypt it — the OS keystore key is required</li>
+          <li>Admin password is stored as a bcrypt hash — the original is never retained after first run</li>
+          <li>API keys for external clients are stored as SHA-256 hashes only</li>
+          <li>All configuration is stored encrypted in the database — <code>.env</code> contains no secrets after first startup</li>
         </ul>
       </div>
     `);

@@ -13,7 +13,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2Pas
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
 
-from config import settings, PASSWORD_MIN_LENGTH
+from config import settings, EFFECTIVE_SECRET_KEY, PASSWORD_MIN_LENGTH
 from database import ApiKey, User, get_db
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/token", auto_error=False)
@@ -49,7 +49,7 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         minutes = int(get_service_setting("access_token_expire_minutes") or settings.access_token_expire_minutes)
         expires_delta = timedelta(minutes=minutes)
     payload["exp"] = datetime.now(timezone.utc) + expires_delta
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+    return jwt.encode(payload, EFFECTIVE_SECRET_KEY, algorithm=settings.algorithm)
 
 
 def _hash_api_key(key: str) -> str:
@@ -64,7 +64,7 @@ def generate_api_key() -> str:
 
 def _get_user_from_token(token: str, db: Session) -> Optional[User]:
     try:
-        payload = jwt.decode(token, settings.secret_key, algorithms=[settings.algorithm])
+        payload = jwt.decode(token, EFFECTIVE_SECRET_KEY, algorithms=[settings.algorithm])
         username: str = payload.get("sub")
         token_version: int = payload.get("ver", 0)
         if not username:
