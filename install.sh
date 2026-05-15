@@ -620,7 +620,7 @@ RestartSec=30
 StartLimitIntervalSec=120
 StartLimitBurst=3
 MemoryMax=512M
-CPUQuota=80%
+CPUQuota=50%
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service_err.log
 

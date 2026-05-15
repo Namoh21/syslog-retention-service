@@ -55,14 +55,22 @@ def _count_events(db, rule: AlertRule) -> tuple[int, list[SyslogEntry]]:
             q = q.filter(SyslogEntry.dst_port == int(dst_port))
 
     elif rule.condition_type == "new_ip":
-        # Fires when an IP appears in the window that has never been seen before
-        recent_ips = {r.source_ip for r in q.with_entities(SyslogEntry.source_ip).all()}
+        # Fires when an IP appears in the window that has never been seen before.
+        # Limit "ever seen" to the past 90 days to avoid a full-table scan.
+        horizon = datetime.now(timezone.utc) - timedelta(days=90)
+        recent_ips = {r.source_ip for r in q.with_entities(SyslogEntry.source_ip).limit(500).all()}
+        if not recent_ips:
+            return 0, []
         ever_seen = {
             r.source_ip for r in
             db.query(SyslogEntry.source_ip)
-            .filter(SyslogEntry.received_at < since)
-            .filter(SyslogEntry.source_ip.isnot(None))
+            .filter(
+                SyslogEntry.received_at >= horizon,
+                SyslogEntry.received_at < since,
+                SyslogEntry.source_ip.isnot(None),
+            )
             .distinct()
+            .limit(5000)
             .all()
         }
         new_ips = recent_ips - ever_seen
@@ -110,7 +118,8 @@ async def _send_webhook(url: str, payload: dict) -> None:
         logger.warning("Webhook failed (%s): %s", url, exc)
 
 
-async def _send_email(to_addr: str, subject: str, body: str) -> None:
+def _send_email_sync(to_addr: str, subject: str, body: str) -> None:
+    """Blocking SMTP send — must be called in a thread, not on the event loop."""
     smtp_host = get_service_setting("smtp_host")
     smtp_port = int(get_service_setting("smtp_port") or "587")
     smtp_user = get_service_setting("smtp_user")
@@ -137,9 +146,20 @@ async def _send_email(to_addr: str, subject: str, body: str) -> None:
         logger.warning("Email notification failed: %s", exc)
 
 
+async def _send_email(to_addr: str, subject: str, body: str) -> None:
+    """Non-blocking wrapper — runs SMTP in a thread pool."""
+    await asyncio.to_thread(_send_email_sync, to_addr, subject, body)
+
+
 # ── Main evaluation loop ──────────────────────────────────────────────────────
 
-async def _evaluate_once() -> None:
+def _evaluate_once_sync() -> list[dict]:
+    """
+    Run all alert rule checks synchronously (blocking DB calls).
+    Returns list of fired-rule payloads so the async caller can send notifications.
+    Must be called in a thread pool — never directly on the event loop.
+    """
+    fired = []
     db = SessionLocal()
     try:
         rules = db.query(AlertRule).filter_by(enabled=True).all()
@@ -155,32 +175,47 @@ async def _evaluate_once() -> None:
             db.add(event)
             rule.last_fired_at = datetime.now(timezone.utc)
             db.commit()
-
             logger.info("Alert fired: %s (count=%d)", rule.name, count)
 
-            # Notifications
-            payload = {
-                "rule": rule.name,
-                "condition": rule.condition_type,
-                "count": count,
-                "detail": detail,
-                "fired_at": datetime.now(timezone.utc).isoformat(),
-            }
-            tasks = []
-            if rule.notify_webhook:
-                tasks.append(_send_webhook(rule.notify_webhook, payload))
-            if rule.notify_email:
-                tasks.append(_send_email(
-                    rule.notify_email,
-                    f"[SIEM Alert] {rule.name}",
-                    detail,
-                ))
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
+            fired.append({
+                "rule_name": rule.name,
+                "notify_webhook": rule.notify_webhook,
+                "notify_email": rule.notify_email,
+                "payload": {
+                    "rule": rule.name,
+                    "condition": rule.condition_type,
+                    "count": count,
+                    "detail": detail,
+                    "fired_at": datetime.now(timezone.utc).isoformat(),
+                },
+            })
     except Exception as exc:
         logger.error("Alert evaluation error: %s", exc)
     finally:
         db.close()
+    return fired
+
+
+async def _evaluate_once() -> None:
+    """
+    Run alert evaluation off the event loop then dispatch notifications async.
+    DB queries are blocking and must not run on the event loop directly —
+    doing so would freeze the entire service (no HTTP responses, no syslog ingestion)
+    for the duration of the queries.
+    """
+    fired = await asyncio.to_thread(_evaluate_once_sync)
+    for item in fired:
+        tasks = []
+        if item["notify_webhook"]:
+            tasks.append(_send_webhook(item["notify_webhook"], item["payload"]))
+        if item["notify_email"]:
+            tasks.append(_send_email(
+                item["notify_email"],
+                f"[SIEM Alert] {item['rule_name']}",
+                item["payload"]["detail"],
+            ))
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def run_alert_engine() -> None:

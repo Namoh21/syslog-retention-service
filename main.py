@@ -66,13 +66,19 @@ def clear_login_attempts(ip: str) -> None:
 
 # ── Startup / shutdown ────────────────────────────────────────────────────────
 
+def _do_purge() -> int:
+    db = SessionLocal()
+    try:
+        return purge_old_entries(db)
+    finally:
+        db.close()
+
+
 async def _scheduled_purge():
     while True:
         await asyncio.sleep(86400)
         try:
-            db = SessionLocal()
-            deleted = purge_old_entries(db)
-            db.close()
+            deleted = await asyncio.to_thread(_do_purge)
             if deleted:
                 logger.info("Scheduled purge: removed %d entries", deleted)
         except Exception as exc:

@@ -74,6 +74,19 @@ engine = create_engine(
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# SQLite performance pragmas — applied on every new connection
+from sqlalchemy import event as _sa_event
+
+@_sa_event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _record):
+    cur = dbapi_conn.cursor()
+    cur.execute("PRAGMA journal_mode=WAL")       # concurrent reads don't block writes
+    cur.execute("PRAGMA synchronous=NORMAL")      # safe but faster than FULL
+    cur.execute("PRAGMA cache_size=-32000")       # 32 MB page cache in memory
+    cur.execute("PRAGMA temp_store=MEMORY")       # temp tables in RAM, not SD card
+    cur.execute("PRAGMA busy_timeout=5000")       # wait up to 5 s instead of failing
+    cur.close()
+
 
 class Base(DeclarativeBase):
     pass
