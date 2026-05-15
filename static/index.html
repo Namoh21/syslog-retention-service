@@ -322,20 +322,44 @@ async function doSetup() {
       await doLogin();
     }, 800);
   } catch(e) {
-    msg.innerHTML = `<div class="alert alert-warn">${esc(e.message)}</div>`;
+    const isNetwork = e instanceof TypeError && e.message.toLowerCase().includes('fetch');
+    msg.innerHTML = isNetwork
+      ? `<div class="alert alert-warn">
+           Cannot reach the service. Make sure it is running, then
+           <a href="#" onclick="doSetup()" style="color:var(--accent)">try again</a>.
+           <br><small style="color:var(--muted)">Run: <code>sudo systemctl status syslog-siem</code></small>
+         </div>`
+      : `<div class="alert alert-warn">${esc(e.message)}</div>`;
   }
 }
 
 // Auto-restore session from sessionStorage on page load
 (async () => {
   // Check setup status first — show wizard if no admin exists yet
-  try {
-    const status = await fetch('/api/setup/status').then(r => r.json());
-    if (!status.setup_complete) {
-      document.getElementById('setup-screen').classList.remove('hidden');
-      return;  // Don't show login or try to restore session
+  let setupComplete = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const status = await fetch('/api/setup/status').then(r => r.json());
+      setupComplete = status.setup_complete;
+      break;
+    } catch(e) {
+      if (attempt < 2) await new Promise(r => setTimeout(r, 1500));
     }
-  } catch(e) { /* API unreachable — fall through to login */ }
+  }
+
+  if (setupComplete === null) {
+    // Service unreachable after retries — show a clear status instead of blank page
+    document.getElementById('login-screen').classList.remove('hidden');
+    document.getElementById('login-err').textContent =
+      'Service is not reachable. Check that syslog-siem is running.';
+    document.getElementById('login-err').style.display = 'block';
+    return;
+  }
+
+  if (!setupComplete) {
+    document.getElementById('setup-screen').classList.remove('hidden');
+    return;
+  }
 
   document.getElementById('login-screen').classList.remove('hidden');
 

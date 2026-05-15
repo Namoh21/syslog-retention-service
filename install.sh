@@ -678,10 +678,9 @@ Group=${SERVICE_USER}
 WorkingDirectory=${INSTALL_DIR}
 ExecStart=${PYTHON} main.py
 Environment=PYTHONDONTWRITEBYTECODE=1
-Restart=on-failure
+Restart=always
 RestartSec=30
-StartLimitIntervalSec=120
-StartLimitBurst=3
+StartLimitIntervalSec=0
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=append:${LOG_DIR}/service.log
@@ -712,8 +711,9 @@ EOF
     ufw --force enable >/dev/null 2>&1 || true
     ok "Firewall rules added (UDP ${SYSLOG_UDP_PORT}, TCP ${SYSLOG_TCP_PORT}, Web ${WEB_PORT})"
 
-    # Start service
+    # Start service — reset any prior failed state first
     step "Starting service"
+    systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
     systemctl start "$SERVICE_NAME"
     sleep 3
     local status
@@ -789,6 +789,7 @@ do_update() {
     step "Restarting service"
     systemctl daemon-reload
     if systemctl is-enabled --quiet "$SERVICE_NAME" 2>/dev/null; then
+        systemctl reset-failed "$SERVICE_NAME" 2>/dev/null || true
         systemctl restart "$SERVICE_NAME"
         sleep 3
         ok "Service status: $(get_service_status)"
