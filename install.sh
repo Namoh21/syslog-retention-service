@@ -19,7 +19,8 @@ LOG_DIR="/var/log/syslog-siem"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_PORT=8080
-SYSLOG_PORT=514
+SYSLOG_UDP_PORT=514
+SYSLOG_TCP_PORT=6514
 M2_MOUNT="/mnt/syslog-data"
 
 # ── colours ──────────────────────────────────────────────────────────────────
@@ -150,7 +151,8 @@ EOF
 
     # Store ports for rest of install
     WEB_PORT="$api_port"
-    SYSLOG_PORT="$udp_port"
+    SYSLOG_UDP_PORT="$udp_port"
+    SYSLOG_TCP_PORT="$tcp_port"
 }
 
 # =============================================================================
@@ -535,7 +537,8 @@ do_install() {
     # Read ports from .env for firewall
     if [[ -f "$ENV_FILE" ]]; then
         WEB_PORT=$(grep '^API_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "8080")
-        SYSLOG_PORT=$(grep '^SYSLOG_UDP_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "514")
+        SYSLOG_UDP_PORT=$(grep '^SYSLOG_UDP_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "514")
+        SYSLOG_TCP_PORT=$(grep '^SYSLOG_TCP_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "6514")
     fi
 
     # Virtual environment
@@ -642,12 +645,11 @@ EOF
 
     # Firewall
     step "Configuring firewall (ufw)"
-    ufw allow "${SYSLOG_PORT}/udp" comment "Syslog UDP" >/dev/null 2>&1 || true
-    ufw allow "${SYSLOG_PORT}/tcp" comment "Syslog TCP" >/dev/null 2>&1 || true
-    ufw allow "${WEB_PORT}/tcp"    comment "SIEM Web Console" >/dev/null 2>&1 || true
-    # Enable ufw non-interactively if not already active
+    ufw allow "${SYSLOG_UDP_PORT}/udp" comment "Syslog UDP" >/dev/null 2>&1 || true
+    ufw allow "${SYSLOG_TCP_PORT}/tcp" comment "Syslog TCP" >/dev/null 2>&1 || true
+    ufw allow "${WEB_PORT}/tcp"        comment "SIEM Web Console" >/dev/null 2>&1 || true
     ufw --force enable >/dev/null 2>&1 || true
-    ok "Firewall rules added"
+    ok "Firewall rules added (UDP ${SYSLOG_UDP_PORT}, TCP ${SYSLOG_TCP_PORT}, Web ${WEB_PORT})"
 
     # Start service
     step "Starting service"
@@ -671,7 +673,8 @@ EOF
     echo -e "${GREEN}  Installation complete!${NC}"
     echo -e "${GREEN}  Web console : http://${ip}:${WEB_PORT}${NC}"
     echo -e "${GREEN}  Also at     : http://localhost:${WEB_PORT}${NC}"
-    echo -e "${GREEN}  Syslog      : UDP/TCP port ${SYSLOG_PORT}${NC}"
+    echo -e "${GREEN}  Syslog UDP  : port ${SYSLOG_UDP_PORT}${NC}"
+    echo -e "${GREEN}  Syslog TCP  : port ${SYSLOG_TCP_PORT}${NC}"
     echo -e "${GREEN}  Running as  : ${SERVICE_USER} (non-root)${NC}"
     echo -e "${GREEN}  ============================================${NC}"
     echo ""
@@ -679,7 +682,7 @@ EOF
     echo "  1. Open http://${ip}:${WEB_PORT}"
     echo "  2. The setup wizard will ask for your admin username and password"
     echo "  3. Optionally enter your Anthropic API key during setup"
-    echo "  4. Point your UDM syslog to ${ip} on port ${SYSLOG_PORT}"
+    echo "  4. Point your UDM syslog to ${ip}  (UDP ${SYSLOG_UDP_PORT} / TCP ${SYSLOG_TCP_PORT})"
     echo "  5. (Optional) Set up M.2 storage via option 8 in the main menu"
     echo ""
     echo -e "${GRAY}  Credentials are stored directly in the encrypted database.${NC}"
@@ -757,9 +760,9 @@ do_uninstall() {
     ok "Service removed"
 
     step "Removing firewall rules"
-    ufw delete allow "${SYSLOG_PORT}/udp" 2>/dev/null || true
-    ufw delete allow "${SYSLOG_PORT}/tcp" 2>/dev/null || true
-    ufw delete allow "${WEB_PORT}/tcp"    2>/dev/null || true
+    ufw delete allow "${SYSLOG_UDP_PORT}/udp" 2>/dev/null || true
+    ufw delete allow "${SYSLOG_TCP_PORT}/tcp" 2>/dev/null || true
+    ufw delete allow "${WEB_PORT}/tcp"         2>/dev/null || true
     ok "Firewall rules removed"
 
     read -rp "  Remove service user '$SERVICE_USER'? (yes/no): " rm_user
@@ -835,7 +838,7 @@ do_diagnostics() {
     # Key files
     echo ""
     header "-- Key Files --"
-    for f in main.py windows_service.py requirements-linux.txt .env; do
+    for f in main.py requirements-linux.txt .env keystore.py; do
         if [[ -f "$INSTALL_DIR/$f" ]]; then
             echo -e "  ${GREEN}OK${NC}      $f"
         else
@@ -846,8 +849,8 @@ do_diagnostics() {
     # Ports
     echo ""
     header "-- Port Availability --"
-    for port in $WEB_PORT $SYSLOG_PORT; do
-        if ss -tlnup 2>/dev/null | grep -q ":${port} " ; then
+    for port in $WEB_PORT $SYSLOG_UDP_PORT $SYSLOG_TCP_PORT; do
+        if ss -tlnup 2>/dev/null | grep -q ":${port} " || ss -ulnp 2>/dev/null | grep -q ":${port} "; then
             echo -e "  ${GREEN}LISTENING${NC}  port $port"
         else
             echo -e "  ${YELLOW}not listening${NC}  port $port"
@@ -857,7 +860,7 @@ do_diagnostics() {
     # Firewall
     echo ""
     header "-- Firewall (ufw) --"
-    ufw status 2>/dev/null | grep -E "(${WEB_PORT}|${SYSLOG_PORT}|Status)" | sed 's/^/  /' || echo "  ufw not active"
+    ufw status 2>/dev/null | grep -E "(${WEB_PORT}|${SYSLOG_UDP_PORT}|${SYSLOG_TCP_PORT}|Status)" | sed 's/^/  /' || echo "  ufw not active"
 
     # Disk space
     echo ""
