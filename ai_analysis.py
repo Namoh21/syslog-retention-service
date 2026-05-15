@@ -65,17 +65,19 @@ async def analyze_logs(
         }
 
     client = anthropic.Anthropic(api_key=api_key)
+    claude_model = get_service_setting("claude_model") or settings.claude_model
     log_text = _format_entries(entries)
+    focus_safe = focus[:200] if focus else "security threats and anomalies"
 
     user_message = (
         f"Please analyze the following {len(entries)} syslog entries from the last {hours} hours. "
-        f"Focus on: {focus}.\n\n"
+        f"Focus on: {focus_safe}.\n\n"
         f"=== LOG DATA ===\n{log_text}\n=== END LOG DATA ==="
     )
 
     try:
         response = client.messages.create(
-            model=settings.claude_model,
+            model=claude_model,
             max_tokens=4096,
             system=_SYSTEM_PROMPT,
             messages=[{"role": "user", "content": user_message}],
@@ -94,7 +96,7 @@ async def analyze_logs(
             "analysis": analysis,
             "log_count": len(entries),
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "model": settings.claude_model,
+            "model": claude_model,
             "hours_covered": hours,
         }
     except anthropic.APIError as exc:

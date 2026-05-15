@@ -163,6 +163,18 @@ class ServiceSetting(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class AuditLog(Base):
+    """Immutable record of admin actions for accountability."""
+    __tablename__ = "audit_log"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    username = Column(String(64), index=True)
+    action = Column(String(64), index=True)   # e.g. "user.create", "apikey.revoke"
+    detail = Column(Text)                      # human-readable description
+    ip_address = Column(String(45))
+
+
 def _migrate_db():
     """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:
@@ -266,21 +278,26 @@ def _import_setting(db, key: str, env_value: str) -> None:
     logger.info("Imported '%s' from .env into encrypted DB storage.", key)
 
 
-def get_service_setting(key: str, default: str = "") -> str:
-    """Read a decrypted setting from the DB."""
-    db = SessionLocal()
+def get_service_setting(key: str, default: str = "", db: "Session | None" = None) -> str:
+    """Read a decrypted setting from the DB. Pass db to reuse a request-scoped session."""
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
     try:
         row = db.query(ServiceSetting).filter_by(key=key).first()
         if not row:
             return default
         return decrypt_value(row.encrypted_value) or default
     finally:
-        db.close()
+        if own_session:
+            db.close()
 
 
-def set_service_setting(key: str, value: str) -> None:
-    """Write an encrypted setting to the DB."""
-    db = SessionLocal()
+def set_service_setting(key: str, value: str, db: "Session | None" = None) -> None:
+    """Write an encrypted setting to the DB. Pass db to reuse a request-scoped session."""
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
     try:
         row = db.query(ServiceSetting).filter_by(key=key).first()
         if row:
@@ -288,9 +305,27 @@ def set_service_setting(key: str, value: str) -> None:
             row.updated_at = datetime.now(timezone.utc)
         else:
             db.add(ServiceSetting(key=key, encrypted_value=encrypt_value(value)))
-        db.commit()
+        if own_session:
+            db.commit()
     finally:
-        db.close()
+        if own_session:
+            db.close()
+
+
+def write_audit(
+    db: "Session",
+    username: str,
+    action: str,
+    detail: str,
+    ip_address: str = "",
+) -> None:
+    """Append an immutable audit log entry. Caller must commit the session."""
+    db.add(AuditLog(
+        username=username,
+        action=action,
+        detail=detail,
+        ip_address=ip_address,
+    ))
 
 
 def _secure_env_file():
@@ -367,7 +402,10 @@ SEVERITY_NAMES = [
 ]
 
 
-def query_logs(
+_SEARCH_MAX_LEN = 200  # prevent expensive scans on huge search strings
+
+
+def _build_log_query(
     db: Session,
     *,
     source_ip: Optional[str] = None,
@@ -376,25 +414,22 @@ def query_logs(
     search: Optional[str] = None,
     since: Optional[datetime] = None,
     until: Optional[datetime] = None,
-    # normalized filters
     event_type: Optional[str] = None,
     src_ip: Optional[str] = None,
     dst_ip: Optional[str] = None,
     dst_port: Optional[int] = None,
     protocol: Optional[str] = None,
     action: Optional[str] = None,
-    limit: int = 200,
-    offset: int = 0,
-) -> tuple[list[SyslogEntry], int]:
+):
     q = db.query(SyslogEntry)
     if source_ip:
         q = q.filter(SyslogEntry.source_ip == source_ip)
     if severity_max is not None:
         q = q.filter(SyslogEntry.severity <= severity_max)
     if hostname:
-        q = q.filter(SyslogEntry.hostname.ilike(f"%{hostname}%"))
+        q = q.filter(SyslogEntry.hostname.ilike(f"%{hostname[:_SEARCH_MAX_LEN]}%"))
     if search:
-        q = q.filter(SyslogEntry.message.ilike(f"%{search}%"))
+        q = q.filter(SyslogEntry.message.ilike(f"%{search[:_SEARCH_MAX_LEN]}%"))
     if since:
         q = q.filter(SyslogEntry.received_at >= since)
     if until:
@@ -411,9 +446,20 @@ def query_logs(
         q = q.filter(SyslogEntry.protocol.ilike(protocol))
     if action:
         q = q.filter(SyslogEntry.action == action.upper())
+    return q
+
+
+def query_logs(db: Session, *, limit: int = 200, offset: int = 0, **kwargs) -> tuple[list[SyslogEntry], int]:
+    q = _build_log_query(db, **kwargs)
     total = q.count()
     entries = q.order_by(SyslogEntry.received_at.desc()).offset(offset).limit(limit).all()
     return entries, total
+
+
+def query_logs_for_export(db: Session, *, max_rows: int = 50_000, **kwargs):
+    """Return a query iterator for CSV export — does not load all rows into memory."""
+    q = _build_log_query(db, **kwargs)
+    return q.order_by(SyslogEntry.received_at.desc()).limit(max_rows)
 
 
 def purge_old_entries(db: Session) -> int:

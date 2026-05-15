@@ -5,9 +5,13 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+import csv
+import io
+
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from auth import (
@@ -17,9 +21,9 @@ from auth import (
 )
 from config import settings
 from database import (
-    ApiKey, RetentionPolicy, SyslogEntry, User,
-    get_db, get_stats, purge_old_entries, query_logs,
-    SEVERITY_NAMES, FACILITY_NAMES,
+    ApiKey, AuditLog, RetentionPolicy, SyslogEntry, User,
+    get_db, get_stats, purge_old_entries, query_logs, query_logs_for_export,
+    write_audit, SEVERITY_NAMES, FACILITY_NAMES,
 )
 
 router = APIRouter()
@@ -123,6 +127,27 @@ class ApiKeyCreate(BaseModel):
     read_only: bool = True
 
 
+class ResetPassword(BaseModel):
+    new_password: str
+
+
+class AiAnalyzeBody(BaseModel):
+    hours: int = 24
+    focus: str = "security threats and anomalies"
+
+    @field_validator("focus")
+    @classmethod
+    def cap_focus(cls, v: str) -> str:
+        return v[:200]
+
+    @field_validator("hours")
+    @classmethod
+    def cap_hours(cls, v: int) -> int:
+        if v < 1: return 1
+        if v > 720: return 720
+        return v
+
+
 class ApiKeyCreated(ApiKeyOut):
     raw_key: str  # Only returned once on creation
 
@@ -131,6 +156,7 @@ class ApiKeyCreated(ApiKeyOut):
 
 @router.post("/auth/token", response_model=Token, tags=["auth"])
 async def login(
+    request: Request,
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Session = Depends(get_db),
 ):
@@ -143,9 +169,12 @@ async def login(
         )
     # Clear rate-limit counter on successful login
     from main import clear_login_attempts
-    # (request IP not available here — cleared by middleware on next success)
+    ip = request.client.host if request.client else "unknown"
+    clear_login_attempts(ip)
     token_version = getattr(user, "token_version", 0)
     token = create_access_token({"sub": user.username, "ver": token_version})
+    write_audit(db, user.username, "auth.login", f"Login from {ip}", ip)
+    db.commit()
     return {"access_token": token, "token_type": "bearer"}
 
 
@@ -277,17 +306,16 @@ async def stats(
 
 @router.post("/ai/analyze", tags=["ai"])
 async def ai_analyze(
-    hours: int = Body(24, embed=True, ge=1, le=720),
-    focus: str = Body("security", embed=True),
+    body: AiAnalyzeBody,
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     from ai_analysis import analyze_logs
-    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    since = datetime.now(timezone.utc) - timedelta(hours=body.hours)
     entries, _ = query_logs(db, since=since, limit=settings.ai_analysis_max_logs)
     if not entries:
         return {"analysis": "No log entries found for the requested time window.", "log_count": 0}
-    result = await analyze_logs(entries, focus=focus, hours=hours)
+    result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
     return result
 
 
@@ -322,28 +350,32 @@ async def get_retention(
 
 @router.put("/admin/retention", response_model=RetentionOut, tags=["admin"])
 async def set_retention(
+    request: Request,
     body: RetentionIn,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     policy = db.query(RetentionPolicy).first()
     policy.retention_days = body.retention_days
     policy.max_entries = body.max_entries
     policy.updated_at = datetime.now(timezone.utc)
+    write_audit(db, admin.username, "retention.update",
+                f"Retention set to {body.retention_days}d / {body.max_entries} entries",
+                request.client.host if request.client else "")
     db.commit()
-    return RetentionOut(
-        retention_days=policy.retention_days,
-        max_entries=policy.max_entries,
-        updated_at=policy.updated_at,
-    )
+    return RetentionOut(retention_days=policy.retention_days, max_entries=policy.max_entries, updated_at=policy.updated_at)
 
 
 @router.post("/admin/purge", tags=["admin"])
 async def manual_purge(
+    request: Request,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     deleted = purge_old_entries(db)
+    write_audit(db, admin.username, "logs.purge", f"Manual purge: removed {deleted} entries",
+                request.client.host if request.client else "")
+    db.commit()
     return {"deleted": deleted, "message": f"Purged {deleted} entries beyond retention window."}
 
 
@@ -359,21 +391,21 @@ async def list_users(
 
 @router.post("/admin/users", response_model=UserOut, status_code=201, tags=["admin"])
 async def create_user(
+    request: Request,
     body: UserCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     err = validate_password_strength(body.password)
     if err:
         raise HTTPException(status_code=400, detail=err)
     if db.query(User).filter_by(username=body.username).first():
         raise HTTPException(status_code=409, detail="Username already exists")
-    user = User(
-        username=body.username,
-        hashed_password=get_password_hash(body.password),
-        is_admin=body.is_admin,
-    )
+    user = User(username=body.username, hashed_password=get_password_hash(body.password), is_admin=body.is_admin)
     db.add(user)
+    write_audit(db, admin.username, "user.create",
+                f"Created user '{body.username}' (admin={body.is_admin})",
+                request.client.host if request.client else "")
     db.commit()
     db.refresh(user)
     return user
@@ -381,6 +413,7 @@ async def create_user(
 
 @router.delete("/admin/users/{user_id}", status_code=204, tags=["admin"])
 async def delete_user(
+    request: Request,
     user_id: int,
     db: Session = Depends(get_db),
     current: User = Depends(require_admin),
@@ -390,8 +423,33 @@ async def delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if user.username == current.username:
         raise HTTPException(status_code=400, detail="Cannot delete yourself")
+    write_audit(db, current.username, "user.delete", f"Deleted user '{user.username}'",
+                request.client.host if request.client else "")
     db.delete(user)
     db.commit()
+
+
+@router.post("/admin/users/{user_id}/reset-password", tags=["admin"])
+async def reset_user_password(
+    request: Request,
+    user_id: int,
+    body: "ResetPassword",
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    user = db.query(User).filter_by(id=user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    err = validate_password_strength(body.new_password)
+    if err:
+        raise HTTPException(status_code=400, detail=err)
+    user.hashed_password = get_password_hash(body.new_password)
+    user.token_version = (getattr(user, "token_version", 0) or 0) + 1
+    write_audit(db, admin.username, "user.reset_password",
+                f"Reset password for user '{user.username}'",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"message": f"Password reset for '{user.username}'. Their active sessions have been invalidated."}
 
 
 @router.post("/auth/change-password", tags=["auth"])
@@ -410,8 +468,8 @@ async def change_password(
     if not verify_password(body.current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
     user.hashed_password = get_password_hash(body.new_password)
-    # Increment token_version to invalidate all existing JWTs for this user
     user.token_version = (getattr(user, "token_version", 0) or 0) + 1
+    write_audit(db, current.username, "auth.password_change", "Password changed", "")
     db.commit()
     return {"message": "Password updated. Please sign in again."}
 
@@ -428,36 +486,36 @@ async def list_api_keys(
 
 @router.post("/admin/apikeys", response_model=ApiKeyCreated, status_code=201, tags=["admin"])
 async def create_api_key(
+    request: Request,
     body: ApiKeyCreate,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     raw = generate_api_key()
     key_hash = hashlib.sha256(raw.encode()).hexdigest()
     record = ApiKey(key_hash=key_hash, label=body.label, read_only=body.read_only)
     db.add(record)
+    write_audit(db, admin.username, "apikey.create", f"Created API key '{body.label}'",
+                request.client.host if request.client else "")
     db.commit()
     db.refresh(record)
-    return ApiKeyCreated(
-        id=record.id,
-        label=record.label,
-        created_at=record.created_at,
-        last_used_at=record.last_used_at,
-        is_active=record.is_active,
-        read_only=record.read_only,
-        raw_key=raw,
-    )
+    return ApiKeyCreated(id=record.id, label=record.label, created_at=record.created_at,
+                         last_used_at=record.last_used_at, is_active=record.is_active,
+                         read_only=record.read_only, raw_key=raw)
 
 
 @router.delete("/admin/apikeys/{key_id}", status_code=204, tags=["admin"])
 async def revoke_api_key(
+    request: Request,
     key_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
+    admin: User = Depends(require_admin),
 ):
     record = db.query(ApiKey).filter_by(id=key_id).first()
     if not record:
         raise HTTPException(status_code=404)
+    write_audit(db, admin.username, "apikey.revoke", f"Revoked API key '{record.label}'",
+                request.client.host if request.client else "")
     record.is_active = False
     db.commit()
 
@@ -504,30 +562,47 @@ async def get_settings(_: User = Depends(require_admin)):
 
 @router.put("/admin/settings/anthropic-key", tags=["admin"])
 async def update_anthropic_key(
+    request: Request,
     body: ServiceSettingUpdate,
-    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
     from database import set_service_setting
     if not body.value.strip():
         raise HTTPException(status_code=400, detail="API key cannot be empty")
-    set_service_setting("anthropic_api_key", body.value.strip())
+    set_service_setting("anthropic_api_key", body.value.strip(), db)
+    write_audit(db, admin.username, "settings.anthropic_key", "Anthropic API key updated",
+                request.client.host if request.client else "")
+    db.commit()
     return {"message": "Anthropic API key updated and encrypted in database."}
 
 
 @router.delete("/admin/settings/anthropic-key", tags=["admin"])
-async def delete_anthropic_key(_: User = Depends(require_admin)):
+async def delete_anthropic_key(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
     from database import set_service_setting
-    set_service_setting("anthropic_api_key", "")
+    set_service_setting("anthropic_api_key", "", db)
+    write_audit(db, admin.username, "settings.anthropic_key", "Anthropic API key removed",
+                request.client.host if request.client else "")
+    db.commit()
     return {"message": "Anthropic API key removed."}
 
 
 @router.put("/admin/settings/claude-model", tags=["admin"])
 async def update_claude_model(
+    request: Request,
     body: ServiceSettingUpdate,
-    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
 ):
     from database import set_service_setting
-    set_service_setting("claude_model", body.value.strip())
+    set_service_setting("claude_model", body.value.strip(), db)
+    write_audit(db, admin.username, "settings.claude_model", f"Claude model set to {body.value.strip()}",
+                request.client.host if request.client else "")
+    db.commit()
     return {"message": f"Claude model updated to {body.value.strip()}"}
 
 
@@ -551,3 +626,96 @@ async def test_anthropic_key(_: User = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="API key is invalid or expired.")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Connection failed: {exc}")
+
+
+# ===================== Audit Log =====================
+
+@router.get("/admin/audit", tags=["admin"])
+async def get_audit_log(
+    limit: int = Query(200, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    action: Optional[str] = Query(None),
+    username: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    q = db.query(AuditLog)
+    if action:
+        q = q.filter(AuditLog.action.ilike(f"%{action}%"))
+    if username:
+        q = q.filter(AuditLog.username == username)
+    total = q.count()
+    entries = q.order_by(AuditLog.timestamp.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "entries": [
+            {
+                "id": e.id,
+                "timestamp": e.timestamp,
+                "username": e.username,
+                "action": e.action,
+                "detail": e.detail,
+                "ip_address": e.ip_address,
+            }
+            for e in entries
+        ],
+    }
+
+
+# ===================== CSV Export =====================
+
+@router.get("/logs/export", tags=["logs"])
+async def export_logs_csv(
+    source_ip: Optional[str] = Query(None),
+    severity_max: Optional[int] = Query(None, ge=0, le=7),
+    hostname: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    event_type: Optional[str] = Query(None),
+    src_ip: Optional[str] = Query(None),
+    dst_ip: Optional[str] = Query(None),
+    dst_port: Optional[int] = Query(None),
+    protocol: Optional[str] = Query(None),
+    action: Optional[str] = Query(None),
+    max_rows: int = Query(50000, ge=1, le=100000),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    rows = query_logs_for_export(
+        db, max_rows=max_rows,
+        source_ip=source_ip, severity_max=severity_max, hostname=hostname,
+        search=search, since=since, until=until, event_type=event_type,
+        src_ip=src_ip, dst_ip=dst_ip, dst_port=dst_port,
+        protocol=protocol, action=action,
+    )
+
+    def generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "id", "received_at", "source_ip", "severity", "severity_name",
+            "hostname", "app_name", "event_type", "action", "src_ip", "dst_ip",
+            "dst_port", "protocol", "rule_name", "message",
+        ])
+        yield buf.getvalue()
+        buf.truncate(0); buf.seek(0)
+        for e in rows:
+            sev_name = SEVERITY_NAMES[e.severity] if e.severity is not None and e.severity < 8 else ""
+            writer.writerow([
+                e.id, e.received_at, e.source_ip, e.severity, sev_name,
+                e.hostname, e.app_name, e.event_type, e.action,
+                e.src_ip, e.dst_ip, e.dst_port, e.protocol, e.rule_name,
+                e.message,
+            ])
+            yield buf.getvalue()
+            buf.truncate(0); buf.seek(0)
+
+    filename = f"syslog_export_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.csv"
+    return StreamingResponse(
+        generate(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

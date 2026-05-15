@@ -176,17 +176,18 @@
       <div class="brand-sub">Syslog Retention Service</div>
     </div>
     <ul>
-      <li class="nav-section">Monitor</li>
-      <li><a onclick="showPage('dashboard')" data-page="dashboard"><span class="nav-icon">&#x1F4CA;</span> Dashboard</a></li>
+      <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Monitor</li>
+      <li><a onclick="showPage('dashboard')" data-page="dashboard"><span class="nav-icon">&#x1F4CA;</span> Dashboard<span id="nav-log-count" style="margin-left:auto;font-size:10px;color:var(--muted)"></span></a></li>
       <li><a onclick="showPage('logs')" data-page="logs"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
-      <li class="nav-section">Analyze</li>
+      <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Analyze</li>
       <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis</a></li>
-      <li class="nav-section">Configure</li>
+      <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
       <li><a onclick="showPage('users')" data-page="users"><span class="nav-icon">&#x1F464;</span> Users</a></li>
       <li><a onclick="showPage('apikeys')" data-page="apikeys"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
-      <li class="nav-section">Help</li>
+      <li><a onclick="showPage('auditlog')" data-page="auditlog"><span class="nav-icon">&#x1F4DC;</span> Audit Log</a></li>
+      <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Help</li>
       <li><a onclick="showPage('setup')" data-page="setup"><span class="nav-icon">&#x2139;&#xFE0F;</span> Setup Guide</a></li>
     </ul>
     <div class="user-info">
@@ -203,9 +204,10 @@
 
 <script>
 const API = '';
-let token = null;
-let currentUser = null;
+let token = sessionStorage.getItem('siem_token') || null;
+let currentUser = sessionStorage.getItem('siem_user') || null;
 let serviceInfo = null;
+let _navPollTimer = null;
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 async function doLogin() {
@@ -223,10 +225,13 @@ async function doLogin() {
     const d = await r.json();
     token = d.access_token;
     currentUser = u;
+    sessionStorage.setItem('siem_token', token);
+    sessionStorage.setItem('siem_user', u);
     document.getElementById('nav-user').textContent = u;
     document.getElementById('login-screen').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
     serviceInfo = await apiFetch('/api/info').catch(() => null);
+    startNavPoll();
     showPage('dashboard');
   } catch(e) { err.textContent = e.message; err.style.display='block'; }
   btn.disabled = false; btn.textContent = 'Sign In';
@@ -234,6 +239,9 @@ async function doLogin() {
 
 function doLogout() {
   token = null; currentUser = null; serviceInfo = null;
+  sessionStorage.removeItem('siem_token');
+  sessionStorage.removeItem('siem_user');
+  if (_navPollTimer) { clearInterval(_navPollTimer); _navPollTimer = null; }
   document.getElementById('app').classList.add('hidden');
   document.getElementById('login-screen').classList.remove('hidden');
   document.title = 'Syslog SIEM Console';
@@ -244,6 +252,37 @@ function confirmLogout() {
 }
 
 document.getElementById('login-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+
+// Auto-restore session from sessionStorage on page load
+(async () => {
+  if (token && currentUser) {
+    const ok = await apiFetch('/api/info').catch(() => null);
+    if (ok) {
+      serviceInfo = ok;
+      document.getElementById('nav-user').textContent = currentUser;
+      document.getElementById('login-screen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      startNavPoll();
+      showPage('dashboard');
+    } else {
+      token = null; currentUser = null;
+      sessionStorage.removeItem('siem_token'); sessionStorage.removeItem('siem_user');
+    }
+  }
+})();
+
+function startNavPoll() {
+  updateNavCount();
+  if (_navPollTimer) clearInterval(_navPollTimer);
+  _navPollTimer = setInterval(updateNavCount, 30000);
+}
+
+async function updateNavCount() {
+  const s = await apiFetch('/api/stats').catch(() => null);
+  if (!s) return;
+  const el = document.getElementById('nav-log-count');
+  if (el) el.textContent = s.total_entries ? s.total_entries.toLocaleString() : '';
+}
 
 async function apiFetch(path, opts={}) {
   const r = await fetch(`${API}${path}`, {
@@ -263,25 +302,43 @@ async function apiFetch(path, opts={}) {
 function showPage(name) {
   document.querySelectorAll('nav ul li a').forEach(a =>
     a.classList.toggle('active', a.dataset.page === name));
-  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, setup, changePassword };
-  document.title = {
-    dashboard: 'Dashboard',
-    logs: 'Log Viewer',
-    ai: 'AI Analysis',
-    svcSettings: 'Service Settings',
-    retention: 'Retention',
-    users: 'Users',
-    apikeys: 'API Keys',
-    setup: 'Setup Guide',
-    changePassword: 'Change Password',
-  }[name] ? `${({dashboard:'Dashboard',logs:'Log Viewer',ai:'AI Analysis',svcSettings:'Service Settings',retention:'Retention',users:'Users',apikeys:'API Keys',setup:'Setup Guide',changePassword:'Change Password'}[name])} — SIEM Console` : 'SIEM Console';
+  const pageTitles = {
+    dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
+    svcSettings:'Service Settings', retention:'Retention', users:'Users',
+    apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
+  };
+  document.title = pageTitles[name] ? `${pageTitles[name]} — SIEM Console` : 'SIEM Console';
+  // Stop live refresh when leaving logs page
+  if (name !== 'logs' && _liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
+  const pages = { dashboard, logs, ai, svcSettings, retention, users, apikeys, auditlog, setup, changePassword };
   pages[name]?.();
 }
 
 function render(html) { document.getElementById('main-content').innerHTML = html; }
 
-function fmtDate(iso) { return iso ? new Date(iso).toLocaleString() : '—'; }
+function fmtDate(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2,'0');
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `+
+         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function copyToClipboard(text, btn) {
+  const original = btn ? btn.textContent : '';
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => { if(btn){ btn.textContent='Copied!'; setTimeout(()=>btn.textContent=original,2000); }});
+  } else {
+    // Fallback for non-HTTPS (e.g. http://192.168.x.x:8080)
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); if(btn){ btn.textContent='Copied!'; setTimeout(()=>btn.textContent=original,2000); } }
+    catch { if(btn) btn.textContent = 'Select manually'; }
+    document.body.removeChild(ta);
+  }
+}
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
 async function dashboard() {
@@ -408,14 +465,17 @@ function actionBadge(a) {
   return `<span class="sev" style="background:${c}22;color:${c}">${a}</span>`;
 }
 
+let _liveRefreshTimer = null;
+
 async function logs() {
+  if (_liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
   const etOptions = EVENT_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('');
   render(`
     <div class="page-header"><h1>Log Viewer</h1><p>Search and filter all incoming syslog events from your network devices.</p></div>
     <div class="card">
-      <details>
+      <details open>
         <summary style="cursor:pointer;color:var(--accent);font-size:13px;font-weight:600;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
-          <span>&#x1F50D;</span> Filter Logs <span style="color:var(--muted);font-size:11px;font-weight:400">&nbsp;— click to expand</span>
+          <span>&#x1F50D;</span> Filter Logs
         </summary>
         <div style="margin-top:14px">
           <div class="form-row">
@@ -450,9 +510,13 @@ async function logs() {
             <div class="form-group"><label>From date/time</label><input type="datetime-local" id="f-since" /></div>
             <div class="form-group"><label>To date/time</label><input type="datetime-local" id="f-until" /></div>
             <div class="form-group"><label>&nbsp;</label>
-              <div style="display:flex;gap:8px">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
                 <button class="btn btn-primary" onclick="applyLogFilters()">Search</button>
                 <button class="btn btn-ghost" onclick="clearLogFilters()">Clear</button>
+                <button class="btn btn-ghost" onclick="exportCsv()" title="Download current filters as CSV">&#x2B07; CSV</button>
+                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--muted);border:1px solid var(--border);padding:4px 10px;border-radius:var(--radius)">
+                  <input type="checkbox" id="live-toggle" onchange="toggleLive(this.checked)" /> Live
+                </label>
               </div>
             </div>
           </div>
@@ -464,6 +528,39 @@ async function logs() {
   logPage = { offset:0, limit:100, total:0 };
   logFilters = {};
   await fetchLogs();
+  // Enter key on text inputs triggers search
+  ['f-ip','f-host','f-search','f-src','f-dst','f-dport'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('keydown', e => { if(e.key==='Enter') applyLogFilters(); });
+  });
+}
+
+function toggleLive(on) {
+  if (_liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
+  if (on) _liveRefreshTimer = setInterval(() => { logPage.offset = 0; fetchLogs(); }, 10000);
+}
+
+function exportCsv() {
+  let qs = '?max_rows=50000';
+  for (const [k,v] of Object.entries(logFilters)) {
+    if (v !== null && v !== '') qs += `&${k}=${encodeURIComponent(v)}`;
+  }
+  const a = document.createElement('a');
+  a.href = `${API}/api/logs/export${qs}`;
+  a.setAttribute('download', '');
+  a.setAttribute('data-auth', token);
+  // Need to pass auth — fetch and trigger blob download
+  fetch(`${API}/api/logs/export${qs}`, { headers:{ Authorization:`Bearer ${token}` } })
+    .then(r => r.blob())
+    .then(blob => {
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `syslog_export_${new Date().toISOString().slice(0,10)}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+    })
+    .catch(e => alert('Export failed: ' + e.message));
 }
 
 function applyLogFilters() {
@@ -553,6 +650,7 @@ function logNav(dir) {
 // ── AI Analysis ───────────────────────────────────────────────────────────────
 async function ai() {
   const aiEnabled = serviceInfo?.ai_enabled;
+  const savedFocus = localStorage.getItem('ai_last_focus') || 'security threats and anomalies';
   render(`
     <div class="page-header"><h1>AI Security Analysis</h1><p>Claude analyzes your recent logs and identifies threats, anomalies, and security recommendations.</p></div>
     ${!aiEnabled ? `<div class="alert alert-warn">
@@ -575,7 +673,7 @@ async function ai() {
         </div>
         <div class="form-group">
           <label>Focus Area</label>
-          <input id="ai-focus" value="security threats and anomalies" style="width:280px" />
+          <input id="ai-focus" value="${esc(savedFocus)}" style="width:280px" maxlength="200" />
         </div>
         <div class="form-group"><label>&nbsp;</label>
           <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()" ${!aiEnabled?'disabled':''}>
@@ -583,15 +681,18 @@ async function ai() {
           </button>
         </div>
       </div>
-      <p class="help-tip">Claude will review up to 500 log entries from the selected window and return structured threat findings.</p>
+      <p class="help-tip">Claude will review up to 500 log entries from the selected window. Analysis typically takes 10–30 seconds.</p>
       <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis.</p>
+    </div>
+    <div id="ai-progress" style="display:none" class="alert alert-info">
+      <span class="spinner"></span><span id="ai-progress-msg">Sending logs to Claude for analysis...</span>
+      <span id="ai-elapsed" style="margin-left:12px;color:var(--muted)"></span>
     </div>
     <div id="ai-output"></div>
   `);
 }
 
 async function runAnalysis() {
-  // One-time consent notice — stored in localStorage so it only shows once
   if (!localStorage.getItem('ai_consent_given')) {
     const ok = confirm(
       'AI Analysis sends a sample of your log data to Anthropic\'s API (Claude).\n\n' +
@@ -604,17 +705,50 @@ async function runAnalysis() {
   }
   const btn = document.getElementById('ai-btn');
   const out = document.getElementById('ai-output');
-  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Analyzing...';
-  out.innerHTML = '';
+  const progress = document.getElementById('ai-progress');
+  const progressMsg = document.getElementById('ai-progress-msg');
+  const elapsed = document.getElementById('ai-elapsed');
+  const focus = document.getElementById('ai-focus').value.trim();
+  localStorage.setItem('ai_last_focus', focus);
+
+  btn.disabled = true; btn.innerHTML = '&#x1F916; Analyzing...';
+  out.innerHTML = ''; progress.style.display = 'block';
+
+  const start = Date.now();
+  const elapsedTimer = setInterval(() => {
+    const secs = Math.floor((Date.now() - start) / 1000);
+    elapsed.textContent = `${secs}s`;
+    if (secs > 20) progressMsg.textContent = 'Still working — Claude is processing your logs...';
+    if (secs > 45) progressMsg.textContent = 'Almost there — large log sets take longer...';
+  }, 1000);
+
+  // 90-second client-side timeout
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 90000);
+
   try {
     const hours = parseInt(document.getElementById('ai-hours').value);
-    const focus = document.getElementById('ai-focus').value.trim();
-    const d = await apiFetch('/api/ai/analyze', { method:'POST', body:JSON.stringify({hours,focus}) });
-    if (!d) return;
+    const r = await fetch(`${API}/api/ai/analyze`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ hours, focus }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (r.status === 401) { doLogout(); return; }
+    if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail); }
+    const d = await r.json();
     renderAnalysis(d, out);
   } catch(e) {
-    out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
+    clearTimeout(timeout);
+    if (e.name === 'AbortError') {
+      out.innerHTML = `<div class="alert alert-warn">Analysis timed out after 90 seconds. Try a shorter time window or fewer logs.</div>`;
+    } else {
+      out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
+    }
   } finally {
+    clearInterval(elapsedTimer);
+    progress.style.display = 'none';
     btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Logs';
   }
 }
@@ -710,7 +844,10 @@ async function users() {
       <td>${u.is_admin?'<span class="tag">Admin</span>':'Standard'}</td>
       <td>${u.is_active?'<span style="color:var(--accent2)">Active</span>':'<span style="color:var(--muted)">Inactive</span>'}</td>
       <td style="color:var(--muted)">${fmtDate(u.created_at)}</td>
-      <td>${u.username!==currentUser?`<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id},'${esc(u.username)}')">Remove</button>`:''}</td>
+      <td style="display:flex;gap:4px;flex-wrap:wrap">
+        ${u.username!==currentUser?`<button class="btn btn-ghost btn-sm" onclick="resetUserPassword(${u.id},'${esc(u.username)}')">Reset PW</button>`:''}
+        ${u.username!==currentUser?`<button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id},'${esc(u.username)}')">Remove</button>`:''}
+      </td>
     </tr>`).join('');
     render(`
       <div class="page-header"><h1>Users</h1><p>Manage who can access the web console and API.</p></div>
@@ -749,6 +886,18 @@ async function deleteUser(id, name) {
   if (!confirm(`Remove user "${name}"? This cannot be undone.`)) return;
   try { await apiFetch(`/api/admin/users/${id}`,{method:'DELETE'}); users(); }
   catch(e) { alert(e.message); }
+}
+
+async function resetUserPassword(id, name) {
+  const pw = prompt(`Set a new password for "${name}" (min 8 characters):`);
+  if (!pw) return;
+  if (pw.length < 8) { alert('Password must be at least 8 characters.'); return; }
+  try {
+    const d = await apiFetch(`/api/admin/users/${id}/reset-password`, {
+      method:'POST', body:JSON.stringify({new_password:pw})
+    });
+    alert(d.message);
+  } catch(e) { alert(e.message); }
 }
 
 // ── API Keys ──────────────────────────────────────────────────────────────────
@@ -802,7 +951,7 @@ async function createKey() {
     msg.innerHTML=`<div class="alert alert-ok">
       <strong>Key generated — copy it now. It will not be shown again.</strong>
       <div class="copy-key">${d.raw_key}</div>
-      <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="navigator.clipboard.writeText('${d.raw_key}').then(()=>this.textContent='Copied!')">Copy to clipboard</button>
+      <button class="btn btn-ghost btn-sm" style="margin-top:8px" onclick="copyToClipboard('${d.raw_key}',this)">Copy to clipboard</button>
     </div>`;
     setTimeout(apikeys, 4000);
   } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
@@ -957,6 +1106,62 @@ async function submitPasswordChange() {
     msg.innerHTML = '<div class="alert alert-ok">Password updated. Signing you out...</div>';
     setTimeout(doLogout, 1500);
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── Audit Log ─────────────────────────────────────────────────────────────────
+let auditPage = { offset: 0, limit: 100, total: 0 };
+
+async function auditlog() {
+  render(`
+    <div class="page-header"><h1>Audit Log</h1><p>Immutable record of all admin actions. Cannot be edited or deleted.</p></div>
+    <div id="audit-wrap"><div class="card"><div class="spinner"></div> Loading...</div></div>
+  `);
+  auditPage = { offset: 0, limit: 100, total: 0 };
+  await fetchAudit();
+}
+
+async function fetchAudit() {
+  const wrap = document.getElementById('audit-wrap');
+  if (!wrap) return;
+  wrap.innerHTML = '<div class="card"><div class="spinner"></div> Loading...</div>';
+  try {
+    const d = await apiFetch(`/api/admin/audit?limit=${auditPage.limit}&offset=${auditPage.offset}`);
+    if (!d) return;
+    auditPage.total = d.total;
+    const actionColor = a => ({
+      'auth.login':'var(--muted)', 'auth.password_change':'var(--warn)',
+      'user.create':'var(--accent2)', 'user.delete':'var(--danger)',
+      'user.reset_password':'var(--warn)', 'apikey.create':'var(--accent)',
+      'apikey.revoke':'var(--danger)', 'settings.anthropic_key':'var(--warn)',
+      'settings.claude_model':'var(--muted)', 'retention.update':'var(--muted)',
+      'logs.purge':'var(--warn)',
+    }[a] || 'var(--text)');
+    const rows = d.entries.map(e => `<tr>
+      <td style="font-size:12px;white-space:nowrap;color:var(--muted)">${fmtDate(e.timestamp)}</td>
+      <td style="font-size:12px;font-weight:600">${esc(e.username)}</td>
+      <td><span style="font-size:11px;font-weight:600;color:${actionColor(e.action)}">${esc(e.action)}</span></td>
+      <td style="font-size:12px">${esc(e.detail)}</td>
+      <td style="font-size:12px;color:var(--muted);font-family:monospace">${esc(e.ip_address||'')}</td>
+    </tr>`).join('');
+    const start = auditPage.offset + 1;
+    const end = Math.min(auditPage.offset + auditPage.limit, auditPage.total);
+    wrap.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+        <tbody>${rows || '<tr><td colspan=5 style="text-align:center;padding:24px;color:var(--muted)">No audit events yet</td></tr>'}</tbody>
+      </table></div>
+      <div class="pagination" style="padding:10px 16px">
+        <button class="btn btn-ghost btn-sm" onclick="auditNav(-1)" ${auditPage.offset===0?'disabled':''}>← Previous</button>
+        <span class="page-info">${d.total>0?`${start}–${end} of ${d.total.toLocaleString()}`:'0 events'}</span>
+        <button class="btn btn-ghost btn-sm" onclick="auditNav(1)" ${end>=auditPage.total?'disabled':''}>Next →</button>
+      </div>
+    </div>`;
+  } catch(e) { wrap.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+function auditNav(dir) {
+  auditPage.offset = Math.max(0, auditPage.offset + dir * auditPage.limit);
+  fetchAudit();
 }
 
 // ── Setup Guide ───────────────────────────────────────────────────────────────
