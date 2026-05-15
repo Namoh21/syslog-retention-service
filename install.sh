@@ -444,6 +444,65 @@ setup_m2_storage() {
 }
 
 # =============================================================================
+# M.2 DETECTION — called inline during install
+# =============================================================================
+_prompt_m2_during_install() {
+    # Skip if DB_PATH already points somewhere non-default (re-install)
+    if [[ -f "$ENV_FILE" ]]; then
+        local existing_db
+        existing_db=$(grep '^DB_PATH=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "")
+        if [[ -n "$existing_db" && "$existing_db" != "$INSTALL_DIR/data/syslog.db" ]]; then
+            ok "DB_PATH already configured: $existing_db"
+            return
+        fi
+    fi
+
+    # Skip if M.2 mount is already active and DB_PATH set
+    if mountpoint -q "$M2_MOUNT" 2>/dev/null; then
+        ok "M.2 drive already mounted at $M2_MOUNT"
+        if [[ -f "$ENV_FILE" ]] && ! grep -q '^DB_PATH=' "$ENV_FILE"; then
+            echo "DB_PATH=${M2_MOUNT}/data/syslog.db" >> "$ENV_FILE"
+            ok "DB_PATH set to ${M2_MOUNT}/data/syslog.db"
+        fi
+        return
+    fi
+
+    # Detect candidate drives (non-OS block devices)
+    local os_drive
+    os_drive=$(lsblk -ndo pkname "$(findmnt -n -o SOURCE /)" 2>/dev/null | head -1 || echo "mmcblk0")
+    local found_drives=()
+    while IFS= read -r line; do
+        local dev size
+        dev=$(echo "$line" | awk '{print $1}')
+        size=$(echo "$line" | awk '{print $2}')
+        [[ "$dev" == "$os_drive" || "$dev" == loop* || "$dev" == sr* || "$dev" == zram* ]] && continue
+        found_drives+=("/dev/$dev ($size)")
+    done < <(lsblk -ndo NAME,SIZE,TYPE | grep " disk$" || true)
+
+    [[ ${#found_drives[@]} -eq 0 ]] && return  # No extra drives — skip silently
+
+    echo ""
+    echo -e "${CYAN}  +--------------------------------------------------+${NC}"
+    echo -e "${CYAN}  |   M.2 / NVMe Drive Detected                      |${NC}"
+    echo -e "${CYAN}  +--------------------------------------------------+${NC}"
+    echo ""
+    for d in "${found_drives[@]}"; do
+        echo -e "  Found: ${WHITE}$d${NC}"
+    done
+    echo ""
+    echo -e "  ${YELLOW}Using an M.2/NVMe drive for the database is strongly${NC}"
+    echo -e "  ${YELLOW}recommended over the SD card — faster writes and no wear.${NC}"
+    echo ""
+    read -rp "  Set up M.2/NVMe storage for the database now? (yes/no): " use_m2
+    if [[ "${use_m2,,}" == "yes" || "${use_m2,,}" == "y" ]]; then
+        setup_m2_storage
+    else
+        warn "Using SD card for database. Run option 8 from the main menu to set up M.2 later."
+    fi
+}
+
+
+# =============================================================================
 # INSTALL
 # =============================================================================
 do_install() {
@@ -562,18 +621,19 @@ do_install() {
     mkdir -p "$LOG_DIR"
     ok "Log directory: $LOG_DIR"
 
-    # Data directory
-    local db_dir="$INSTALL_DIR/data"
-    # Use M.2 mount if already configured
+    # M.2 storage — offer setup if an extra drive is detected
+    step "Checking for M.2 / NVMe storage"
+    _prompt_m2_during_install
+
+    # Re-read DB dir in case M.2 wizard updated DB_PATH
+    db_dir="$INSTALL_DIR/data"
     if [[ -f "$ENV_FILE" ]]; then
-        local cfg_db
-        cfg_db=$(grep '^DB_PATH=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "")
-        if [[ -n "$cfg_db" ]]; then
-            db_dir=$(dirname "$cfg_db")
-        fi
+        local cfg_db2
+        cfg_db2=$(grep '^DB_PATH=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "")
+        [[ -n "$cfg_db2" ]] && db_dir=$(dirname "$cfg_db2")
     fi
     mkdir -p "$db_dir"
-    ok "Data directory: $db_dir"
+    ok "Database directory: $db_dir"
 
     # Dedicated service user — runs with least privilege
     step "Creating service user '$SERVICE_USER'"
@@ -635,6 +695,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
+ReadWritePaths=${M2_MOUNT}
 
 [Install]
 WantedBy=multi-user.target
