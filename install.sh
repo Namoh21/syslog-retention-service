@@ -46,6 +46,21 @@ banner() {
 
 pause() { echo ""; read -rp "  Press Enter to continue..." _; }
 
+# ── Python discovery — top-level so all functions can use it ─────────────────
+_find_python310() {
+    for cmd in python3.13 python3.12 python3.11 python3.10; do
+        if command -v "$cmd" &>/dev/null; then
+            local maj min
+            maj=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
+            min=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
+            if [[ "$maj" -ge 3 && "$min" -ge 10 ]]; then
+                echo "$cmd"; return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 get_service_status() {
     if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
         echo "Running"
@@ -550,7 +565,7 @@ do_install() {
         # ── Try package manager first (fast path) ────────────────────────────
         local pkg_installed=false
         for pkg in python3.12 python3.11 python3.10; do
-            step "apt-get install $pkg"
+            step "Trying apt: $pkg"
             if apt-get install -y -qq "$pkg" "${pkg}-venv" 2>/dev/null; then
                 ok "$pkg installed from apt"
                 pkg_installed=true
@@ -870,8 +885,23 @@ do_update() {
     banner
     echo -e "${CYAN}  [ UPDATE ]${NC}\n"
 
+    # Guard: service must be installed before updating
+    if [[ ! -d "$INSTALL_DIR" ]]; then
+        err "Service not installed — $INSTALL_DIR does not exist."
+        echo -e "  ${YELLOW}Run option 1 (Install) first.${NC}"
+        pause; return
+    fi
+
     if ! command -v git &>/dev/null; then
-        err "Git not installed. Run: sudo apt-get install git"
+        err "Git not installed."
+        apt-get install -y -qq git 2>/dev/null && ok "Git installed" || { pause; return; }
+    fi
+
+    if [[ ! -d "$INSTALL_DIR/.git" ]]; then
+        err "No git repository found at $INSTALL_DIR."
+        echo -e "  ${YELLOW}The update feature requires the service to have been installed from git clone.${NC}"
+        echo -e "  ${YELLOW}Run:  git clone https://github.com/Namoh21/syslog-retention-service.git${NC}"
+        echo -e "  ${YELLOW}Then: sudo bash syslog-retention-service/install.sh  and choose Install.${NC}"
         pause; return
     fi
 
@@ -895,7 +925,7 @@ do_update() {
         "$PIP" install -r "$req_file" --quiet
         ok "Dependencies updated"
     else
-        warn "Venv not found - skipping pip update (run Install first)"
+        warn "Venv not found — run Install (option 1) first, then Update."
     fi
 
     step "Restarting service"
@@ -906,12 +936,12 @@ do_update() {
         sleep 3
         ok "Service status: $(get_service_status)"
     else
-        warn "Service not installed. Run Install first."
+        warn "Service not registered with systemd. Run Install first."
     fi
 
     ok "Update complete."
 
-    # Re-exec updated script
+    # Re-exec the freshly pulled install.sh
     echo -e "\n${CYAN}  Reloading updated install.sh...${NC}"
     sleep 2
     exec bash "$INSTALL_DIR/install.sh"
