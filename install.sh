@@ -854,24 +854,25 @@ EOF
     # SSH MUST be allowed before enabling ufw on a headless Pi.
     # ufw allow ssh covers port 22. We also detect any custom sshd port.
     ufw allow ssh comment "SSH remote management" >/dev/null 2>&1 || true
-    # Detect any non-default SSH port — read sshd_config first, then fall back
-    # to ss output parsing with plain cut (no gawk required)
-    local ssh_port
-    ssh_port=$(grep -iE '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
-    [[ -z "$ssh_port" ]] && \
-        ssh_port=$(ss -tlnp 2>/dev/null | grep -i sshd | awk '{print $4}' | rev | cut -d: -f1 | rev | head -1)
+    # Detect custom SSH port — sshd_config first, then ss fallback
+    # Use if/then, NOT && short-circuit: with set -e a false [[ ]] exits the script
+    local ssh_port=""
+    ssh_port=$(grep -iE '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1 || true)
+    if [[ -z "$ssh_port" ]]; then
+        ssh_port=$(ss -tlnp 2>/dev/null | grep -i sshd | awk '{print $4}' | rev | cut -d: -f1 | rev | head -1 || true)
+    fi
     if [[ -n "$ssh_port" && "$ssh_port" != "22" ]]; then
-        ufw allow "${ssh_port}/tcp" comment "SSH (custom port)" >/dev/null 2>&1 || true
+        ufw allow "${ssh_port}/tcp" comment "SSH custom port" >/dev/null 2>&1 || true
         ok "SSH allowed on ports 22 and $ssh_port"
     else
         ok "SSH allowed on port 22"
     fi
-    # Ensure sshd itself is enabled and running — critical on a headless device
-    systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null || true
-    if ! systemctl is-active --quiet ssh 2>/dev/null && ! systemctl is-active --quiet sshd 2>/dev/null; then
-        warn "SSH service does not appear to be running — starting it"
-        systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true
-    fi
+    # Ensure sshd is enabled and running on headless systems
+    systemctl enable ssh  2>/dev/null || true
+    systemctl enable sshd 2>/dev/null || true
+    systemctl is-active --quiet ssh  2>/dev/null || \
+    systemctl is-active --quiet sshd 2>/dev/null || \
+    { warn "sshd not running — attempting start"; systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true; }
     ufw allow "${SYSLOG_UDP_PORT}/udp" comment "Syslog UDP" >/dev/null 2>&1 || true
     ufw allow "${SYSLOG_TCP_PORT}/tcp" comment "Syslog TCP" >/dev/null 2>&1 || true
     ufw allow "${WEB_PORT}/tcp"        comment "SIEM Web Console" >/dev/null 2>&1 || true
