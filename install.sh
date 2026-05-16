@@ -823,10 +823,6 @@ StandardError=append:${LOG_DIR}/service_err.log
 PrivateTmp=yes
 ProtectSystem=full
 ReadWritePaths=${M2_MOUNT} /etc/syslog-retention
-# Allow binding to privileged ports (<1024) without root.
-# AmbientCapabilities alone (without CapabilityBoundingSet or NoNewPrivileges)
-# works on modern kernels. setcap on the binary is a belt-and-suspenders backup.
-AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
