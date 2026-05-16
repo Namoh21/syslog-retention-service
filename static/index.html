@@ -168,6 +168,23 @@
   .help-tip{font-size:11px;color:var(--muted);margin-top:6px;}
   .divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
+  /* ── Search tag pills ── */
+  .tag-input-wrap{display:flex;flex-wrap:wrap;gap:4px;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;min-height:34px;cursor:text;}
+  .tag-input-wrap:focus-within{border-color:var(--accent);}
+  .tag-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:500;white-space:nowrap;}
+  .tag-pill-and{background:rgba(88,166,255,.18);color:var(--accent);}
+  .tag-pill-not{background:rgba(248,81,73,.18);color:var(--danger);}
+  .tag-pill-or{background:rgba(63,185,80,.18);color:var(--accent2);}
+  .tag-pill .pill-x{cursor:pointer;opacity:.7;font-size:11px;line-height:1;margin-left:2px;}
+  .tag-pill .pill-x:hover{opacity:1;}
+  .tag-bare-input{border:none;outline:none;background:transparent;color:var(--text);font-size:13px;min-width:120px;flex:1;padding:2px 0;}
+  .search-mode-row{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;}
+  .search-mode-btn{padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);}
+  .search-mode-btn.active-and{background:rgba(88,166,255,.18);color:var(--accent);border-color:var(--accent);}
+  .search-mode-btn.active-not{background:rgba(248,81,73,.18);color:var(--danger);border-color:var(--danger);}
+  .search-mode-btn.active-or{background:rgba(63,185,80,.18);color:var(--accent2);border-color:var(--accent2);}
+  .search-hint{font-size:11px;color:var(--muted);}
+
   /* ── AI progress bar ── */
   .ai-progress-bar-wrap{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:10px;}
   .ai-progress-bar{height:100%;background:var(--accent);border-radius:3px;transition:width 1s linear;}
@@ -622,6 +639,98 @@ async function dashboard() {
 let logPage = { offset:0, limit:100, total:0 };
 let logFilters = {};
 
+// ── Search tag-pill state ─────────────────────────────────────────────────────
+let _searchTags = [];       // [{text, mode}]  mode: 'and'|'or'|'not'
+let _searchMode = 'and';    // current input mode
+
+function setSearchMode(mode) {
+  _searchMode = mode;
+  ['and','or','not'].forEach(m => {
+    const btn = document.getElementById(`sm-${m}`);
+    if (!btn) return;
+    btn.className = `search-mode-btn${mode === m ? ' active-'+m : ''}`;
+  });
+  const hint = document.getElementById('search-hint-text');
+  if (hint) hint.textContent = mode === 'and' ? 'Terms must all match' :
+                                mode === 'or'  ? 'Any term matches' :
+                                                 'Terms must not appear';
+  document.getElementById('tag-bare')?.focus();
+}
+
+function _renderTags() {
+  const wrap = document.getElementById('tag-input-wrap');
+  const bare = document.getElementById('tag-bare');
+  if (!wrap || !bare) return;
+  // Remove existing pills (not the input)
+  wrap.querySelectorAll('.tag-pill').forEach(el => el.remove());
+  _searchTags.forEach((tag, i) => {
+    const pill = document.createElement('span');
+    pill.className = `tag-pill tag-pill-${tag.mode}`;
+    const prefix = tag.mode === 'not' ? '−' : tag.mode === 'or' ? '∪' : '∩';
+    pill.innerHTML = `<span style="opacity:.6;font-size:10px">${prefix}</span> ${esc(tag.text)} <span class="pill-x" onclick="_removeTag(${i})">✕</span>`;
+    wrap.insertBefore(pill, bare);
+  });
+}
+
+function _removeTag(i) {
+  _searchTags.splice(i, 1);
+  _renderTags();
+}
+
+function _addTagFromInput() {
+  const bare = document.getElementById('tag-bare');
+  if (!bare) return;
+  const val = bare.value.trim().replace(/,+$/, '').trim();
+  if (!val) return;
+  // Support pasting comma/space separated terms
+  const terms = val.split(/[,\s]+/).filter(Boolean);
+  terms.forEach(t => {
+    if (t && !_searchTags.find(x => x.text === t && x.mode === _searchMode)) {
+      _searchTags.push({ text: t, mode: _searchMode });
+    }
+  });
+  bare.value = '';
+  _renderTags();
+}
+
+function _serializeSearch() {
+  // Build the search string the backend understands:
+  //   AND terms: joined with space
+  //   NOT terms: prefixed with -
+  //   OR terms: grouped per unique-term, joined with |
+  if (!_searchTags.length) return '';
+  const parts = [];
+  const orTerms = _searchTags.filter(t => t.mode === 'or').map(t => t.text);
+  _searchTags.filter(t => t.mode === 'and').forEach(t => {
+    parts.push(t.text.includes(' ') ? `"${t.text}"` : t.text);
+  });
+  _searchTags.filter(t => t.mode === 'not').forEach(t => {
+    parts.push(`-${t.text.includes(' ') ? `"${t.text}"` : t.text}`);
+  });
+  if (orTerms.length) parts.push(orTerms.join('|'));
+  return parts.join(' ');
+}
+
+function _initTagInput() {
+  const bare = document.getElementById('tag-bare');
+  if (!bare) return;
+  bare.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      _addTagFromInput();
+      return;
+    }
+    if (e.key === 'Backspace' && bare.value === '' && _searchTags.length) {
+      _searchTags.pop();
+      _renderTags();
+    }
+  });
+  bare.addEventListener('paste', () => {
+    // Defer so the pasted text is in the input
+    setTimeout(() => { _addTagFromInput(); }, 0);
+  });
+}
+
 const EVENT_TYPES = [
   'firewall_block','firewall_allow','ids_alert','threat_block',
   'auth_failure','auth_success','dhcp_ack','dhcp_request','dhcp_discover',
@@ -668,7 +777,19 @@ async function logs() {
                 <option value="6">6 Informational</option><option value="7">7 Debug</option>
               </select>
             </div>
-            <div class="form-group"><label>Search message text</label><input id="f-search" placeholder="keyword..." style="width:200px" /></div>
+            <div class="form-group" style="flex:1;min-width:240px">
+              <label>Search message text</label>
+              <div class="tag-input-wrap" id="tag-input-wrap" onclick="document.getElementById('tag-bare').focus()">
+                <input id="tag-bare" class="tag-bare-input" placeholder="type term + Enter" autocomplete="off" />
+              </div>
+              <div class="search-mode-row">
+                <span class="search-hint">Add as:</span>
+                <button class="search-mode-btn active-and" id="sm-and" onclick="setSearchMode('and')">AND ∩</button>
+                <button class="search-mode-btn" id="sm-or"  onclick="setSearchMode('or')">OR ∪</button>
+                <button class="search-mode-btn" id="sm-not" onclick="setSearchMode('not')">NOT ∅</button>
+                <span class="search-hint" id="search-hint-text" style="margin-left:4px">Terms must all match</span>
+              </div>
+            </div>
           </div>
           <div class="form-row">
             <div class="form-group"><label>Event Type</label>
@@ -705,12 +826,15 @@ async function logs() {
   `);
   logPage = { offset:0, limit:100, total:0 };
   logFilters = {};
+  _searchTags = [];
+  _searchMode = 'and';
   await fetchLogs();
   // Enter key on text inputs triggers search
-  ['f-ip','f-host','f-search','f-src','f-dst','f-dport'].forEach(id => {
+  ['f-ip','f-host','f-src','f-dst','f-dport'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.addEventListener('keydown', e => { if(e.key==='Enter') applyLogFilters(); });
   });
+  _initTagInput();
 }
 
 function toggleLive(on) {
@@ -742,10 +866,13 @@ function exportCsv() {
 }
 
 function applyLogFilters() {
+  // Commit any text still in the bare input before searching
+  _addTagFromInput();
   logPage.offset = 0;
   const v = id => document.getElementById(id)?.value.trim() || null;
+  const search = _serializeSearch() || null;
   logFilters = {
-    source_ip:v('f-ip'), hostname:v('f-host'), severity_max:v('f-sev'), search:v('f-search'),
+    source_ip:v('f-ip'), hostname:v('f-host'), severity_max:v('f-sev'), search,
     event_type:v('f-et'), src_ip:v('f-src'), dst_ip:v('f-dst'), dst_port:v('f-dport'),
     protocol:v('f-proto'), action:v('f-action'),
     since: document.getElementById('f-since')?.value ? new Date(document.getElementById('f-since').value).toISOString() : null,
@@ -755,8 +882,12 @@ function applyLogFilters() {
 }
 
 function clearLogFilters() {
-  ['f-ip','f-host','f-sev','f-search','f-et','f-src','f-dst','f-dport','f-proto','f-action','f-since','f-until']
+  ['f-ip','f-host','f-sev','f-et','f-src','f-dst','f-dport','f-proto','f-action','f-since','f-until']
     .forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  _searchTags = [];
+  _searchMode = 'and';
+  _renderTags();
+  setSearchMode('and');
   logFilters = {}; logPage.offset = 0; fetchLogs();
 }
 

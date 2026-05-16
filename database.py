@@ -647,12 +647,74 @@ SEVERITY_NAMES = [
 ]
 
 
-_SEARCH_MAX_LEN = 200  # prevent expensive scans on huge search strings
+_SEARCH_MAX_LEN = 400  # longer to accommodate multi-term queries
 
 
 def _escape_like(val: str) -> str:
     """Escape SQL LIKE wildcards so user input cannot alter match scope."""
     return val.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _parse_search_tokens(raw: str):
+    """
+    Parse the search string into (must_include, must_exclude, or_groups) token lists.
+
+    Syntax:
+      - Words/phrases separated by spaces or commas → all must match (AND)
+      - "quoted phrase" → treated as a single term (AND)
+      - -term or -"phrase" → must NOT match
+      - term1|term2 → either must match (OR group); pipe joins alternatives
+      - Mixing: "firewall -denied ssh|vpn" → message must contain "firewall",
+        must not contain "denied", and must contain "ssh" OR "vpn"
+    """
+    import re as _re
+    must, must_not, or_groups = [], [], []
+
+    # Tokenise: quoted strings first, then unquoted tokens (splitting on space/comma)
+    token_re = _re.compile(r'"[^"]*"|\S+')
+    tokens = token_re.findall(raw.strip())
+
+    for tok in tokens:
+        negate = tok.startswith('-') and len(tok) > 1
+        if negate:
+            tok = tok[1:]
+        # Strip surrounding quotes
+        if tok.startswith('"') and tok.endswith('"') and len(tok) > 1:
+            tok = tok[1:-1]
+        if not tok:
+            continue
+        if negate:
+            must_not.append(tok)
+        elif '|' in tok:
+            or_groups.append([p for p in tok.split('|') if p])
+        else:
+            must.append(tok)
+
+    return must, must_not, or_groups
+
+
+def _apply_search(q, search: str):
+    """Apply multi-term search filter to a SQLAlchemy query on SyslogEntry.message."""
+    from sqlalchemy import or_, and_
+    raw = search[:_SEARCH_MAX_LEN].strip()
+    if not raw:
+        return q
+
+    # Fall back to simple ILIKE for single plain terms (no special chars)
+    must, must_not, or_groups = _parse_search_tokens(raw)
+
+    for term in must:
+        pat = f"%{_escape_like(term)}%"
+        q = q.filter(SyslogEntry.message.ilike(pat, escape="\\"))
+    for term in must_not:
+        pat = f"%{_escape_like(term)}%"
+        q = q.filter(~SyslogEntry.message.ilike(pat, escape="\\"))
+    for group in or_groups:
+        clauses = [SyslogEntry.message.ilike(f"%{_escape_like(t)}%", escape="\\") for t in group]
+        if clauses:
+            q = q.filter(or_(*clauses))
+
+    return q
 
 
 def _build_log_query(
@@ -679,7 +741,7 @@ def _build_log_query(
     if hostname:
         q = q.filter(SyslogEntry.hostname.ilike(f"%{_escape_like(hostname[:_SEARCH_MAX_LEN])}%", escape="\\"))
     if search:
-        q = q.filter(SyslogEntry.message.ilike(f"%{_escape_like(search[:_SEARCH_MAX_LEN])}%", escape="\\"))
+        q = _apply_search(q, search)
     if since:
         q = q.filter(SyslogEntry.received_at >= since)
     if until:
