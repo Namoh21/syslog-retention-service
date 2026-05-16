@@ -866,7 +866,7 @@ async function ai() {
             </button>
           </div>
         </div>
-        <p class="help-tip">Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.</p>
+        <p class="help-tip" id="ai-timing-tip">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review recent log entries. CPU inference on a Pi typically takes 1–5 minutes.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
         <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; ${serviceInfo?.ai_provider==='local' ? 'Log data is sent to your local LLM — it stays on your network.' : "Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis."}</p>
       </div>
       <div id="ai-progress" style="display:none" class="alert alert-info">
@@ -991,20 +991,34 @@ async function runAnalysis() {
   const focus = document.getElementById('ai-focus').value.trim();
   localStorage.setItem('ai_last_focus', focus);
 
+  const isLocal = provider === 'local';
+  const localModel = serviceInfo?.claude_model || 'local LLM';
+  const providerLabel = isLocal ? localModel : 'Claude';
+  // Local LLM on Pi can take several minutes — give it 10 min; Anthropic gets 90s
+  const timeoutMs = isLocal ? 600000 : 90000;
+  const timeoutLabel = isLocal ? '10 minutes' : '90 seconds';
+
   btn.disabled = true; btn.innerHTML = '&#x1F916; Analyzing...';
   out.innerHTML = ''; progress.style.display = 'block';
+  progressMsg.textContent = `Sending logs to ${providerLabel} for analysis...`;
 
   const start = Date.now();
   const elapsedTimer = setInterval(() => {
     const secs = Math.floor((Date.now() - start) / 1000);
-    elapsed.textContent = `${secs}s`;
-    if (secs > 20) progressMsg.textContent = 'Still working — Claude is processing your logs...';
-    if (secs > 45) progressMsg.textContent = 'Almost there — large log sets take longer...';
+    const mins = Math.floor(secs / 60);
+    elapsed.textContent = mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
+    if (isLocal) {
+      if (secs > 30)  progressMsg.textContent = `${providerLabel} is processing your logs — CPU inference takes time...`;
+      if (secs > 90)  progressMsg.textContent = `Still working — local models run at CPU speed on a Pi, this is normal...`;
+      if (secs > 180) progressMsg.textContent = `Almost there — complex logs take longer. Consider a smaller time window next time.`;
+    } else {
+      if (secs > 20) progressMsg.textContent = `Still working — ${providerLabel} is processing your logs...`;
+      if (secs > 45) progressMsg.textContent = `Almost there — large log sets take longer...`;
+    }
   }, 1000);
 
-  // 90-second client-side timeout
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 90000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const hours = parseInt(document.getElementById('ai-hours').value);
@@ -1022,7 +1036,7 @@ async function runAnalysis() {
   } catch(e) {
     clearTimeout(timeout);
     if (e.name === 'AbortError') {
-      out.innerHTML = `<div class="alert alert-warn">Analysis timed out after 90 seconds. Try a shorter time window or fewer logs.</div>`;
+      out.innerHTML = `<div class="alert alert-warn">Analysis timed out after ${timeoutLabel}. ${isLocal ? 'Try a shorter time window or a faster model (e.g. tinyllama).' : 'Try a shorter time window or fewer logs.'}</div>`;
     } else {
       out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
     }

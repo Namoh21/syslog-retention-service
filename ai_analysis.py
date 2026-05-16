@@ -182,7 +182,7 @@ async def _call_local_llm(
         "max_tokens": 4096,
         "temperature": 0.2,
     }
-    async with _httpx.AsyncClient(timeout=120.0) as client:
+    async with _httpx.AsyncClient(timeout=600.0) as client:
         r = await client.post(f"{base_url}/v1/chat/completions", json=payload)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
