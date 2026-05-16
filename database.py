@@ -66,7 +66,17 @@ _NORMALIZED_COLUMNS = [
 ]
 
 
-Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
+try:
+    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
+except OSError as _mkdir_err:
+    import sys as _sys
+    print(
+        f"FATAL: Cannot create database directory '{Path(settings.db_path).parent}': {_mkdir_err}\n"
+        f"Check that the parent path exists and the service user has write permission.\n"
+        f"If DB_PATH points to an M.2 drive, verify it is mounted.",
+        file=_sys.stderr,
+    )
+    _sys.exit(1)
 
 engine = create_engine(
     f"sqlite:///{settings.db_path}",

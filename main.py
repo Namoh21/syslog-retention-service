@@ -89,7 +89,14 @@ async def _scheduled_purge():
 async def lifespan(app: FastAPI):
     global _udp_transport, _tcp_server
 
-    init_db()
+    try:
+        init_db()
+    except Exception as exc:
+        logger.critical("DATABASE INIT FAILED — service cannot start: %s", exc, exc_info=True)
+        logger.critical("Check that DB_PATH directory exists and is writable by the service user.")
+        logger.critical("DB_PATH = %s", settings.db_path)
+        raise  # re-raise so uvicorn exits; error is now in the log file
+
     logger.info("Database initialised at %s", settings.db_path)
 
     # Lock down DB file permissions
