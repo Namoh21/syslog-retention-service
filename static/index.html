@@ -1783,7 +1783,7 @@ async function svcSettings() {
         <!-- Provider selector -->
         <div style="margin-bottom:16px">
           <div style="font-size:12px;color:var(--muted);margin-bottom:8px">AI Provider</div>
-          <div style="display:flex;gap:10px">
+          <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text)">
               <input type="radio" name="ai-provider" value="anthropic" ${s.ai_provider!=='local'?'checked':''} onchange="aiProviderChanged()" />
               &#x1F916; Anthropic (Claude)
@@ -1792,7 +1792,9 @@ async function svcSettings() {
               <input type="radio" name="ai-provider" value="local" ${s.ai_provider==='local'?'checked':''} onchange="aiProviderChanged()" />
               &#x1F4BB; Local LLM (Ollama / LM Studio)
             </label>
+            <button class="btn btn-primary btn-sm" onclick="saveAiProvider()">Save Provider</button>
           </div>
+          <div id="provider-msg" style="margin-top:8px"></div>
         </div>
 
         <hr class="divider" style="margin:12px 0" />
@@ -2076,6 +2078,31 @@ function aiProviderChanged() {
   const provider = document.querySelector('input[name="ai-provider"]:checked')?.value || 'anthropic';
   document.getElementById('ai-panel-anthropic').style.display = provider === 'anthropic' ? '' : 'none';
   document.getElementById('ai-panel-local').style.display = provider === 'local' ? '' : 'none';
+  // Clear stale status messages
+  const pm = document.getElementById('provider-msg');
+  if (pm) pm.innerHTML = '';
+}
+
+async function saveAiProvider() {
+  const provider = document.querySelector('input[name="ai-provider"]:checked')?.value || 'anthropic';
+  const msg = document.getElementById('provider-msg');
+  const url   = (document.getElementById('local-llm-url')?.value  || '').trim();
+  const model = (document.getElementById('local-llm-model')?.value || '').trim();
+  if (provider === 'local' && !url) {
+    msg.innerHTML = '<div class="alert alert-warn">Enter the local LLM server URL before saving.</div>'; return;
+  }
+  try {
+    await apiFetch('/api/admin/settings/local-llm', { method:'PUT', body: JSON.stringify({
+      ai_provider: provider,
+      ai_local_url: url,
+      ai_local_model: model || 'llama3.2',
+    })});
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; AI provider saved: <strong>${provider}</strong>.</div>`;
+    await loadServiceInfo();
+    setTimeout(() => { const m = document.getElementById('provider-msg'); if (m) m.innerHTML = ''; }, 4000);
+  } catch(e) {
+    msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`;
+  }
 }
 
 async function saveLocalLLM() {
@@ -2083,14 +2110,14 @@ async function saveLocalLLM() {
   const provider = document.querySelector('input[name="ai-provider"]:checked')?.value || 'anthropic';
   const url = (document.getElementById('local-llm-url')?.value || '').trim();
   const model = (document.getElementById('local-llm-model')?.value || '').trim();
-  if (provider === 'local' && !url) {
+  if (!url) {
     msg.innerHTML = '<div class="alert alert-warn">Please enter the local LLM server URL.</div>'; return;
   }
   try {
     await apiFetch('/api/admin/settings/local-llm', { method:'PUT', body:JSON.stringify({
       ai_provider: provider, ai_local_url: url, ai_local_model: model || 'llama3.2'
     })});
-    msg.innerHTML = `<div class="alert alert-ok">AI provider set to <strong>${provider}</strong>.</div>`;
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; Local LLM settings saved (URL + model).</div>`;
     await loadServiceInfo();
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
