@@ -939,6 +939,161 @@ EOF
 }
 
 # =============================================================================
+# LOCAL LLM (OLLAMA) INSTALL
+# =============================================================================
+do_install_ollama() {
+    banner
+    echo -e "${CYAN}  [ LOCAL LLM — OLLAMA SETUP ]${NC}\n"
+    echo -e "  Ollama runs large language models locally on this device."
+    echo -e "  Logs are analyzed on-device — no data leaves your network.\n"
+    echo -e "${YELLOW}  Hardware note:${NC}"
+    echo -e "  - Raspberry Pi 4/5 (4 GB+): CPU inference only. Expect 30–120s per analysis."
+    echo -e "  - Recommended models for Pi: ${WHITE}llama3.2${NC} (fast) or ${WHITE}tinyllama${NC} (lighter)"
+    echo -e "  - A machine with a GPU will respond in seconds.\n"
+
+    # ── Check if already installed ────────────────────────────────────────────
+    if command -v ollama &>/dev/null; then
+        current_ver=$(ollama --version 2>/dev/null | head -1 || echo "unknown")
+        ok "Ollama is already installed ($current_ver)"
+        echo ""
+        echo -e "  ${WHITE}Options:${NC}"
+        echo -e "  1. Pull / manage models"
+        echo -e "  2. Reinstall / update Ollama"
+        echo -e "  3. Remove Ollama"
+        echo -e "  4. Back to main menu"
+        echo ""
+        read -rp "  Select option: " ollama_choice
+        case "$ollama_choice" in
+            1) _ollama_manage_models; return ;;
+            2) : ;;  # fall through to install
+            3) _ollama_remove; return ;;
+            *) return ;;
+        esac
+    fi
+
+    # ── Install Ollama ────────────────────────────────────────────────────────
+    step "Installing Ollama"
+    echo -e "  This will run the official Ollama install script from ollama.com"
+    read -rp "  Continue? [y/N] " confirm
+    if [[ "${confirm^^}" != "Y" ]]; then
+        warn "Cancelled."
+        pause; return
+    fi
+
+    if ! command -v curl &>/dev/null; then
+        step "Installing curl"
+        apt-get install -y curl
+    fi
+
+    step "Downloading and running Ollama installer"
+    curl -fsSL https://ollama.com/install.sh | sh
+    echo ""
+
+    if ! command -v ollama &>/dev/null; then
+        err "Ollama installation failed — 'ollama' not found in PATH."
+        pause; return
+    fi
+    ok "Ollama installed: $(ollama --version 2>/dev/null | head -1)"
+
+    # ── Enable Ollama service ─────────────────────────────────────────────────
+    if systemctl list-unit-files ollama.service &>/dev/null; then
+        step "Enabling Ollama service"
+        systemctl enable ollama
+        systemctl start ollama
+        ok "Ollama service started"
+    fi
+
+    # ── Bind address: allow access from localhost only (syslog-siem runs locally) ─
+    # Ollama default listens on 127.0.0.1:11434 — that's correct for local use.
+    echo ""
+    echo -e "  ${GREEN}Ollama is installed and listening on http://127.0.0.1:11434${NC}"
+    echo ""
+
+    # ── Pull a model ──────────────────────────────────────────────────────────
+    _ollama_manage_models
+}
+
+
+_ollama_manage_models() {
+    banner
+    echo -e "${CYAN}  [ OLLAMA — MODELS ]${NC}\n"
+
+    # Show installed models
+    echo -e "  ${WHITE}Currently installed models:${NC}"
+    if ollama list 2>/dev/null | grep -q ':'; then
+        ollama list 2>/dev/null | tail -n +2 | awk '{printf "    • %s\n", $1}'
+    else
+        echo -e "    ${GRAY}(none yet)${NC}"
+    fi
+    echo ""
+
+    echo -e "  ${WHITE}Recommended models for a Raspberry Pi:${NC}"
+    echo -e "  ${WHITE}  1.${NC} llama3.2          ~2 GB — good quality, reasonable speed on Pi 4/5"
+    echo -e "  ${WHITE}  2.${NC} tinyllama          ~600 MB — fastest, lower quality JSON"
+    echo -e "  ${WHITE}  3.${NC} mistral            ~4 GB — excellent JSON, needs Pi 5 or 4 GB RAM"
+    echo -e "  ${WHITE}  4.${NC} phi3               ~2 GB — Microsoft Phi-3, good at structured output"
+    echo -e "  ${WHITE}  5.${NC} Enter a model name manually"
+    echo -e "  ${WHITE}  6.${NC} Back to main menu"
+    echo ""
+    read -rp "  Select: " model_choice
+
+    local model_name=""
+    case "$model_choice" in
+        1) model_name="llama3.2" ;;
+        2) model_name="tinyllama" ;;
+        3) model_name="mistral" ;;
+        4) model_name="phi3" ;;
+        5)
+            read -rp "  Model name (e.g. llama3.2:3b): " model_name
+            model_name="${model_name// /}"
+            ;;
+        *) return ;;
+    esac
+
+    if [[ -z "$model_name" ]]; then
+        warn "No model selected."
+        pause; return
+    fi
+
+    step "Pulling model: $model_name"
+    echo -e "  ${GRAY}This may take several minutes on first download...${NC}\n"
+    if ollama pull "$model_name"; then
+        ok "Model '$model_name' is ready"
+        echo ""
+        echo -e "  ${GREEN}Next step:${NC} In the SIEM web console, go to"
+        echo -e "  ${WHITE}Service Settings → AI Configuration${NC}"
+        echo -e "  Select ${WHITE}Local LLM${NC}, set URL to ${WHITE}http://127.0.0.1:11434${NC}"
+        echo -e "  and model to ${WHITE}${model_name}${NC}, then click Save and Test."
+    else
+        err "Failed to pull model '$model_name'. Check your internet connection."
+    fi
+    echo ""
+    pause
+}
+
+
+_ollama_remove() {
+    echo ""
+    read -rp "  Remove Ollama and all downloaded models? [y/N] " confirm
+    if [[ "${confirm^^}" != "Y" ]]; then
+        warn "Cancelled."
+        pause; return
+    fi
+    step "Stopping and disabling Ollama service"
+    systemctl stop ollama 2>/dev/null || true
+    systemctl disable ollama 2>/dev/null || true
+    step "Removing Ollama binary"
+    rm -f /usr/local/bin/ollama
+    step "Removing Ollama models and data"
+    rm -rf /usr/share/ollama
+    rm -f /etc/systemd/system/ollama.service
+    systemctl daemon-reload
+    ok "Ollama removed"
+    pause
+}
+
+
+# =============================================================================
 # UPDATE
 # =============================================================================
 do_update() {
@@ -1204,7 +1359,8 @@ while true; do
     echo -e "${WHITE}  6. Edit .env configuration${NC}"
     echo -e "${WHITE}  7. Diagnostics and test run${NC}"
     echo -e "${CYAN}  8. M.2 / NVMe storage setup${NC}"
-    echo -e "${WHITE}  9. Exit${NC}"
+    echo -e "${CYAN}  9. Local LLM (Ollama) setup${NC}"
+    echo -e "${WHITE}  0. Exit${NC}"
     echo ""
     read -rp "  Select option: " choice
 
@@ -1223,7 +1379,8 @@ while true; do
         6) edit_env ;;
         7) do_diagnostics ;;
         8) setup_m2_storage ;;
-        9) exit 0 ;;
+        9) do_install_ollama ;;
+        0) exit 0 ;;
         *) warn "Invalid choice"; sleep 1 ;;
     esac
 done
