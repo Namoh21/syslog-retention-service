@@ -547,44 +547,93 @@ do_install() {
         warn "Python 3.10+ not found. Attempting automatic installation..."
         echo ""
 
-        # Raspberry Pi OS / Debian Bookworm: python3.11 is in the main repo
-        # Bullseye: python3.9 is default, try python3.11 from backports or deadsnakes
-        local installed=false
+        # ── Try package manager first (fast path) ────────────────────────────
+        local pkg_installed=false
         for pkg in python3.12 python3.11 python3.10; do
-            step "Trying: apt-get install $pkg ${pkg}-venv"
+            step "apt-get install $pkg"
             if apt-get install -y -qq "$pkg" "${pkg}-venv" 2>/dev/null; then
-                ok "$pkg installed"
-                installed=true
+                ok "$pkg installed from apt"
+                pkg_installed=true
                 break
             fi
         done
 
-        # Fallback: deadsnakes PPA (works on Ubuntu/Debian-based systems)
-        if ! $installed; then
-            warn "Standard repos did not have Python 3.10+. Trying deadsnakes PPA..."
-            apt-get install -y -qq software-properties-common 2>/dev/null
-            if command -v add-apt-repository &>/dev/null; then
-                add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null
-                apt-get update -qq
-                for pkg in python3.12 python3.11 python3.10; do
-                    if apt-get install -y -qq "$pkg" "${pkg}-venv" 2>/dev/null; then
-                        ok "$pkg installed from deadsnakes PPA"
-                        installed=true
-                        break
-                    fi
-                done
+        # ── Build from source (slow path — package manager failed) ───────────
+        if ! $pkg_installed; then
+            warn "Package manager does not have Python 3.10+. Building from source."
+            echo ""
+            echo -e "  ${YELLOW}This will take 10-20 minutes on a Raspberry Pi.${NC}"
+            echo -e "  ${YELLOW}Do not interrupt the build.${NC}"
+            echo ""
+
+            # Build dependencies
+            step "Installing build dependencies"
+            apt-get install -y -qq \
+                build-essential zlib1g-dev libncurses5-dev libgdbm-dev \
+                libnss3-dev libssl-dev libsqlite3-dev libreadline-dev \
+                libffi-dev libbz2-dev liblzma-dev uuid-dev tk-dev \
+                wget ca-certificates
+            ok "Build dependencies installed"
+
+            local PY_VERSION="3.11.9"
+            local PY_TARBALL="Python-${PY_VERSION}.tgz"
+            local PY_URL="https://www.python.org/ftp/python/${PY_VERSION}/${PY_TARBALL}"
+            local BUILD_DIR="/tmp/python-src-build"
+
+            # Download
+            step "Downloading Python ${PY_VERSION} source from python.org"
+            rm -rf "$BUILD_DIR"
+            mkdir -p "$BUILD_DIR"
+            if ! wget -q --show-progress -O "${BUILD_DIR}/${PY_TARBALL}" "$PY_URL"; then
+                err "Download failed. Check internet connectivity."
+                err "  URL: $PY_URL"
+                pause; return
             fi
+            ok "Downloaded Python ${PY_VERSION}"
+
+            # Extract
+            step "Extracting source"
+            tar -xzf "${BUILD_DIR}/${PY_TARBALL}" -C "$BUILD_DIR"
+            ok "Extracted"
+
+            # Configure
+            # --enable-shared: needed for some Python extensions
+            # --with-ensurepip=install: bundles pip
+            # No --enable-optimizations: adds 2-3x build time (PGO) — not worth it on Pi
+            step "Configuring (./configure)"
+            local src_dir="${BUILD_DIR}/Python-${PY_VERSION}"
+            cd "$src_dir"
+            ./configure \
+                --prefix=/usr/local \
+                --enable-shared \
+                --with-ensurepip=install \
+                LDFLAGS="-Wl,-rpath=/usr/local/lib" \
+                2>&1 | tail -5
+            ok "Configured"
+
+            # Compile — use all CPU cores, show live output so user sees progress
+            local ncpus
+            ncpus=$(nproc 2>/dev/null || echo 4)
+            step "Compiling with $ncpus cores — grab a coffee, this takes a while..."
+            if ! make -j"$ncpus" 2>&1 | grep -E "^(gcc|cc|Compiling|Building|error:)" | tail -1; then
+                # make itself may have failed; check
+                make -j"$ncpus" || { err "Compilation failed."; cd /; rm -rf "$BUILD_DIR"; pause; return; }
+            fi
+            ok "Compilation complete"
+
+            # Install with altinstall so we don't replace the system python3 symlink
+            step "Installing Python ${PY_VERSION} to /usr/local"
+            make altinstall 2>&1 | grep -v "^Copying\|^Compiling"
+            ldconfig 2>/dev/null || true
+            cd /
+            rm -rf "$BUILD_DIR"
+            ok "Python ${PY_VERSION} installed at /usr/local/bin/python3.11"
         fi
 
         SYS_PYTHON=$(_find_python310 || true)
         if [[ -z "$SYS_PYTHON" ]]; then
-            err "Could not install Python 3.10+ automatically."
-            echo ""
-            echo "  Please install it manually, then re-run this installer:"
-            echo "    sudo apt-get install python3.11 python3.11-venv"
-            echo "  Or on older Pi OS:"
-            echo "    sudo add-apt-repository ppa:deadsnakes/ppa"
-            echo "    sudo apt-get update && sudo apt-get install python3.11 python3.11-venv"
+            err "Python 3.10+ still not found after install attempt."
+            err "Please install manually: sudo apt-get install python3.11 python3.11-venv"
             pause; return
         fi
     fi
@@ -596,7 +645,9 @@ do_install() {
     # Ensure the venv module is available for the chosen Python
     local py_short
     py_short=$(basename "$SYS_PYTHON")  # e.g. python3.11
-    apt-get install -y -qq "${py_short}-venv" 2>/dev/null || true
+    apt-get install -y -qq "${py_short}-venv" 2>/dev/null \
+        || "$SYS_PYTHON" -m ensurepip --upgrade 2>/dev/null \
+        || true
 
     ok "Git $(git --version 2>/dev/null | awk '{print $3}' || echo 'not found')"
 
