@@ -810,20 +810,26 @@ StandardError=append:${LOG_DIR}/service_err.log
 PrivateTmp=yes
 ProtectSystem=full
 ReadWritePaths=${M2_MOUNT} /etc/syslog-retention
+# Allow binding to privileged ports (<1024) without root.
+# AmbientCapabilities alone (without CapabilityBoundingSet or NoNewPrivileges)
+# works on modern kernels. setcap on the binary is a belt-and-suspenders backup.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
 EOF
-    # Grant the Python binary permission to bind to privileged ports (<1024)
-    # without running the entire service as root. setcap is per-binary and
-    # survives reboots. This avoids the NoNewPrivileges + AmbientCapabilities
-    # conflict in systemd that causes startup failures on some kernels.
+
+    # setcap on the REAL binary (not the venv symlink) — setcap refuses symlinks
+    local real_python
+    real_python=$(readlink -f "$PYTHON" 2>/dev/null || echo "$PYTHON")
     if command -v setcap &>/dev/null; then
-        setcap 'cap_net_bind_service=+ep' "$PYTHON" 2>/dev/null \
-            && ok "setcap: Python may bind to privileged ports (e.g. UDP 514)" \
-            || warn "setcap failed — service will still run, but port 514 binding requires root or a port > 1023"
+        if setcap 'cap_net_bind_service=+ep' "$real_python" 2>/dev/null; then
+            ok "setcap: granted CAP_NET_BIND_SERVICE on $(basename "$real_python")"
+        else
+            warn "setcap failed on $real_python — AmbientCapabilities in service unit will handle port 514 binding"
+        fi
     else
-        warn "setcap not available — skipping. Use port > 1023 for syslog if running as non-root."
+        warn "setcap not found — AmbientCapabilities in service unit will handle port 514 binding"
     fi
 
     systemctl daemon-reload
