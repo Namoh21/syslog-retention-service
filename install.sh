@@ -346,6 +346,30 @@ setup_m2_storage() {
         pause; return
     fi
 
+    # ── Unmount any existing partitions on this device ───────────────────────
+    step "Unmounting any existing partitions on $selected_dev"
+    # Remove fstab entries for this device so they don't re-mount at boot
+    local dev_base
+    dev_base=$(basename "$selected_dev")
+    sed -i "/\/${dev_base}/d" /etc/fstab 2>/dev/null || true
+    sed -i "\|${M2_MOUNT}|d" /etc/fstab 2>/dev/null || true
+    # Unmount the standard M.2 mount point if active
+    if mountpoint -q "$M2_MOUNT" 2>/dev/null; then
+        umount -l "$M2_MOUNT" 2>/dev/null \
+            && ok "Unmounted $M2_MOUNT" \
+            || warn "Could not unmount $M2_MOUNT — trying lazy unmount"
+        umount -l "$M2_MOUNT" 2>/dev/null || true
+    fi
+    # Unmount any remaining partitions on the device
+    while IFS= read -r part; do
+        local part_dev="/dev/${part}"
+        if mountpoint -q "$(findmnt -n -o TARGET "$part_dev" 2>/dev/null)" 2>/dev/null; then
+            umount -l "$part_dev" 2>/dev/null || true
+            ok "Unmounted $part_dev"
+        fi
+    done < <(lsblk -nlo NAME "$selected_dev" 2>/dev/null | tail -n +2 || true)
+    sleep 1
+
     # ── Partition and format ──────────────────────────────────────────────────
     step "Partitioning and formatting $selected_dev"
     apt-get install -y -qq parted e2fsprogs util-linux 2>/dev/null
