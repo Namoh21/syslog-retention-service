@@ -167,6 +167,12 @@
   .empty-state p{font-size:13px;max-width:420px;margin:0 auto;}
   .help-tip{font-size:11px;color:var(--muted);margin-top:6px;}
   .divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
+
+  /* ── AI progress bar ── */
+  .ai-progress-bar-wrap{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:10px;}
+  .ai-progress-bar{height:100%;background:var(--accent);border-radius:3px;transition:width 1s linear;}
+  .ai-progress-bar.indeterminate{width:30%!important;animation:indeterminate 1.4s ease-in-out infinite;}
+  @keyframes indeterminate{0%{transform:translateX(-100%)}100%{transform:translateX(430%)}}
 </style>
 </head>
 <body>
@@ -231,7 +237,7 @@
       <li><a onclick="showPage('dashboard')" data-page="dashboard"><span class="nav-icon">&#x1F4CA;</span> Dashboard<span id="nav-log-count" style="margin-left:auto;font-size:10px;color:var(--muted)"></span></a></li>
       <li><a onclick="showPage('logs')" data-page="logs"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Analyze</li>
-      <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis</a></li>
+      <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis<span id="nav-ai-badge" class="nav-badge" style="display:none">&#x2713;</span></a></li>
       <li><a onclick="showPage('investigate')" data-page="investigate"><span class="nav-icon">&#x1F50E;</span> Investigate IP</a></li>
       <li><a onclick="showPage('rulehits')" data-page="rulehits"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
       <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
@@ -456,6 +462,8 @@ function showPage(name) {
   document.title = pageTitles[name] ? `${pageTitles[name]} — SIEM Console` : 'SIEM Console';
   if (name !== 'logs' && _liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
   if (name !== 'trafficmatrix' && _netGraph) { _netGraph.stop(); _netGraph = null; }
+  // Stop UI timers when leaving AI page — background job continues on server
+  if (name !== 'ai') { _stopPolling(); }
   const pages = {
     dashboard, logs, ai, investigate, rulehits, trafficmatrix, simulate, policygaps, alertrules,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
@@ -865,13 +873,26 @@ async function ai() {
               &#x1F916; Analyze Logs
             </button>
           </div>
+          <div class="form-group"><label>&nbsp;</label>
+            <button class="btn btn-ghost btn-sm" id="ai-notify-btn" onclick="requestNotifyPermission()" title="Get a browser notification when analysis completes" style="white-space:nowrap">
+              &#x1F514; Notify when done
+            </button>
+          </div>
         </div>
         <p class="help-tip" id="ai-timing-tip">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review recent log entries. CPU inference on a Pi typically takes 1–5 minutes.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
         <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; ${serviceInfo?.ai_provider==='local' ? 'Log data is sent to your local LLM — it stays on your network.' : "Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis."}</p>
       </div>
       <div id="ai-progress" style="display:none" class="alert alert-info">
-        <span class="spinner"></span><span id="ai-progress-msg">Sending logs to Claude for analysis...</span>
-        <span id="ai-elapsed" style="margin-left:12px;color:var(--muted)"></span>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <span class="spinner"></span>
+          <span id="ai-progress-msg">Sending logs for analysis...</span>
+          <span id="ai-elapsed" style="color:var(--muted);font-size:12px"></span>
+          <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="cancelAnalysis()" id="ai-cancel-btn">Cancel</button>
+        </div>
+        <div class="ai-progress-bar-wrap" style="margin-top:8px">
+          <div class="ai-progress-bar indeterminate" id="ai-progress-bar" style="width:0%"></div>
+        </div>
+        <div id="ai-progress-detail" style="font-size:11px;color:var(--muted);margin-top:4px"></div>
       </div>
       <div id="ai-output"></div>
     </div>
@@ -889,6 +910,41 @@ async function ai() {
       document.getElementById('ai-network-notes').value = nc.content || '';
     }
   } catch(e) { /* non-fatal */ }
+
+  // Update notification button state
+  const notifyBtn = document.getElementById('ai-notify-btn');
+  if (notifyBtn) {
+    if (!('Notification' in window)) {
+      notifyBtn.style.display = 'none';
+    } else if (Notification.permission === 'granted') {
+      notifyBtn.style.color = 'var(--accent2)';
+      notifyBtn.textContent = '🔔 Notifications on';
+    } else if (Notification.permission === 'denied') {
+      notifyBtn.style.display = 'none';
+    }
+  }
+
+  // Clear nav badge now that user is back on the AI page
+  const badge = document.getElementById('nav-ai-badge');
+  if (badge) badge.style.display = 'none';
+
+  // Resume an in-progress job if we navigated away mid-analysis
+  if (_resumeActiveJob()) return;
+
+  // Restore the last completed result so the user doesn't lose their analysis
+  const lastResult = sessionStorage.getItem('ai_last_result');
+  if (lastResult) {
+    try {
+      const out = document.getElementById('ai-output');
+      if (out) {
+        const d = JSON.parse(lastResult);
+        renderAnalysis(d, out);
+        const ts = d.analyzed_at ? ` · analyzed ${fmtDate(d.analyzed_at)}` : '';
+        out.insertAdjacentHTML('afterbegin',
+          `<div class="alert alert-info" style="margin-bottom:12px">&#x1F4BE; Showing your most recent analysis${ts}. Run a new analysis above to refresh.</div>`);
+      }
+    } catch(e) { /* non-fatal */ }
+  }
 }
 
 function aiShowTab(name) {
@@ -972,6 +1028,60 @@ function aiSetRecStatus(recId, status, el) {
   updateRecStatus(recId, status, el);
 }
 
+// ── Analysis job state ────────────────────────────────────────────────────────
+let _activeJobId = null;
+let _pollTimer   = null;
+let _elapsedTimer = null;
+let _jobStartTs  = 0;
+
+function _aiIsRunning() { return _activeJobId !== null; }
+
+function cancelAnalysis() {
+  // Cancel just stops polling — the server task continues but result will be
+  // accessible via history. We clear the active job so the page feels responsive.
+  _stopPolling();
+  _activeJobId = null;
+  sessionStorage.removeItem('ai_active_job');
+  const progress = document.getElementById('ai-progress');
+  const btn = document.getElementById('ai-btn');
+  if (progress) progress.style.display = 'none';
+  if (btn) { btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Logs'; }
+  const out = document.getElementById('ai-output');
+  if (out) out.innerHTML = `<div class="alert alert-info">Analysis cancelled. Results will appear in the History tab when complete.</div>`;
+}
+
+function _stopPolling() {
+  if (_pollTimer)   { clearInterval(_pollTimer);   _pollTimer   = null; }
+  if (_elapsedTimer){ clearInterval(_elapsedTimer); _elapsedTimer = null; }
+}
+
+function requestNotifyPermission() {
+  if (!('Notification' in window)) {
+    alert('This browser does not support desktop notifications.');
+    return;
+  }
+  Notification.requestPermission().then(p => {
+    const btn = document.getElementById('ai-notify-btn');
+    if (p === 'granted') {
+      if (btn) { btn.style.color = 'var(--accent2)'; btn.title = 'Notifications enabled'; }
+      localStorage.setItem('ai_notify', '1');
+    } else {
+      if (btn) btn.title = 'Notification permission denied';
+    }
+  });
+}
+
+function _sendNotification(threatLevel, logCount) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!localStorage.getItem('ai_notify')) return;
+  try {
+    new Notification('SIEM — AI Analysis Complete', {
+      body: `Threat level: ${threatLevel || 'UNKNOWN'} · ${logCount || '?'} logs analyzed`,
+      icon: '/favicon.ico',
+    });
+  } catch(e) { /* non-fatal */ }
+}
+
 async function runAnalysis() {
   const provider = serviceInfo?.ai_provider || 'anthropic';
   const consentKey = provider === 'local' ? 'ai_consent_local' : 'ai_consent_given';
@@ -983,68 +1093,163 @@ async function runAnalysis() {
     if (!ok) return;
     localStorage.setItem(consentKey, '1');
   }
-  const btn = document.getElementById('ai-btn');
-  const out = document.getElementById('ai-output');
-  const progress = document.getElementById('ai-progress');
-  const progressMsg = document.getElementById('ai-progress-msg');
-  const elapsed = document.getElementById('ai-elapsed');
+
   const focus = document.getElementById('ai-focus').value.trim();
   localStorage.setItem('ai_last_focus', focus);
+  const hours = parseInt(document.getElementById('ai-hours').value);
 
+  let startResp;
+  try {
+    startResp = await apiFetch('/api/ai/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ hours, focus }),
+    });
+  } catch(e) {
+    document.getElementById('ai-output').innerHTML = `<div class="alert alert-warn">Failed to start analysis: ${e.message}</div>`;
+    return;
+  }
+
+  // Immediate result (empty log set)
+  if (!startResp.job_id) {
+    renderAnalysis(startResp.result || startResp, document.getElementById('ai-output'));
+    return;
+  }
+
+  _activeJobId = startResp.job_id;
+  _jobStartTs  = Date.now();
+  sessionStorage.setItem('ai_active_job', JSON.stringify({
+    job_id: _activeJobId,
+    provider,
+    started_ms: _jobStartTs,
+    hours,
+    log_count: startResp.log_count,
+  }));
+
+  _startPollingUI(provider, startResp.log_count);
+}
+
+function _startPollingUI(provider, logCount) {
   const isLocal = provider === 'local';
-  const localModel = serviceInfo?.claude_model || 'local LLM';
-  const providerLabel = isLocal ? localModel : 'Claude';
-  // Local LLM on Pi can take several minutes — give it 10 min; Anthropic gets 90s
-  const timeoutMs = isLocal ? 600000 : 90000;
-  const timeoutLabel = isLocal ? '10 minutes' : '90 seconds';
+  const providerLabel = isLocal ? (serviceInfo?.claude_model || 'Local LLM') : 'Claude';
+  const expectedMs = isLocal ? 180000 : 30000;  // rough estimate for progress bar
 
-  btn.disabled = true; btn.innerHTML = '&#x1F916; Analyzing...';
-  out.innerHTML = ''; progress.style.display = 'block';
-  progressMsg.textContent = `Sending logs to ${providerLabel} for analysis...`;
+  const btn        = document.getElementById('ai-btn');
+  const out        = document.getElementById('ai-output');
+  const progress   = document.getElementById('ai-progress');
+  const progressMsg= document.getElementById('ai-progress-msg');
+  const elapsedEl  = document.getElementById('ai-elapsed');
+  const bar        = document.getElementById('ai-progress-bar');
+  const detail     = document.getElementById('ai-progress-detail');
 
-  const start = Date.now();
-  const elapsedTimer = setInterval(() => {
-    const secs = Math.floor((Date.now() - start) / 1000);
+  if (!progress) return;  // page navigated away — polling continues silently
+
+  if (btn) { btn.disabled = true; btn.innerHTML = '&#x1F916; Analyzing...'; }
+  if (out) out.innerHTML = '';
+  progress.style.display = 'block';
+  if (progressMsg) progressMsg.textContent = `Sending logs to ${providerLabel} for analysis...`;
+
+  // Indeterminate bar for first 5s, then time-estimated
+  if (bar) { bar.classList.add('indeterminate'); bar.style.width = '0%'; }
+
+  _stopPolling();
+
+  _elapsedTimer = setInterval(() => {
+    const secs = Math.floor((Date.now() - _jobStartTs) / 1000);
     const mins = Math.floor(secs / 60);
-    elapsed.textContent = mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
-    if (isLocal) {
-      if (secs > 30)  progressMsg.textContent = `${providerLabel} is processing your logs — CPU inference takes time...`;
-      if (secs > 90)  progressMsg.textContent = `Still working — local models run at CPU speed on a Pi, this is normal...`;
-      if (secs > 180) progressMsg.textContent = `Almost there — complex logs take longer. Consider a smaller time window next time.`;
-    } else {
-      if (secs > 20) progressMsg.textContent = `Still working — ${providerLabel} is processing your logs...`;
-      if (secs > 45) progressMsg.textContent = `Almost there — large log sets take longer...`;
+    if (elapsedEl) elapsedEl.textContent = mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`;
+
+    // Switch from indeterminate to estimated progress after 5s
+    if (bar && secs >= 5) {
+      bar.classList.remove('indeterminate');
+      const pct = Math.min(92, Math.round((secs * 1000 / expectedMs) * 100));
+      bar.style.width = pct + '%';
     }
+
+    if (progressMsg) {
+      if (isLocal) {
+        if (secs > 30)  progressMsg.textContent = `${providerLabel} is processing — CPU inference takes time...`;
+        if (secs > 90)  progressMsg.textContent = `Still working — local models on a Pi run at CPU speed, this is normal...`;
+        if (secs > 180) progressMsg.textContent = `Almost there — consider a shorter time window for faster results.`;
+      } else {
+        if (secs > 20) progressMsg.textContent = `Still working — ${providerLabel} is processing your logs...`;
+        if (secs > 45) progressMsg.textContent = `Almost there — large log sets take longer...`;
+      }
+    }
+    if (detail) detail.textContent = `${logCount || '?'} log entries · ${providerLabel}`;
   }, 1000);
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  // Poll every 4s
+  _pollTimer = setInterval(() => _pollJobStatus(), 4000);
+}
 
+async function _pollJobStatus() {
+  if (!_activeJobId) { _stopPolling(); return; }
   try {
-    const hours = parseInt(document.getElementById('ai-hours').value);
-    const r = await fetch(`${API}/api/ai/analyze`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ hours, focus }),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    if (r.status === 401) { doLogout(); return; }
-    if (!r.ok) { const e = await r.json().catch(()=>({detail:r.statusText})); throw new Error(e.detail); }
-    const d = await r.json();
-    renderAnalysis(d, out);
+    const job = await apiFetch(`/api/ai/analyze/status/${_activeJobId}`);
+    if (job.status === 'running') return;
+
+    // Done or error — finish up
+    _stopPolling();
+    const jobId = _activeJobId;
+    _activeJobId = null;
+    sessionStorage.removeItem('ai_active_job');
+
+    const out      = document.getElementById('ai-output');
+    const progress = document.getElementById('ai-progress');
+    const btn      = document.getElementById('ai-btn');
+    const bar      = document.getElementById('ai-progress-bar');
+
+    if (bar) { bar.classList.remove('indeterminate'); bar.style.width = '100%'; }
+
+    // Brief pause so user sees 100% before hiding
+    setTimeout(() => {
+      if (progress) progress.style.display = 'none';
+      if (btn) { btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Logs'; }
+
+      const result = job.result || {};
+      if (out) renderAnalysis(result, out);
+
+      // Persist last result so returning to the page can show it
+      try {
+        sessionStorage.setItem('ai_last_result', JSON.stringify(result));
+      } catch(e) { /* storage full — non-fatal */ }
+
+      const tl = result?.analysis?.threat_level;
+      _sendNotification(tl, result?.log_count);
+
+      // Show nav badge if user has navigated away
+      const badge = document.getElementById('nav-ai-badge');
+      const onAiPage = document.querySelector('nav ul li a[data-page="ai"]')?.classList.contains('active');
+      if (badge && !onAiPage) {
+        badge.style.display = '';
+        badge.style.background = tl === 'CRITICAL' ? 'var(--danger)' :
+                                  tl === 'HIGH'     ? 'var(--warn)'   : 'var(--accent2)';
+      }
+    }, 600);
+
   } catch(e) {
-    clearTimeout(timeout);
-    if (e.name === 'AbortError') {
-      out.innerHTML = `<div class="alert alert-warn">Analysis timed out after ${timeoutLabel}. ${isLocal ? 'Try a shorter time window or a faster model (e.g. tinyllama).' : 'Try a shorter time window or fewer logs.'}</div>`;
-    } else {
-      out.innerHTML = `<div class="alert alert-warn">Analysis failed: ${e.message}</div>`;
+    if (e.message && e.message.includes('404')) {
+      // Job expired — stop polling silently
+      _stopPolling();
+      _activeJobId = null;
+      sessionStorage.removeItem('ai_active_job');
     }
-  } finally {
-    clearInterval(elapsedTimer);
-    progress.style.display = 'none';
-    btn.disabled = false; btn.innerHTML = '&#x1F916; Analyze Logs';
+    // Other errors: keep polling
   }
+}
+
+// Resume an in-progress job after page navigation back to AI tab
+function _resumeActiveJob() {
+  const saved = sessionStorage.getItem('ai_active_job');
+  if (!saved) return false;
+  try {
+    const j = JSON.parse(saved);
+    if (!j.job_id) return false;
+    _activeJobId = j.job_id;
+    _jobStartTs  = j.started_ms || Date.now();
+    _startPollingUI(j.provider || 'anthropic', j.log_count);
+    return true;
+  } catch(e) { return false; }
 }
 
 function renderAnalysis(d, out) {

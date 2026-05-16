@@ -1,7 +1,9 @@
 """
 All REST API routes for the syslog retention service.
 """
+import asyncio
 import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List, Optional
 
@@ -13,6 +15,24 @@ from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
+
+# ── Background analysis job store ────────────────────────────────────────────
+# job_id -> {status, result, started_at, username}
+# status: "running" | "done" | "error"
+_analysis_jobs: dict = {}
+_JOBS_MAX_AGE_SECONDS = 7200  # keep completed jobs for 2 hours
+
+
+def _new_job_id() -> str:
+    return secrets.token_urlsafe(16)
+
+
+def _cleanup_jobs() -> None:
+    cutoff = datetime.now(timezone.utc).timestamp() - _JOBS_MAX_AGE_SECONDS
+    stale = [jid for jid, j in _analysis_jobs.items()
+             if j.get("started_at", 0) < cutoff]
+    for jid in stale:
+        del _analysis_jobs[jid]
 
 from auth import (
     authenticate_user, create_access_token, generate_api_key,
@@ -354,17 +374,70 @@ async def stats(
 async def ai_analyze(
     body: AiAnalyzeBody,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    current: User = Depends(get_current_user),
 ):
     from ai_analysis import analyze_logs
     from database import get_service_setting
+
+    _cleanup_jobs()
+
     since = datetime.now(timezone.utc) - timedelta(hours=body.hours)
     max_logs = int(get_service_setting("ai_analysis_max_logs", db=db) or settings.ai_analysis_max_logs)
     entries, _ = query_logs(db, since=since, limit=max_logs)
     if not entries:
-        return {"analysis": "No log entries found for the requested time window.", "log_count": 0}
-    result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
-    return result
+        return {
+            "job_id": None,
+            "status": "done",
+            "result": {"analysis": "No log entries found for the requested time window.", "log_count": 0},
+        }
+
+    job_id = _new_job_id()
+    _analysis_jobs[job_id] = {
+        "status": "running",
+        "result": None,
+        "started_at": datetime.now(timezone.utc).timestamp(),
+        "username": current.username,
+        "log_count": len(entries),
+        "hours": body.hours,
+    }
+
+    async def _run():
+        try:
+            result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
+            _analysis_jobs[job_id]["status"] = "done"
+            _analysis_jobs[job_id]["result"] = result
+        except Exception as exc:
+            _analysis_jobs[job_id]["status"] = "error"
+            _analysis_jobs[job_id]["result"] = {"error": str(exc), "log_count": len(entries)}
+
+    asyncio.create_task(_run())
+
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "log_count": len(entries),
+    }
+
+
+@router.get("/ai/analyze/status/{job_id}", tags=["ai"])
+async def ai_analyze_status(
+    job_id: str,
+    current: User = Depends(get_current_user),
+):
+    job = _analysis_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found or expired.")
+    if job.get("username") != current.username:
+        raise HTTPException(status_code=403)
+    elapsed = int(datetime.now(timezone.utc).timestamp() - job.get("started_at", 0))
+    return {
+        "job_id": job_id,
+        "status": job["status"],
+        "elapsed_seconds": elapsed,
+        "log_count": job.get("log_count"),
+        "hours": job.get("hours"),
+        "result": job["result"] if job["status"] != "running" else None,
+    }
 
 
 @router.get("/ai/recommendations", tags=["ai"])
