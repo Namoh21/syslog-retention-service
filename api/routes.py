@@ -671,15 +671,19 @@ async def revoke_api_key(
 @router.get("/info", tags=["info"])
 async def service_info(_: User = Depends(get_current_user)):
     from database import get_service_setting
+    ai_provider = get_service_setting("ai_provider") or "anthropic"
     api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
-    claude_model = get_service_setting("claude_model") or settings.claude_model
+    local_url = get_service_setting("ai_local_url") or ""
+    ai_enabled = (ai_provider == "anthropic" and bool(api_key)) or \
+                 (ai_provider == "local" and bool(local_url))
     return {
         "service": settings.service_display_name,
         "version": "1.0.0",
         "syslog_udp_port": settings.syslog_udp_port,
         "syslog_tcp_port": settings.syslog_tcp_port,
-        "claude_model": claude_model,
-        "ai_enabled": bool(api_key),
+        "claude_model": get_service_setting("claude_model") or settings.claude_model,
+        "ai_enabled": ai_enabled,
+        "ai_provider": ai_provider,
     }
 
 
@@ -704,6 +708,9 @@ async def get_settings(_: User = Depends(require_admin)):
             {"id": "claude-opus-4-7",           "label": "Claude Opus 4.7    (most capable, higher cost)"},
             {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5   (fastest, lowest token cost)"},
         ],
+        "ai_provider": get_service_setting("ai_provider") or "anthropic",
+        "ai_local_url": get_service_setting("ai_local_url") or "",
+        "ai_local_model": get_service_setting("ai_local_model") or "llama3.2",
     }
 
 
@@ -784,6 +791,103 @@ async def test_anthropic_key(
     except Exception as exc:
         _log.error("Anthropic connection test failed: %s", exc)
         raise HTTPException(status_code=400, detail="Connection failed. Check service logs for details.")
+
+
+# ===================== Local LLM Settings =====================
+
+class LocalLLMSettings(BaseModel):
+    ai_provider: str          # "anthropic" | "local"
+    ai_local_url: str = ""    # e.g. http://localhost:11434
+    ai_local_model: str = ""  # e.g. llama3.2
+
+
+@router.put("/admin/settings/local-llm", tags=["admin"])
+async def update_local_llm(
+    request: Request,
+    body: LocalLLMSettings,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import set_service_setting
+    provider = body.ai_provider.strip().lower()
+    if provider not in ("anthropic", "local"):
+        raise HTTPException(status_code=400, detail="ai_provider must be 'anthropic' or 'local'")
+    set_service_setting("ai_provider", provider, db)
+    if body.ai_local_url.strip():
+        set_service_setting("ai_local_url", body.ai_local_url.strip().rstrip("/"), db)
+    if body.ai_local_model.strip():
+        set_service_setting("ai_local_model", body.ai_local_model.strip(), db)
+    write_audit(db, admin.username, "settings.ai_provider", f"AI provider set to {provider}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"message": f"AI provider updated to {provider}"}
+
+
+@router.get("/admin/settings/local-llm/models", tags=["admin"])
+async def list_local_models(
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Fetch the model list from a running Ollama/LM Studio instance."""
+    import httpx as _httpx
+    from database import get_service_setting
+    base_url = get_service_setting("ai_local_url") or ""
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Local LLM URL not configured.")
+    try:
+        async with _httpx.AsyncClient(timeout=8.0) as client:
+            # Try Ollama's native tags endpoint first
+            try:
+                r = await client.get(f"{base_url}/api/tags")
+                if r.status_code == 200:
+                    data = r.json()
+                    models = [m["name"] for m in data.get("models", [])]
+                    return {"models": models, "source": "ollama"}
+            except Exception:
+                pass
+            # Fall back to OpenAI-compatible /v1/models
+            r = await client.get(f"{base_url}/v1/models")
+            r.raise_for_status()
+            data = r.json()
+            models = [m["id"] for m in data.get("data", [])]
+            return {"models": models, "source": "openai_compat"}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Could not reach {base_url}: {exc}")
+
+
+@router.post("/admin/settings/test-local-llm", tags=["admin"])
+async def test_local_llm(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Send a minimal chat completion to verify the local LLM is reachable and working."""
+    import httpx as _httpx
+    from database import get_service_setting
+    base_url = get_service_setting("ai_local_url") or ""
+    model = get_service_setting("ai_local_model") or "llama3.2"
+    if not base_url:
+        raise HTTPException(status_code=400, detail="Local LLM URL not configured.")
+    write_audit(db, admin.username, "settings.test_local_llm", "Tested local LLM connection",
+                request.client.host if request.client else "")
+    db.commit()
+    try:
+        async with _httpx.AsyncClient(timeout=30.0) as client:
+            r = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": "Reply with one word: OK"}],
+                    "max_tokens": 10,
+                },
+            )
+            r.raise_for_status()
+            reply = r.json()["choices"][0]["message"]["content"]
+            return {"status": "ok", "message": f"Connected to {base_url} — model '{model}' responded: {reply.strip()[:80]}"}
+    except _httpx.ConnectError:
+        raise HTTPException(status_code=400, detail=f"Connection refused at {base_url}. Is the local LLM server running?")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Test failed: {exc}")
 
 
 # ===================== Web Update =====================

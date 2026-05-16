@@ -549,7 +549,7 @@ async function dashboard() {
           <div class="conn-item"><div class="conn-label">Server IP Address</div><div class="conn-val">${host}</div><div class="conn-note">Your UDM syslog target IP</div></div>
           <div class="conn-item"><div class="conn-label">Syslog Port</div><div class="conn-val">${udpPort}</div><div class="conn-note">UDP and TCP</div></div>
           <div class="conn-item"><div class="conn-label">Web Console</div><div class="conn-val">${host}:${webPort}</div><div class="conn-note">This interface</div></div>
-          <div class="conn-item"><div class="conn-label">AI Analysis</div><div class="conn-val" style="color:${hasAI?'var(--accent2)':'var(--muted)'}">${hasAI?'Enabled':'Disabled'}</div><div class="conn-note">${hasAI?'Claude '+info.claude_model:'Add ANTHROPIC_API_KEY to .env'}</div></div>
+          <div class="conn-item"><div class="conn-label">AI Analysis</div><div class="conn-val" style="color:${hasAI?'var(--accent2)':'var(--muted)'}">${hasAI?'Enabled':'Disabled'}</div><div class="conn-note">${hasAI?(info.ai_provider==='local'?'Local LLM: '+(info.claude_model||''):'Claude '+info.claude_model):'Configure in Service Settings'}</div></div>
         </div>
       </div>`;
 
@@ -825,8 +825,8 @@ async function ai() {
     <div class="page-header"><h1>AI Security Analysis</h1><p>Claude analyzes your recent logs and identifies threats, anomalies, and security recommendations.</p></div>
     ${!aiEnabled ? `<div class="alert alert-warn">
       <strong>AI Analysis is not configured.</strong><br/>
-      Add your Anthropic API key in <span style="cursor:pointer;text-decoration:underline" onclick="showPage('svcSettings')">Service Settings</span>.
-      The key is encrypted and stored in the database — no need to edit any files.
+      Add your Anthropic API key or configure a local LLM in
+      <span style="cursor:pointer;text-decoration:underline" onclick="showPage('svcSettings')">Service Settings</span>.
     </div>` : ''}
     <div class="ai-tabs">
       <div class="ai-tab active" id="aitab-analyze" onclick="aiShowTab('analyze')">&#x1F916; Analyze</div>
@@ -867,7 +867,7 @@ async function ai() {
           </div>
         </div>
         <p class="help-tip">Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.</p>
-        <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis.</p>
+        <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; ${serviceInfo?.ai_provider==='local' ? 'Log data is sent to your local LLM — it stays on your network.' : "Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis."}</p>
       </div>
       <div id="ai-progress" style="display:none" class="alert alert-info">
         <span class="spinner"></span><span id="ai-progress-msg">Sending logs to Claude for analysis...</span>
@@ -973,15 +973,15 @@ function aiSetRecStatus(recId, status, el) {
 }
 
 async function runAnalysis() {
-  if (!localStorage.getItem('ai_consent_given')) {
-    const ok = confirm(
-      'AI Analysis sends a sample of your log data to Anthropic\'s API (Claude).\n\n' +
-      'Logs may contain IP addresses, hostnames, usernames, and other network details.\n\n' +
-      'By clicking OK you confirm you are comfortable sending this data to Anthropic.\n' +
-      'See Anthropic\'s privacy policy at anthropic.com/privacy.'
-    );
+  const provider = serviceInfo?.ai_provider || 'anthropic';
+  const consentKey = provider === 'local' ? 'ai_consent_local' : 'ai_consent_given';
+  if (!localStorage.getItem(consentKey)) {
+    const msg = provider === 'local'
+      ? 'AI Analysis will send log data to your local LLM server.\n\nLogs may contain IP addresses, hostnames, usernames, and other network details.\n\nData stays on your network and is not sent to any cloud service.\n\nClick OK to continue.'
+      : 'AI Analysis sends a sample of your log data to Anthropic\'s API (Claude).\n\nLogs may contain IP addresses, hostnames, usernames, and other network details.\n\nBy clicking OK you confirm you are comfortable sending this data to Anthropic.\nSee Anthropic\'s privacy policy at anthropic.com/privacy.';
+    const ok = confirm(msg);
     if (!ok) return;
-    localStorage.setItem('ai_consent_given', '1');
+    localStorage.setItem(consentKey, '1');
   }
   const btn = document.getElementById('ai-btn');
   const out = document.getElementById('ai-output');
@@ -1071,7 +1071,7 @@ function renderAnalysis(d, out) {
     <div class="card">
       <div style="margin-bottom:12px">
         <span class="threat-badge threat-${tl}">Threat Level: ${tl}</span>
-        <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries &middot; ${d.hours_covered}h window &middot; ${d.model}</span>
+        <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries &middot; ${d.hours_covered}h window &middot; ${d.provider==='local'?'Local: ':''}${esc(d.model||'')}</span>
       </div>
       <p style="font-size:14px;line-height:1.6">${esc(a.summary||'')}</p>
     </div>
@@ -1306,39 +1306,86 @@ async function svcSettings() {
         <p>Sensitive values are encrypted in the database. They are never stored in plaintext after first run.</p>
       </div>
 
-      <div class="card" style="max-width:560px">
-        <div class="card-title"><span class="icon">&#x1F916;</span> Claude AI Configuration</div>
-        <div style="margin-bottom:18px">
-          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Anthropic API Key</div>
-          <div style="margin-bottom:10px">Current status: ${keyStatus}</div>
-          <div class="form-row" style="align-items:flex-end;margin-bottom:0">
-            <div class="form-group" style="flex:1">
-              <label>New API key <span style="color:var(--muted)">(paste to update)</span></label>
-              <input type="password" id="new-api-key" placeholder="sk-ant-..." style="width:100%;font-family:monospace" autocomplete="off" />
-            </div>
-            <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
-            ${s.anthropic_api_key_set ? `<button class="btn btn-ghost" onclick="testApiKey()">Test Connection</button>` : ''}
-            ${s.anthropic_api_key_set ? `<button class="btn btn-danger" onclick="removeApiKey()">Remove</button>` : ''}
+      <div class="card" style="max-width:580px">
+        <div class="card-title"><span class="icon">&#x1F916;</span> AI Configuration</div>
+
+        <!-- Provider selector -->
+        <div style="margin-bottom:16px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:8px">AI Provider</div>
+          <div style="display:flex;gap:10px">
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text)">
+              <input type="radio" name="ai-provider" value="anthropic" ${s.ai_provider!=='local'?'checked':''} onchange="aiProviderChanged()" />
+              &#x1F916; Anthropic (Claude)
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--text)">
+              <input type="radio" name="ai-provider" value="local" ${s.ai_provider==='local'?'checked':''} onchange="aiProviderChanged()" />
+              &#x1F4BB; Local LLM (Ollama / LM Studio)
+            </label>
           </div>
-          <div class="help-tip">Get a key at <strong>console.anthropic.com</strong>. Stored encrypted in the database using AES-256.</div>
         </div>
 
-        <hr class="divider" />
+        <hr class="divider" style="margin:12px 0" />
 
-        <div>
-          <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Claude Model</div>
-          <div class="form-row" style="align-items:flex-end;margin-bottom:8px">
-            <div class="form-group">
-              <label>Select a model</label>
-              <select id="claude-model" onchange="syncCustomModel()">${modelOptions}</select>
+        <!-- Anthropic panel -->
+        <div id="ai-panel-anthropic" ${s.ai_provider==='local'?'style="display:none"':''}>
+          <div style="margin-bottom:18px">
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Anthropic API Key</div>
+            <div style="margin-bottom:10px">Current status: ${keyStatus}</div>
+            <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+              <div class="form-group" style="flex:1">
+                <label>New API key <span style="color:var(--muted)">(paste to update)</span></label>
+                <input type="password" id="new-api-key" placeholder="sk-ant-..." style="width:100%;font-family:monospace" autocomplete="off" />
+              </div>
+              <button class="btn btn-primary" onclick="saveApiKey()">Save Key</button>
+              ${s.anthropic_api_key_set ? `<button class="btn btn-ghost" onclick="testApiKey()">Test</button>` : ''}
+              ${s.anthropic_api_key_set ? `<button class="btn btn-danger" onclick="removeApiKey()">Remove</button>` : ''}
             </div>
-            <button class="btn btn-primary" onclick="saveModel()">Save</button>
+            <div class="help-tip">Get a key at <strong>console.anthropic.com</strong>. Stored encrypted in the database using AES-256.</div>
           </div>
-          <div class="form-group" style="margin-bottom:0">
-            <label>Or enter a custom model ID <span style="color:var(--muted);font-size:11px">(overrides selection above)</span></label>
-            <input type="text" id="claude-model-custom" placeholder="e.g. claude-3-5-sonnet-20241022"
-              style="font-family:monospace;width:100%" autocomplete="off" />
-            <div class="help-tip">Find valid model IDs at <strong>docs.anthropic.com/en/docs/about-claude/models</strong></div>
+          <hr class="divider" style="margin:12px 0" />
+          <div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Claude Model</div>
+            <div class="form-row" style="align-items:flex-end;margin-bottom:8px">
+              <div class="form-group">
+                <label>Select a model</label>
+                <select id="claude-model" onchange="syncCustomModel()">${modelOptions}</select>
+              </div>
+              <button class="btn btn-primary" onclick="saveModel()">Save</button>
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <label>Or enter a custom model ID <span style="color:var(--muted);font-size:11px">(overrides selection above)</span></label>
+              <input type="text" id="claude-model-custom" placeholder="e.g. claude-opus-4-7"
+                style="font-family:monospace;width:100%" autocomplete="off" />
+              <div class="help-tip">Find valid model IDs at <strong>docs.anthropic.com/en/docs/about-claude/models</strong></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Local LLM panel -->
+        <div id="ai-panel-local" ${s.ai_provider!=='local'?'style="display:none"':''}>
+          <div class="alert alert-info" style="margin-bottom:14px;font-size:12px">
+            Supports any OpenAI-compatible server: <strong>Ollama</strong>, <strong>LM Studio</strong>, <strong>llama.cpp server</strong>, etc.
+            The model must accept a JSON system prompt and output valid JSON.
+          </div>
+          <div class="form-group" style="margin-bottom:12px">
+            <label>Server URL</label>
+            <input type="url" id="local-llm-url" value="${esc(s.ai_local_url||'')}"
+              placeholder="http://localhost:11434" style="width:100%;font-family:monospace" autocomplete="off" />
+            <div class="help-tip">Ollama default: <code>http://localhost:11434</code> &nbsp; LM Studio default: <code>http://localhost:1234</code></div>
+          </div>
+          <div class="form-group" style="margin-bottom:12px">
+            <label>Model name</label>
+            <div style="display:flex;gap:8px">
+              <input type="text" id="local-llm-model" value="${esc(s.ai_local_model||'llama3.2')}"
+                placeholder="llama3.2" style="flex:1;font-family:monospace" autocomplete="off" />
+              <button class="btn btn-ghost btn-sm" onclick="fetchLocalModels()" title="Fetch model list from server">&#x1F504; List Models</button>
+            </div>
+            <div id="local-model-list" style="margin-top:6px"></div>
+            <div class="help-tip">Use the <strong>List Models</strong> button to auto-populate from your running server. Recommended: llama3.2 (fast) or mistral (good JSON).</div>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="saveLocalLLM()">Save Local LLM Settings</button>
+            <button class="btn btn-ghost" onclick="testLocalLLM()">Test Connection</button>
           </div>
         </div>
 
@@ -1552,6 +1599,67 @@ async function testApiKey() {
     const d = await apiFetch('/api/admin/settings/test-anthropic-key', { method:'POST' });
     msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${d.message}</div>`;
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`; }
+}
+
+function aiProviderChanged() {
+  const provider = document.querySelector('input[name="ai-provider"]:checked')?.value || 'anthropic';
+  document.getElementById('ai-panel-anthropic').style.display = provider === 'anthropic' ? '' : 'none';
+  document.getElementById('ai-panel-local').style.display = provider === 'local' ? '' : 'none';
+}
+
+async function saveLocalLLM() {
+  const msg = document.getElementById('settings-msg');
+  const provider = document.querySelector('input[name="ai-provider"]:checked')?.value || 'anthropic';
+  const url = (document.getElementById('local-llm-url')?.value || '').trim();
+  const model = (document.getElementById('local-llm-model')?.value || '').trim();
+  if (provider === 'local' && !url) {
+    msg.innerHTML = '<div class="alert alert-warn">Please enter the local LLM server URL.</div>'; return;
+  }
+  try {
+    await apiFetch('/api/admin/settings/local-llm', { method:'PUT', body:JSON.stringify({
+      ai_provider: provider, ai_local_url: url, ai_local_model: model || 'llama3.2'
+    })});
+    msg.innerHTML = `<div class="alert alert-ok">AI provider set to <strong>${provider}</strong>.</div>`;
+    await loadServiceInfo();
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function testLocalLLM() {
+  const msg = document.getElementById('settings-msg');
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Testing local LLM connection...</div>';
+  try {
+    const d = await apiFetch('/api/admin/settings/test-local-llm', { method:'POST' });
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${esc(d.message)}</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`; }
+}
+
+async function fetchLocalModels() {
+  const listEl = document.getElementById('local-model-list');
+  const urlEl = document.getElementById('local-llm-url');
+  if (!listEl) return;
+  // Save current URL first so the API endpoint can read it
+  const url = (urlEl?.value || '').trim();
+  if (!url) { listEl.innerHTML = '<span style="color:var(--warn);font-size:12px">Enter the server URL first.</span>'; return; }
+  listEl.innerHTML = '<span class="spinner"></span>';
+  try {
+    // Temporarily update the URL setting so the backend can use it
+    await apiFetch('/api/admin/settings/local-llm', { method:'PUT', body:JSON.stringify({
+      ai_provider: document.querySelector('input[name="ai-provider"]:checked')?.value || 'local',
+      ai_local_url: url,
+      ai_local_model: document.getElementById('local-llm-model')?.value || 'llama3.2',
+    })});
+    const d = await apiFetch('/api/admin/settings/local-llm/models');
+    if (d.models && d.models.length) {
+      const opts = d.models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join('');
+      listEl.innerHTML = `<select onchange="document.getElementById('local-llm-model').value=this.value" style="font-size:12px;padding:3px 6px">
+        <option value="">— select a model —</option>${opts}</select>
+        <span style="font-size:11px;color:var(--muted);margin-left:6px">${d.models.length} model(s) available</span>`;
+    } else {
+      listEl.innerHTML = '<span style="font-size:12px;color:var(--muted)">No models found.</span>';
+    }
+  } catch(e) {
+    listEl.innerHTML = `<span style="font-size:12px;color:var(--danger)">${e.message}</span>`;
+  }
 }
 
 // ── Change Password ───────────────────────────────────────────────────────────

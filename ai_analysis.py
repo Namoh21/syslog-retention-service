@@ -146,6 +146,48 @@ def _save_analysis(db, result: dict, focus: str, hours: int) -> "AIAnalysis | No
         return None
 
 
+async def _call_anthropic(
+    api_key: str,
+    model: str,
+    user_message: str,
+) -> str:
+    client = anthropic.AsyncAnthropic(api_key=api_key)
+    try:
+        response = await client.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_message}],
+            timeout=60.0,
+        )
+        return response.content[0].text
+    except anthropic.RateLimitError:
+        raise
+    except anthropic.APIError:
+        raise
+
+
+async def _call_local_llm(
+    base_url: str,
+    model: str,
+    user_message: str,
+) -> str:
+    import httpx as _httpx
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ],
+        "max_tokens": 4096,
+        "temperature": 0.2,
+    }
+    async with _httpx.AsyncClient(timeout=120.0) as client:
+        r = await client.post(f"{base_url}/v1/chat/completions", json=payload)
+        r.raise_for_status()
+        return r.json()["choices"][0]["message"]["content"]
+
+
 async def analyze_logs(
     entries: list[SyslogEntry],
     *,
@@ -155,12 +197,8 @@ async def analyze_logs(
 ) -> dict[str, Any]:
     import json as _json
     from database import get_service_setting, SessionLocal
-    api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
-    if not api_key:
-        return {
-            "error": "Anthropic API key not configured. Add it in Settings > AI Configuration.",
-            "log_count": len(entries),
-        }
+
+    ai_provider = get_service_setting("ai_provider") or "anthropic"
 
     own_session = db is None
     if own_session:
@@ -173,13 +211,10 @@ async def analyze_logs(
     finally:
         if own_session:
             db.close()
-            db = None   # will open fresh for save after API call
+            db = None
 
-    client = anthropic.AsyncAnthropic(api_key=api_key)
-    claude_model = get_service_setting("claude_model") or settings.claude_model
     log_text = _format_entries(entries)
     focus_safe = focus[:200] if focus else "security threats and anomalies"
-
     user_message = (
         f"{history_block}"
         f"Please analyze the following {len(entries)} syslog entries from the last {hours} hours. "
@@ -187,52 +222,76 @@ async def analyze_logs(
         f"=== LOG DATA ===\n{log_text}\n=== END LOG DATA ==="
     )
 
-    try:
-        response = await client.messages.create(
-            model=claude_model,
-            max_tokens=4096,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_message}],
-            timeout=60.0,
-        )
-        raw_text = response.content[0].text
-
+    if ai_provider == "local":
+        base_url = get_service_setting("ai_local_url") or ""
+        model = get_service_setting("ai_local_model") or "llama3.2"
+        if not base_url:
+            return {
+                "error": "Local LLM URL not configured. Set it in Settings > AI Configuration.",
+                "log_count": len(entries),
+            }
         try:
-            analysis = _json.loads(raw_text)
+            raw_text = await _call_local_llm(base_url, model, user_message)
+        except Exception as exc:
+            logger.error("Local LLM error: %s", exc)
+            return {"error": f"Local LLM error: {exc}", "log_count": len(entries)}
+    else:
+        api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
+        if not api_key:
+            return {
+                "error": "Anthropic API key not configured. Add it in Settings > AI Configuration.",
+                "log_count": len(entries),
+            }
+        model = get_service_setting("claude_model") or settings.claude_model
+        try:
+            raw_text = await _call_anthropic(api_key, model, user_message)
+        except anthropic.RateLimitError:
+            logger.warning("Anthropic rate limit hit")
+            return {
+                "error": (
+                    "Rate limit reached (30,000 input tokens/min). "
+                    "Try a shorter time window or reduce 'Max logs per AI analysis' "
+                    "in Settings → Service Configuration. "
+                    "Wait 60 seconds and try again."
+                ),
+                "log_count": len(entries),
+            }
+        except anthropic.APIError as exc:
+            logger.error("Anthropic API error: %s", exc)
+            return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}
+
+    try:
+        analysis = _json.loads(raw_text)
+    except _json.JSONDecodeError:
+        # Local models sometimes wrap JSON in markdown code fences — strip them
+        stripped = raw_text.strip()
+        if stripped.startswith("```"):
+            stripped = stripped.split("```", 2)[1]
+            if stripped.startswith("json"):
+                stripped = stripped[4:]
+            stripped = stripped.rsplit("```", 1)[0].strip()
+        try:
+            analysis = _json.loads(stripped)
         except _json.JSONDecodeError:
             analysis = {"summary": raw_text, "raw": True}
 
-        result = {
-            "analysis": analysis,
-            "log_count": len(entries),
-            "analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "model": claude_model,
-            "hours_covered": hours,
-        }
+    result = {
+        "analysis": analysis,
+        "log_count": len(entries),
+        "analyzed_at": datetime.now(timezone.utc).isoformat(),
+        "model": model,
+        "hours_covered": hours,
+        "provider": ai_provider,
+    }
 
-        # Save to history (best-effort)
-        try:
-            save_db = SessionLocal()
-            saved = _save_analysis(save_db, result, focus_safe, hours)
-            if saved:
-                result["analysis_id"] = saved.id
-            save_db.close()
-        except Exception as exc:
-            logger.warning("Analysis save failed: %s", exc)
+    # Save to history (best-effort)
+    try:
+        save_db = SessionLocal()
+        saved = _save_analysis(save_db, result, focus_safe, hours)
+        if saved:
+            result["analysis_id"] = saved.id
+        save_db.close()
+    except Exception as exc:
+        logger.warning("Analysis save failed: %s", exc)
 
-        return result
-
-    except anthropic.RateLimitError:
-        logger.warning("Anthropic rate limit hit")
-        return {
-            "error": (
-                "Rate limit reached (30,000 input tokens/min). "
-                "Try a shorter time window or reduce 'Max logs per AI analysis' "
-                "in Settings → Service Configuration. "
-                "Wait 60 seconds and try again."
-            ),
-            "log_count": len(entries),
-        }
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error: %s", exc)
-        return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}
+    return result
