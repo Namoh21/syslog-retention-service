@@ -732,11 +732,16 @@ do_install() {
     fi
 
     # Dependencies
-    step "Installing Python dependencies (this may take a few minutes on a Pi)"
-    "$PIP" install --upgrade pip --quiet
+    step "Installing Python dependencies (may take several minutes on a Pi)"
+    "$PIP" install --upgrade pip --quiet --timeout 60 --retries 5
     local req_file="$INSTALL_DIR/requirements-linux.txt"
     [[ ! -f "$req_file" ]] && req_file="$INSTALL_DIR/requirements.txt"
-    "$PIP" install -r "$req_file"
+    echo -e "  ${GRAY}Progress is shown below. Retries on connection drops are normal.${NC}"
+    if ! "$PIP" install -r "$req_file" --timeout 120 --retries 10 --no-cache-dir; then
+        err "Dependency installation failed. Check the output above for details."
+        echo -e "  ${YELLOW}Try running manually: sudo $PIP install -r $req_file${NC}"
+        pause; return
+    fi
     ok "Dependencies installed"
 
     # Log directory
@@ -925,11 +930,13 @@ do_update() {
 
     step "Updating Python dependencies"
     if [[ -f "$PIP" ]]; then
-        "$PIP" install --upgrade pip --quiet
+        "$PIP" install --upgrade pip --quiet --timeout 60 --retries 5
         local req_file="$INSTALL_DIR/requirements-linux.txt"
         [[ ! -f "$req_file" ]] && req_file="$INSTALL_DIR/requirements.txt"
-        "$PIP" install -r "$req_file" --quiet
-        ok "Dependencies updated"
+        echo -e "  ${GRAY}Retries on connection drops are normal on slow connections.${NC}"
+        "$PIP" install -r "$req_file" --timeout 120 --retries 10 --no-cache-dir \
+            && ok "Dependencies updated" \
+            || warn "Some packages may not have updated — check output above"
     else
         warn "Venv not found — run Install (option 1) first, then Update."
     fi
