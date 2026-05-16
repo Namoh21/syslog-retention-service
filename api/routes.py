@@ -749,12 +749,17 @@ async def service_info(_: User = Depends(get_current_user)):
     local_url = get_service_setting("ai_local_url") or ""
     ai_enabled = (ai_provider == "anthropic" and bool(api_key)) or \
                  (ai_provider == "local" and bool(local_url))
+    if ai_provider == "local":
+        active_model = get_service_setting("ai_local_model") or "llama3.2"
+    else:
+        active_model = get_service_setting("claude_model") or settings.claude_model
     return {
         "service": settings.service_display_name,
         "version": "1.0.0",
         "syslog_udp_port": settings.syslog_udp_port,
         "syslog_tcp_port": settings.syslog_tcp_port,
-        "claude_model": get_service_setting("claude_model") or settings.claude_model,
+        "claude_model": get_service_setting("claude_model") or settings.claude_model,  # Anthropic model (always)
+        "active_model": active_model,   # effective model for whichever provider is selected
         "ai_enabled": ai_enabled,
         "ai_provider": ai_provider,
     }
