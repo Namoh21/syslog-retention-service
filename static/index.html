@@ -244,6 +244,7 @@ let token = sessionStorage.getItem('siem_token') || null;
 let currentUser = sessionStorage.getItem('siem_user') || null;
 let serviceInfo = null;
 let _navPollTimer = null;
+let _netGraph = null;  // active NetworkGraph instance — stopped on page change
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
 async function doLogin() {
@@ -433,6 +434,7 @@ function showPage(name) {
   };
   document.title = pageTitles[name] ? `${pageTitles[name]} — SIEM Console` : 'SIEM Console';
   if (name !== 'logs' && _liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
+  if (name !== 'trafficmatrix' && _netGraph) { _netGraph.stop(); _netGraph = null; }
   const pages = {
     dashboard, logs, ai, investigate, rulehits, trafficmatrix, simulate, policygaps, alertrules,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
@@ -1508,27 +1510,418 @@ async function loadRuleHits() {
 }
 
 // ── Traffic Matrix ────────────────────────────────────────────────────────────
+
+const TM_RANGES = [
+  {v:1,    l:'1 hour'},
+  {v:6,    l:'6 hours'},
+  {v:12,   l:'12 hours'},
+  {v:24,   l:'24 hours'},
+  {v:168,  l:'7 days'},
+  {v:720,  l:'30 days'},
+  {v:2160, l:'90 days'},
+  {v:0,    l:'All data'},
+];
+
 async function trafficmatrix() {
-  render(`<div class="page-header"><h1>Traffic Matrix</h1><p>Top ports, protocols, and source IPs — spot unexpected traffic patterns.</p></div>
-    <div class="card" style="max-width:400px;margin-bottom:16px">
-      <div class="form-row" style="align-items:flex-end;margin-bottom:0">
-        <div class="form-group"><label>Time window</label>
-          <select id="tm-hours"><option value="1">1h</option><option value="24" selected>24h</option><option value="168">7d</option></select>
+  if (_netGraph) { _netGraph.stop(); _netGraph = null; }
+  const rangeOpts = TM_RANGES.map(r =>
+    `<option value="${r.v}" ${r.v===168?'selected':''}>${r.l}</option>`
+  ).join('');
+  render(`
+    <div class="page-header">
+      <h1>Traffic Matrix</h1>
+      <p>Network traffic visualisation. Scroll to zoom · drag to pan · green = private · amber = public.</p>
+    </div>
+    <div class="card" style="margin-bottom:16px">
+      <div class="form-row" style="align-items:center;margin-bottom:0;flex-wrap:wrap;gap:8px">
+        <div class="form-group" style="margin-bottom:0">
+          <label>Time window</label>
+          <select id="tm-hours">${rangeOpts}</select>
         </div>
         <button class="btn btn-primary" onclick="loadMatrix()">Load</button>
+        <button class="btn btn-ghost" onclick="if(_netGraph)_netGraph.resetView()" style="margin-left:4px">Reset View</button>
+        <span id="tm-node-count" style="font-size:12px;color:var(--muted);margin-left:8px"></span>
       </div>
     </div>
-    <div id="tm-result"><div class="spinner"></div> Loading...</div>`);
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
+      <canvas id="net-graph-canvas"
+        style="width:100%;height:560px;display:block;background:var(--card);cursor:grab"></canvas>
+      <div id="ng-overlay" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+           text-align:center;color:var(--muted);pointer-events:none"></div>
+    </div>
+    <div id="tm-tables"><div class="spinner"></div> Loading tables...</div>
+  `);
   loadMatrix();
 }
 
+// ── NetworkGraph class ────────────────────────────────────────────────────────
+
+class NetworkGraph {
+  constructor(canvas) {
+    this.cv = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.nodes = [];
+    this.edges = [];
+    this.snodes = [];   // subnet-level aggregated nodes
+    this.sedges = [];   // subnet-level aggregated edges
+    this.zoom = 1;
+    this.px = 0; this.py = 0;   // pan offsets
+    this.dragging = false;
+    this.ds = {x:0, y:0};
+    this.raf = null;
+    this.hovered = null;
+    this._resize();
+    this._events();
+  }
+
+  _resize() {
+    const rect = this.cv.getBoundingClientRect();
+    this.cv.width  = rect.width  * devicePixelRatio;
+    this.cv.height = rect.height * devicePixelRatio;
+    this.ctx.scale(devicePixelRatio, devicePixelRatio);
+    this.W = rect.width;
+    this.H = rect.height;
+  }
+
+  load(data) {
+    const nodeMap = {};
+    this.nodes = data.nodes.map(n => {
+      const nd = { ...n, x: (Math.random()-0.5)*600, y: (Math.random()-0.5)*400, vx:0, vy:0 };
+      nodeMap[n.ip] = nd;
+      return nd;
+    });
+
+    this.edges = data.edges.map(e => ({
+      ...e,
+      sn: nodeMap[e.src],
+      dn: nodeMap[e.dst],
+      tsMs: e.last_seen ? new Date(e.last_seen).getTime() : 0,
+    })).filter(e => e.sn && e.dn);
+
+    this._buildSubnets(nodeMap);
+    this._layout(this.snodes, this.sedges, 250);
+    this._placeIPsAroundSubnets();
+    this.resetView();
+    if (!this.raf) this._loop();
+  }
+
+  _buildSubnets(nodeMap) {
+    const sm = {};
+    this.nodes.forEach(n => {
+      if (!sm[n.subnet]) sm[n.subnet] = {
+        id: n.subnet, subnet: n.subnet, private: n.private,
+        events: 0, ips: [], x:(Math.random()-0.5)*500, y:(Math.random()-0.5)*350, vx:0, vy:0
+      };
+      sm[n.subnet].events += n.events;
+      sm[n.subnet].ips.push(n.ip);
+    });
+    this.snodes = Object.values(sm);
+
+    const em = {};
+    this.edges.forEach(e => {
+      const k = `${e.sn.subnet}|${e.dn.subnet}`;
+      if (!em[k]) em[k] = { src: e.sn.subnet, dst: e.dn.subnet, count: 0, tsMs: 0 };
+      em[k].count += e.count;
+      em[k].tsMs = Math.max(em[k].tsMs, e.tsMs);
+    });
+    const snMap = {};
+    this.snodes.forEach(s => snMap[s.subnet] = s);
+    this.sedges = Object.values(em).map(e => ({
+      ...e, sn: snMap[e.src], dn: snMap[e.dst]
+    })).filter(e => e.sn && e.dn && e.src !== e.dst);
+  }
+
+  _layout(nodes, edges, iters) {
+    const K = 90, spring = 0.015, ideal = 160;
+    for (let i = 0; i < iters; i++) {
+      nodes.forEach(a => { a.vx = 0; a.vy = 0; });
+      for (let a = 0; a < nodes.length; a++) {
+        for (let b = a+1; b < nodes.length; b++) {
+          const dx = nodes[a].x - nodes[b].x, dy = nodes[a].y - nodes[b].y;
+          const d = Math.sqrt(dx*dx+dy*dy) || 0.1;
+          const f = K*K/d * 0.08;
+          nodes[a].vx += dx/d*f; nodes[a].vy += dy/d*f;
+          nodes[b].vx -= dx/d*f; nodes[b].vy -= dy/d*f;
+        }
+      }
+      edges.forEach(e => {
+        if (!e.sn||!e.dn) return;
+        const dx = e.dn.x-e.sn.x, dy = e.dn.y-e.sn.y;
+        const d = Math.sqrt(dx*dx+dy*dy)||0.1;
+        const f = (d-ideal)*spring;
+        e.sn.vx += dx*f; e.sn.vy += dy*f;
+        e.dn.vx -= dx*f; e.dn.vy -= dy*f;
+      });
+      const damp = 1 - i/iters * 0.5;
+      nodes.forEach(n => { n.x += n.vx*damp; n.y += n.vy*damp; });
+    }
+  }
+
+  _placeIPsAroundSubnets() {
+    const sm = {};
+    this.snodes.forEach(s => sm[s.subnet] = s);
+    const bySubnet = {};
+    this.nodes.forEach(n => {
+      if (!bySubnet[n.subnet]) bySubnet[n.subnet] = [];
+      bySubnet[n.subnet].push(n);
+    });
+    Object.entries(bySubnet).forEach(([sub, ips]) => {
+      const c = sm[sub];
+      if (!c) return;
+      ips.forEach((ip, i) => {
+        const angle = (i/ips.length)*Math.PI*2;
+        const r = 35 + Math.min(ips.length*5, 80);
+        ip.x = c.x + Math.cos(angle)*r;
+        ip.y = c.y + Math.sin(angle)*r;
+      });
+    });
+  }
+
+  _pulse(tsMs) {
+    if (!tsMs) return 0.12;
+    const ageH = (Date.now()-tsMs)/3600000;
+    if (ageH > 24) return 0.18;
+    const freq = 3 - (ageH/24)*2.5;   // 3 Hz→0.5 Hz as age approaches 24h
+    const t = performance.now()/1000;
+    return 0.3 + 0.7*(0.5 + 0.5*Math.sin(t*freq*Math.PI*2));
+  }
+
+  _edgeW(count, maxCount) {
+    return 0.8 + (Math.log1p(count)/Math.log1p(maxCount||1))*9;
+  }
+
+  _nodeR(events, maxEvents, isSubnet) {
+    const base = isSubnet ? 10 : 5;
+    const extra = isSubnet ? 22 : 12;
+    return base + (Math.log1p(events)/Math.log1p(maxEvents||1))*extra;
+  }
+
+  _nodeColor(isPrivate) {
+    return isPrivate ? 'rgba(63,185,80,0.85)' : 'rgba(210,153,34,0.85)';
+  }
+
+  draw() {
+    const ctx = this.ctx, W = this.W, H = this.H;
+    ctx.clearRect(0, 0, W, H);
+
+    const subnetView = this.zoom < 1.8;
+    const nodes = subnetView ? this.snodes : this.nodes;
+    const edges = subnetView ? this.sedges : this.edges;
+
+    if (!nodes.length) {
+      ctx.fillStyle = 'rgba(180,180,180,0.4)';
+      ctx.font = '14px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No traffic data for this time window', W/2, H/2);
+      return;
+    }
+
+    ctx.save();
+    ctx.translate(W/2 + this.px, H/2 + this.py);
+    ctx.scale(this.zoom, this.zoom);
+
+    const maxCount  = edges.reduce((m,e)=>Math.max(m,e.count),1);
+    const maxEvents = nodes.reduce((m,n)=>Math.max(m,n.events),1);
+    const isSel = this.hovered;
+
+    // ── Edges ──
+    edges.forEach(e => {
+      if (!e.sn||!e.dn) return;
+      const dim = isSel && e.sn!==isSel && e.dn!==isSel;
+      const alpha = dim ? 0.05 : this._pulse(e.tsMs);
+      const w = this._edgeW(e.count, maxCount) / this.zoom;
+      const mx = (e.sn.x+e.dn.x)/2, my = (e.sn.y+e.dn.y)/2;
+      const nx = -(e.dn.y-e.sn.y), ny = e.dn.x-e.sn.x;
+      const nd = Math.sqrt(nx*nx+ny*ny)||1;
+      ctx.beginPath();
+      ctx.moveTo(e.sn.x, e.sn.y);
+      ctx.quadraticCurveTo(mx+nx/nd*18, my+ny/nd*18, e.dn.x, e.dn.y);
+      ctx.strokeStyle = `rgba(88,166,255,${alpha})`;
+      ctx.lineWidth = w;
+      ctx.stroke();
+    });
+
+    // ── Nodes ──
+    nodes.forEach(n => {
+      const r = this._nodeR(n.events, maxEvents, subnetView);
+      const dim = isSel && n!==isSel;
+      ctx.globalAlpha = dim ? 0.2 : 1;
+      ctx.beginPath();
+      ctx.arc(n.x, n.y, r, 0, Math.PI*2);
+      ctx.fillStyle = this._nodeColor(n.private);
+      ctx.fill();
+      ctx.strokeStyle = n===this.hovered ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.2)';
+      ctx.lineWidth = (n===this.hovered ? 2 : 1) / this.zoom;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      const label = subnetView
+        ? n.subnet.replace('.0/24','.*')
+        : n.ip;
+      const fs = Math.max(8, Math.min(12, 11/this.zoom));
+      if (this.zoom > 0.4 || r*this.zoom > 10) {
+        ctx.font = `${fs}px monospace`;
+        ctx.fillStyle = dim ? 'rgba(180,180,180,0.2)' : 'rgba(230,230,230,0.9)';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, n.x, n.y + r/this.zoom + fs + 1);
+      }
+    });
+
+    ctx.restore();
+    this._drawLegend(ctx, W, H, subnetView);
+  }
+
+  _drawLegend(ctx, W, H, subnetView) {
+    ctx.save();
+    const x = 14, y = H - 92;
+    ctx.font = '11px sans-serif';
+    ctx.fillStyle = 'rgba(170,170,170,0.8)';
+    ctx.textAlign = 'left';
+    ctx.fillText(subnetView ? 'Subnet view  (zoom in to see individual IPs)' : 'IP view  (zoom out for subnet overview)', x, y);
+    const leg = [
+      ['rgba(88,166,255,1.0)', '< 1 hr  (fast pulse)'],
+      ['rgba(88,166,255,0.55)','< 24 hr (slow pulse)'],
+      ['rgba(88,166,255,0.18)','> 24 hr (solid)'],
+    ];
+    leg.forEach(([c,l], i) => {
+      ctx.beginPath();
+      ctx.moveTo(x, y+14+i*16); ctx.lineTo(x+22, y+14+i*16);
+      ctx.strokeStyle = c; ctx.lineWidth = 2.5; ctx.stroke();
+      ctx.fillStyle = 'rgba(170,170,170,0.8)';
+      ctx.fillText(l, x+28, y+18+i*16);
+    });
+    // Node legend
+    [[' Private IP','rgba(63,185,80,0.85)'],[' Public IP','rgba(210,153,34,0.85)']].forEach(([l,c],i) => {
+      ctx.beginPath();
+      ctx.arc(W-90, y+14+i*18, 5, 0, Math.PI*2);
+      ctx.fillStyle = c; ctx.fill();
+      ctx.fillStyle = 'rgba(170,170,170,0.8)';
+      ctx.fillText(l, W-82, y+18+i*18);
+    });
+    ctx.restore();
+  }
+
+  resetView() {
+    this.zoom = 0.9;
+    this.px = 0; this.py = 0;
+  }
+
+  _loop() {
+    this.draw();
+    this.raf = requestAnimationFrame(() => this._loop());
+  }
+
+  stop() {
+    if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
+  }
+
+  _worldPos(ex, ey) {
+    const rect = this.cv.getBoundingClientRect();
+    const cx = (ex - rect.left - this.W/2 - this.px) / this.zoom;
+    const cy = (ey - rect.top  - this.H/2 - this.py) / this.zoom;
+    return {cx, cy};
+  }
+
+  _nearestNode(cx, cy) {
+    const subnetView = this.zoom < 1.8;
+    const nodes = subnetView ? this.snodes : this.nodes;
+    const maxEvents = nodes.reduce((m,n)=>Math.max(m,n.events),1);
+    let best = null, bestD = Infinity;
+    nodes.forEach(n => {
+      const r = this._nodeR(n.events, maxEvents, subnetView);
+      const d = Math.sqrt((n.x-cx)**2+(n.y-cy)**2);
+      if (d < r+4 && d < bestD) { best=n; bestD=d; }
+    });
+    return best;
+  }
+
+  _events() {
+    const c = this.cv;
+    // Zoom
+    c.addEventListener('wheel', e => {
+      e.preventDefault();
+      const f = e.deltaY > 0 ? 0.88 : 1.14;
+      this.zoom = Math.min(12, Math.max(0.08, this.zoom*f));
+    }, {passive:false});
+    // Pan / hover
+    c.addEventListener('mousedown', e => {
+      this.dragging = true;
+      this.ds = {x: e.clientX - this.px, y: e.clientY - this.py};
+      c.style.cursor = 'grabbing';
+    });
+    c.addEventListener('mousemove', e => {
+      if (this.dragging) {
+        this.px = e.clientX - this.ds.x;
+        this.py = e.clientY - this.ds.y;
+      } else {
+        const {cx, cy} = this._worldPos(e.clientX, e.clientY);
+        this.hovered = this._nearestNode(cx, cy);
+        c.style.cursor = this.hovered ? 'pointer' : 'grab';
+      }
+    });
+    c.addEventListener('mouseup',   () => { this.dragging=false; c.style.cursor='grab'; });
+    c.addEventListener('mouseleave',() => { this.dragging=false; this.hovered=null; });
+    // Touch
+    let lDist = 0;
+    c.addEventListener('touchstart', e => {
+      if (e.touches.length===1) {
+        this.dragging=true;
+        this.ds={x:e.touches[0].clientX-this.px, y:e.touches[0].clientY-this.py};
+      } else if (e.touches.length===2) {
+        lDist = Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                           e.touches[0].clientY-e.touches[1].clientY);
+      }
+    },{passive:true});
+    c.addEventListener('touchmove', e => {
+      e.preventDefault();
+      if (e.touches.length===1 && this.dragging) {
+        this.px=e.touches[0].clientX-this.ds.x;
+        this.py=e.touches[0].clientY-this.ds.y;
+      } else if (e.touches.length===2) {
+        const d=Math.hypot(e.touches[0].clientX-e.touches[1].clientX,
+                           e.touches[0].clientY-e.touches[1].clientY);
+        this.zoom=Math.min(12,Math.max(0.08,this.zoom*(d/lDist)));
+        lDist=d;
+      }
+    },{passive:false});
+    c.addEventListener('touchend',()=>{ this.dragging=false; });
+    // Resize
+    window.addEventListener('resize', () => {
+      this._resize();
+    });
+  }
+}
+
+// ── Load traffic matrix data + populate graph ─────────────────────────────────
+
 async function loadMatrix() {
-  const hours = document.getElementById('tm-hours')?.value || 24;
-  const out = document.getElementById('tm-result');
+  let hoursVal = parseInt(document.getElementById('tm-hours')?.value||'168');
+  const hours  = hoursVal === 0 ? 876000 : hoursVal;   // 0 = all data (~100 years)
+
+  // ── Network graph ──
+  const canvas = document.getElementById('net-graph-canvas');
+  if (canvas) {
+    if (_netGraph) { _netGraph.stop(); _netGraph = null; }
+    const ng = new NetworkGraph(canvas);
+    _netGraph = ng;
+    document.getElementById('tm-node-count').textContent = 'Loading graph…';
+    apiFetch(`/api/analysis/network-graph?hours=${hours}&limit=500`).then(gd => {
+      if (!gd || !canvas.isConnected) return;
+      ng.load(gd);
+      const n = gd.nodes.length, e = gd.edges.length;
+      document.getElementById('tm-node-count').textContent =
+        `${n} node${n!==1?'s':''} · ${e} connection${e!==1?'s':''}`;
+    }).catch(() => {
+      document.getElementById('tm-node-count').textContent = 'Graph load failed';
+    });
+  }
+
+  // ── Tables ──
+  const out = document.getElementById('tm-tables');
   if (!out) return;
-  out.innerHTML = '<div class="spinner"></div> Loading...';
+  out.innerHTML = '<div class="spinner"></div> Loading tables...';
   try {
-    const d = await apiFetch(`/api/analysis/traffic-matrix?hours=${hours}`);
+    const d = await apiFetch(`/api/analysis/traffic-matrix?hours=${Math.min(hours,8760)}`);
     if (!d) return;
     const portRows = (d.top_ports||[]).map(p=>`<tr>
       <td><strong>${p.port}</strong></td><td style="color:var(--muted)">${esc(p.protocol||'')}</td><td>${p.count.toLocaleString()}</td>
@@ -1551,7 +1944,7 @@ async function loadMatrix() {
         <tbody>${srcRows||'<tr><td colspan=2 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div>
       </div>
     </div>
-    <div class="card"><div class="card-title">Event Type / Action Matrix</div>
+    <div class="card"><div class="card-title">Event / Action Breakdown</div>
       <div class="tbl-wrap"><table><thead><tr><th>Event Type</th><th>Action</th><th>Count</th></tr></thead>
       <tbody>${etRows||'<tr><td colspan=3 style="color:var(--muted)">No data</td></tr>'}</tbody></table></div>
     </div>`;

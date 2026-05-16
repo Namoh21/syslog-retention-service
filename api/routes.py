@@ -1078,6 +1078,84 @@ async def get_traffic_matrix(
     }
 
 
+@router.get("/analysis/network-graph", tags=["analysis"])
+async def get_network_graph(
+    hours: int = Query(168, ge=1, le=876000),
+    limit: int = Query(500, ge=10, le=2000),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """
+    Source → destination traffic pairs for the network graph visualisation.
+    Returns nodes (unique IPs) and edges (src/dst pairs) with event counts
+    and last-seen timestamps for the pulsation animation.
+    """
+    from sqlalchemy import func as sqlfunc
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    pairs = (
+        db.query(
+            SyslogEntry.src_ip,
+            SyslogEntry.dst_ip,
+            sqlfunc.count(SyslogEntry.id).label("count"),
+            sqlfunc.max(SyslogEntry.received_at).label("last_seen"),
+        )
+        .filter(
+            SyslogEntry.received_at >= since,
+            SyslogEntry.src_ip.isnot(None),
+            SyslogEntry.dst_ip.isnot(None),
+        )
+        .group_by(SyslogEntry.src_ip, SyslogEntry.dst_ip)
+        .order_by(sqlfunc.count(SyslogEntry.id).desc())
+        .limit(limit)
+        .all()
+    )
+
+    def subnet24(ip: str) -> str:
+        parts = ip.split(".")
+        return f"{parts[0]}.{parts[1]}.{parts[2]}.0/24" if len(parts) == 4 else ip
+
+    def is_private(ip: str) -> bool:
+        p = ip.split(".")
+        if len(p) != 4:
+            return False
+        try:
+            o = [int(x) for x in p]
+            return (o[0] == 10 or
+                    (o[0] == 172 and 16 <= o[1] <= 31) or
+                    (o[0] == 192 and o[1] == 168) or
+                    o[0] == 127)
+        except ValueError:
+            return False
+
+    nodes: dict[str, dict] = {}
+    edges = []
+
+    for src_ip, dst_ip, count, last_seen in pairs:
+        for ip in (src_ip, dst_ip):
+            if ip not in nodes:
+                nodes[ip] = {
+                    "ip": ip,
+                    "subnet": subnet24(ip),
+                    "private": is_private(ip),
+                    "events": 0,
+                }
+            nodes[ip]["events"] += count
+
+        edges.append({
+            "src": src_ip,
+            "dst": dst_ip,
+            "count": count,
+            "last_seen": last_seen.isoformat() if last_seen else None,
+        })
+
+    return {
+        "nodes": list(nodes.values()),
+        "edges": edges,
+        "hours": hours,
+    }
+
+
 @router.post("/analysis/simulate-rule", tags=["analysis"])
 async def simulate_rule(
     src_cidr: Optional[str] = Body(None, embed=True),
