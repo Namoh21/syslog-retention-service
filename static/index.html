@@ -2098,7 +2098,7 @@ async function saveAiProvider() {
       ai_local_model: model || 'llama3.2',
     })});
     msg.innerHTML = `<div class="alert alert-ok">&#x2705; AI provider saved: <strong>${provider}</strong>.</div>`;
-    await loadServiceInfo();
+    serviceInfo = await apiFetch('/api/info').catch(() => null);
     setTimeout(() => { const m = document.getElementById('provider-msg'); if (m) m.innerHTML = ''; }, 4000);
   } catch(e) {
     msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`;
@@ -2118,7 +2118,7 @@ async function saveLocalLLM() {
       ai_provider: provider, ai_local_url: url, ai_local_model: model || 'llama3.2'
     })});
     msg.innerHTML = `<div class="alert alert-ok">&#x2705; Local LLM settings saved (URL + model).</div>`;
-    await loadServiceInfo();
+    serviceInfo = await apiFetch('/api/info').catch(() => null);
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
