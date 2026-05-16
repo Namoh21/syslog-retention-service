@@ -854,8 +854,12 @@ EOF
     # SSH MUST be allowed before enabling ufw on a headless Pi.
     # ufw allow ssh covers port 22. We also detect any custom sshd port.
     ufw allow ssh comment "SSH remote management" >/dev/null 2>&1 || true
+    # Detect any non-default SSH port — read sshd_config first, then fall back
+    # to ss output parsing with plain cut (no gawk required)
     local ssh_port
-    ssh_port=$(ss -tlnp 2>/dev/null | awk '/sshd/{match($4,/:([0-9]+)$/,m); if(m[1]) print m[1]}' | head -1)
+    ssh_port=$(grep -iE '^Port ' /etc/ssh/sshd_config 2>/dev/null | awk '{print $2}' | head -1)
+    [[ -z "$ssh_port" ]] && \
+        ssh_port=$(ss -tlnp 2>/dev/null | grep -i sshd | awk '{print $4}' | rev | cut -d: -f1 | rev | head -1)
     if [[ -n "$ssh_port" && "$ssh_port" != "22" ]]; then
         ufw allow "${ssh_port}/tcp" comment "SSH (custom port)" >/dev/null 2>&1 || true
         ok "SSH allowed on ports 22 and $ssh_port"
