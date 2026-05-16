@@ -1121,9 +1121,11 @@ async function svcSettings() {
     const keyStatus = s.anthropic_api_key_set
       ? `<span style="color:var(--accent2)">Set</span> <span style="color:var(--muted);font-size:12px">(${esc(s.anthropic_api_key_hint)})</span>`
       : `<span style="color:var(--warn)">Not configured</span>`;
-    const modelOptions = (s.available_models || []).map(m =>
-      `<option value="${m}" ${m === s.claude_model ? 'selected' : ''}>${m}</option>`
-    ).join('');
+    const modelOptions = (s.available_models || []).map(m => {
+      const id    = typeof m === 'string' ? m : m.id;
+      const label = typeof m === 'string' ? m : m.label;
+      return `<option value="${esc(id)}" ${id === s.claude_model ? 'selected' : ''}>${esc(label)}</option>`;
+    }).join('');
     render(`
       <div class="page-header">
         <h1>Service Settings</h1>
