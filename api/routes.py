@@ -406,11 +406,15 @@ async def ai_analyze(
             result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
             _analysis_jobs[job_id]["status"] = "done"
             _analysis_jobs[job_id]["result"] = result
+        except asyncio.CancelledError:
+            _analysis_jobs[job_id]["status"] = "error"
+            _analysis_jobs[job_id]["result"] = {"error": "Analysis cancelled (service shutdown)", "log_count": len(entries)}
         except Exception as exc:
             _analysis_jobs[job_id]["status"] = "error"
             _analysis_jobs[job_id]["result"] = {"error": str(exc), "log_count": len(entries)}
 
-    asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    _analysis_jobs[job_id]["_task"] = task
 
     return {
         "job_id": job_id,

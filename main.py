@@ -38,6 +38,7 @@ logger = logging.getLogger("main")
 
 _udp_transport = None
 _tcp_server = None
+_background_tasks: list[asyncio.Task] = []
 
 # ── Login rate limiter ────────────────────────────────────────────────────────
 # Maps IP → list of attempt timestamps within the window
@@ -117,9 +118,9 @@ async def lifespan(app: FastAPI):
     except OSError as exc:
         logger.warning("TCP listener failed (port %d): %s", settings.syslog_tcp_port, exc)
 
-    asyncio.create_task(_scheduled_purge())
     from alert_engine import run_alert_engine
-    asyncio.create_task(run_alert_engine())
+    _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))
+    _background_tasks.append(asyncio.create_task(run_alert_engine(), name="alert_engine"))
     logger.info(
         "Web console: http://%s:%d",
         "localhost" if settings.api_host == "0.0.0.0" else settings.api_host,
@@ -128,11 +129,30 @@ async def lifespan(app: FastAPI):
 
     yield
 
+    # ── Graceful shutdown ─────────────────────────────────────────────────────
+    logger.info("Shutting down background tasks...")
+    for task in _background_tasks:
+        task.cancel()
+    # Cancel any in-flight AI analysis jobs
+    from api.routes import _analysis_jobs
+    for job in _analysis_jobs.values():
+        t = job.get("_task")
+        if t and not t.done():
+            t.cancel()
+    # Wait up to 5 s for tasks to acknowledge cancellation
+    if _background_tasks:
+        await asyncio.wait(_background_tasks, timeout=5)
+    _background_tasks.clear()
+
     if _udp_transport:
         _udp_transport.close()
     if _tcp_server:
         _tcp_server.close()
-        await _tcp_server.wait_closed()
+        try:
+            await asyncio.wait_for(_tcp_server.wait_closed(), timeout=5)
+        except asyncio.TimeoutError:
+            logger.warning("TCP server did not close cleanly within 5s")
+    logger.info("Shutdown complete.")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────

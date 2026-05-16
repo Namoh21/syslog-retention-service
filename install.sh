@@ -842,6 +842,7 @@ ExecStart=${PYTHON} main.py
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=always
 RestartSec=30
+TimeoutStopSec=15
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=append:${LOG_DIR}/service.log
