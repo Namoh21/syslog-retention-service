@@ -843,11 +843,23 @@ EOF
 
     # Firewall
     step "Configuring firewall (ufw)"
+    # SSH must be allowed BEFORE enabling ufw — failing to do this locks out
+    # remote access. Allow on both the default port and any custom SSH port.
+    ufw allow ssh comment "SSH" >/dev/null 2>&1 || true
+    # Also detect if SSH is listening on a non-standard port and allow that
+    local ssh_port
+    ssh_port=$(ss -tlnp 2>/dev/null | awk '/sshd/{match($4,/:([0-9]+)$/,m); if(m[1]) print m[1]}' | head -1)
+    if [[ -n "$ssh_port" && "$ssh_port" != "22" ]]; then
+        ufw allow "${ssh_port}/tcp" comment "SSH (custom port)" >/dev/null 2>&1 || true
+        ok "SSH allowed on port $ssh_port"
+    else
+        ok "SSH allowed on port 22"
+    fi
     ufw allow "${SYSLOG_UDP_PORT}/udp" comment "Syslog UDP" >/dev/null 2>&1 || true
     ufw allow "${SYSLOG_TCP_PORT}/tcp" comment "Syslog TCP" >/dev/null 2>&1 || true
     ufw allow "${WEB_PORT}/tcp"        comment "SIEM Web Console" >/dev/null 2>&1 || true
     ufw --force enable >/dev/null 2>&1 || true
-    ok "Firewall rules added (UDP ${SYSLOG_UDP_PORT}, TCP ${SYSLOG_TCP_PORT}, Web ${WEB_PORT})"
+    ok "Firewall rules added (SSH, UDP ${SYSLOG_UDP_PORT}, TCP ${SYSLOG_TCP_PORT}, Web ${WEB_PORT})"
 
     # Start service — reset any prior failed state first
     step "Starting service"
@@ -977,10 +989,11 @@ do_uninstall() {
     ok "Service removed"
 
     step "Removing firewall rules"
+    # Only remove the rules this installer added — never touch SSH
     ufw delete allow "${SYSLOG_UDP_PORT}/udp" 2>/dev/null || true
     ufw delete allow "${SYSLOG_TCP_PORT}/tcp" 2>/dev/null || true
     ufw delete allow "${WEB_PORT}/tcp"         2>/dev/null || true
-    ok "Firewall rules removed"
+    ok "Firewall rules removed (SSH rule preserved)"
 
     read -rp "  Remove service user '$SERVICE_USER'? (yes/no): " rm_user
     if [[ "${rm_user,,}" == "yes" || "${rm_user,,}" == "y" ]]; then
