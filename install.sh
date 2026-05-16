@@ -775,6 +775,8 @@ do_install() {
     # Service user owns the entire install dir so git pull + pip install
     # can be run from the web GUI update feature without needing root.
     chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR" 2>/dev/null || true
+    # Allow git to operate on this directory for all users (git 2.35+ ownership check)
+    git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     chmod 750 "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
     # .env: owner read/write only
     if [[ -f "$ENV_FILE" ]]; then
@@ -940,15 +942,20 @@ do_update() {
     fi
 
     step "Pulling latest code from GitHub"
-    cd "$INSTALL_DIR"
+    # git 2.35+ blocks operations on directories owned by a different user.
+    # The install sets ownership to syslog-siem, but this script runs as root.
+    # Register the directory as safe system-wide so all users can operate on it.
+    git config --system --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
+
     local dirty
-    dirty=$(git status --porcelain 2>/dev/null || true)
+    dirty=$(sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" status --porcelain 2>/dev/null || true)
     if [[ -n "$dirty" ]]; then
-        git stash push -m "auto-stash $(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
+        sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" \
+            stash push -m "auto-stash $(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
         warn "Local changes stashed"
     fi
-    git fetch origin
-    git pull origin main
+    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" fetch origin
+    sudo -u "$SERVICE_USER" git -C "$INSTALL_DIR" pull origin main
     ok "Code updated"
 
     step "Updating Python dependencies"
