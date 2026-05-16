@@ -37,16 +37,24 @@ Be specific and reference actual log entries where relevant.
 """
 
 
+_MAX_MSG_CHARS = 160   # keep each log line short to stay under token limits
+_MAX_TOTAL_CHARS = 80_000  # hard cap on total log text (~20k tokens)
+
+
 def _format_entries(entries: list[SyslogEntry]) -> str:
     lines = []
+    total = 0
     for e in entries:
         sev = SEVERITY_NAMES[e.severity] if e.severity is not None and e.severity < 8 else str(e.severity)
         fac = FACILITY_NAMES[e.facility] if e.facility is not None and e.facility < len(FACILITY_NAMES) else str(e.facility)
-        ts = e.received_at.strftime("%Y-%m-%d %H:%M:%S UTC") if e.received_at else "unknown"
-        lines.append(
-            f"[{ts}] [{sev}] [{fac}] {e.source_ip or '?'} {e.hostname or ''} "
-            f"{e.app_name or ''}: {e.message or ''}"
-        )
+        ts = e.received_at.strftime("%Y-%m-%d %H:%M:%S") if e.received_at else "?"
+        msg = (e.message or "")[:_MAX_MSG_CHARS]
+        line = (f"[{ts}][{sev}][{e.source_ip or '?'}] {e.app_name or ''}: {msg}")
+        total += len(line)
+        if total > _MAX_TOTAL_CHARS:
+            lines.append(f"... truncated at {len(lines)} entries to stay within token limits")
+            break
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -100,6 +108,17 @@ async def analyze_logs(
             "model": claude_model,
             "hours_covered": hours,
         }
+    except anthropic.RateLimitError:
+        logger.warning("Anthropic rate limit hit — too many tokens per minute")
+        return {
+            "error": (
+                "Rate limit reached (30,000 input tokens/min). "
+                "Try a shorter time window or reduce 'Max logs per AI analysis' "
+                "in Settings → Service Configuration (current default: 200). "
+                "Wait 60 seconds and try again."
+            ),
+            "log_count": len(entries),
+        }
     except anthropic.APIError as exc:
         logger.error("Anthropic API error: %s", exc)
-        return {"error": str(exc), "log_count": len(entries)}
+        return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}

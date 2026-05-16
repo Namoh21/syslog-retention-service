@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     # Claude AI
     anthropic_api_key: str = ""
     claude_model: str = "claude-sonnet-4-6"
-    ai_analysis_max_logs: int = 500
+    ai_analysis_max_logs: int = 200
 
     # Login rate limiting
     login_max_attempts: int = 10
