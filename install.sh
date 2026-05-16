@@ -772,13 +772,11 @@ do_install() {
         ok "User '$SERVICE_USER' already exists"
     fi
 
-    # Set ownership on directories the service needs to write to
-    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
+    # Service user owns the entire install dir so git pull + pip install
+    # can be run from the web GUI update feature without needing root.
+    chown -R "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR" 2>/dev/null || true
     chmod 750 "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
-    # Venv and app code owned by root, readable by service user
-    chown root:root -R "$INSTALL_DIR" 2>/dev/null || true
-    chown "${SERVICE_USER}:${SERVICE_USER}" "$INSTALL_DIR/data" "$LOG_DIR" 2>/dev/null || true
-    # .env readable only by service user
+    # .env: owner read/write only
     if [[ -f "$ENV_FILE" ]]; then
         chown "${SERVICE_USER}:${SERVICE_USER}" "$ENV_FILE"
         chmod 600 "$ENV_FILE"
@@ -788,6 +786,16 @@ do_install() {
     chown "${SERVICE_USER}:${SERVICE_USER}" /etc/syslog-retention
     chmod 700 /etc/syslog-retention
     ok "Permissions configured for '$SERVICE_USER'"
+
+    # Allow service user to restart its own systemd service (needed for web-triggered updates)
+    local sudoers_file="/etc/sudoers.d/${SERVICE_NAME}"
+    cat > "$sudoers_file" <<SUDOEOF
+# Allows the $SERVICE_USER account to restart its own service.
+# Used by the web console update feature — no other sudo rights granted.
+${SERVICE_USER} ALL=(root) NOPASSWD: /bin/systemctl restart ${SERVICE_NAME}
+SUDOEOF
+    chmod 440 "$sudoers_file"
+    ok "Sudoers: '$SERVICE_USER' may restart $SERVICE_NAME"
 
     # Systemd service — runs as dedicated user, not root
     # AmbientCapabilities allows binding to port 514 (<1024) without root
@@ -843,17 +851,22 @@ EOF
 
     # Firewall
     step "Configuring firewall (ufw)"
-    # SSH must be allowed BEFORE enabling ufw — failing to do this locks out
-    # remote access. Allow on both the default port and any custom SSH port.
-    ufw allow ssh comment "SSH" >/dev/null 2>&1 || true
-    # Also detect if SSH is listening on a non-standard port and allow that
+    # SSH MUST be allowed before enabling ufw on a headless Pi.
+    # ufw allow ssh covers port 22. We also detect any custom sshd port.
+    ufw allow ssh comment "SSH remote management" >/dev/null 2>&1 || true
     local ssh_port
     ssh_port=$(ss -tlnp 2>/dev/null | awk '/sshd/{match($4,/:([0-9]+)$/,m); if(m[1]) print m[1]}' | head -1)
     if [[ -n "$ssh_port" && "$ssh_port" != "22" ]]; then
         ufw allow "${ssh_port}/tcp" comment "SSH (custom port)" >/dev/null 2>&1 || true
-        ok "SSH allowed on port $ssh_port"
+        ok "SSH allowed on ports 22 and $ssh_port"
     else
         ok "SSH allowed on port 22"
+    fi
+    # Ensure sshd itself is enabled and running — critical on a headless device
+    systemctl enable ssh 2>/dev/null || systemctl enable sshd 2>/dev/null || true
+    if ! systemctl is-active --quiet ssh 2>/dev/null && ! systemctl is-active --quiet sshd 2>/dev/null; then
+        warn "SSH service does not appear to be running — starting it"
+        systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null || true
     fi
     ufw allow "${SYSLOG_UDP_PORT}/udp" comment "Syslog UDP" >/dev/null 2>&1 || true
     ufw allow "${SYSLOG_TCP_PORT}/tcp" comment "Syslog TCP" >/dev/null 2>&1 || true
@@ -985,6 +998,7 @@ do_uninstall() {
     systemctl stop    "$SERVICE_NAME" 2>/dev/null || true
     systemctl disable "$SERVICE_NAME" 2>/dev/null || true
     rm -f "$SERVICE_FILE"
+    rm -f "/etc/sudoers.d/${SERVICE_NAME}"
     systemctl daemon-reload
     ok "Service removed"
 

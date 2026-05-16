@@ -1164,6 +1164,11 @@ async function svcSettings() {
         <div id="settings-msg" style="margin-top:14px"></div>
       </div>
 
+      <div class="card" style="max-width:560px" id="update-card">
+        <div class="card-title"><span class="icon">&#x1F504;</span> Software Update</div>
+        <div id="update-body"><div class="spinner"></div></div>
+      </div>
+
       <div class="card" style="max-width:560px" id="svc-config-card">
         <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Service Configuration</div>
         <div id="svc-config-body"><div class="spinner"></div></div>
@@ -1187,7 +1192,82 @@ async function svcSettings() {
       </div>
     `);
     loadSvcConfig();
+    loadUpdateInfo();
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
+}
+
+async function loadUpdateInfo() {
+  const out = document.getElementById('update-body');
+  if (!out) return;
+  try {
+    const v = await apiFetch('/api/admin/update/info');
+    if (!v) return;
+    if (!v.git_available || !v.is_git_repo) {
+      out.innerHTML = `<div class="alert alert-info" style="margin:0">
+        Update via SSH: <code>cd /opt/syslog-retention-service && git pull && sudo systemctl restart syslog-siem</code>
+      </div>`;
+      return;
+    }
+    const commit = esc(v.current_commit || 'unknown');
+    const date   = v.commit_date ? fmtDate(v.commit_date) : '—';
+    const branch = esc(v.branch || 'main');
+    out.innerHTML = `
+      <div style="font-size:13px;margin-bottom:14px">
+        <div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;color:var(--muted)">
+          <span>Branch</span>  <span style="color:var(--text);font-family:monospace">${branch}</span>
+          <span>Commit</span>  <span style="color:var(--text);font-family:monospace">${commit}</span>
+          <span>Date</span>    <span style="color:var(--text)">${date}</span>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="doUpdate()" id="update-btn">
+        &#x1F504; Pull &amp; Restart
+      </button>
+      <div class="help-tip" style="margin-top:8px">
+        Pulls the latest code from GitHub, reinstalls dependencies, then restarts the service.
+        Your configuration and database are preserved.
+      </div>
+      <div id="update-msg" style="margin-top:12px"></div>
+    `;
+  } catch(e) {
+    if (out) out.innerHTML = `<div class="alert alert-warn">${esc(e.message)}</div>`;
+  }
+}
+
+async function doUpdate() {
+  const btn = document.getElementById('update-btn');
+  const msg = document.getElementById('update-msg');
+  if (!msg) return;
+  if (!confirm('Pull the latest code from GitHub and restart the service?\n\nThe web console will be unavailable for ~30 seconds during the restart.')) return;
+  btn.disabled = true;
+  btn.textContent = 'Starting update…';
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Pulling from GitHub and reinstalling dependencies…</div>';
+  try {
+    await apiFetch('/api/admin/update', {method:'POST'});
+  } catch(e) {
+    // The service may have restarted before the response arrived — that's expected
+  }
+  // Poll /health until the service comes back up
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Service is restarting… reconnecting</div>';
+  let dots = 0;
+  const poll = setInterval(async () => {
+    dots = (dots + 1) % 4;
+    const d = '.'.repeat(dots + 1);
+    msg.innerHTML = `<div class="alert alert-info"><span class="spinner"></span> Waiting for service to restart${d}</div>`;
+    try {
+      const r = await fetch('/health');
+      if (r.ok) {
+        clearInterval(poll);
+        msg.innerHTML = '<div class="alert alert-ok">&#x2705; Update complete! Reloading…</div>';
+        setTimeout(() => location.reload(), 1200);
+      }
+    } catch(e) { /* still down — keep polling */ }
+  }, 2000);
+  // Give up after 3 minutes
+  setTimeout(() => {
+    clearInterval(poll);
+    if (msg) msg.innerHTML = '<div class="alert alert-warn">Service did not come back within 3 minutes. Check logs via SSH.</div>';
+    if (btn) { btn.disabled = false; btn.textContent = '↺ Pull & Restart'; }
+  }, 180000);
 }
 
 async function loadSvcConfig() {

@@ -672,8 +672,8 @@ async def test_anthropic_key(
                 request.client.host if request.client else "")
     db.commit()
     try:
-        client = _anthropic.Anthropic(api_key=api_key)
-        client.messages.create(
+        client = _anthropic.AsyncAnthropic(api_key=api_key)
+        await client.messages.create(
             model=get_service_setting("claude_model") or settings.claude_model,
             max_tokens=10,
             messages=[{"role": "user", "content": "ping"}],
@@ -685,6 +685,103 @@ async def test_anthropic_key(
     except Exception as exc:
         _log.error("Anthropic connection test failed: %s", exc)
         raise HTTPException(status_code=400, detail="Connection failed. Check service logs for details.")
+
+
+# ===================== Web Update =====================
+
+@router.get("/admin/update/info", tags=["admin"])
+async def get_update_info(_: User = Depends(require_admin)):
+    """Return current git version info. Used to show version in the web console."""
+    import shutil as _shutil
+    import subprocess as _sp
+    from pathlib import Path as _Path
+    install_dir = _Path(__file__).parent.parent
+    info: dict = {
+        "git_available": bool(_shutil.which("git")),
+        "is_git_repo": (install_dir / ".git").exists(),
+        "current_commit": None,
+        "commit_date": None,
+        "branch": None,
+    }
+    if not info["git_available"] or not info["is_git_repo"]:
+        return info
+    def _git(*args):
+        return _sp.check_output(["git", *args], cwd=str(install_dir),
+                                 stderr=_sp.DEVNULL, timeout=8).decode().strip()
+    try:
+        info["current_commit"] = _git("log", "-1", "--format=%h")
+        info["commit_date"]    = _git("log", "-1", "--format=%ci")
+        info["branch"]         = _git("rev-parse", "--abbrev-ref", "HEAD")
+    except Exception:
+        pass
+    return info
+
+
+@router.post("/admin/update", tags=["admin"])
+async def trigger_update(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """
+    Pull latest code from GitHub, reinstall dependencies, then restart.
+    Runs git pull + pip install in a background thread so the HTTP response
+    is delivered before the service restarts.
+    """
+    import asyncio as _asyncio
+    import logging as _logging
+    import os as _os
+    import shutil as _shutil
+    import signal as _signal
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    _log = _logging.getLogger("update")
+    install_dir = _Path(__file__).parent.parent
+
+    if not _shutil.which("git"):
+        raise HTTPException(status_code=400, detail="Git is not installed on this system.")
+    if not (install_dir / ".git").exists():
+        raise HTTPException(status_code=400,
+            detail="Install directory is not a git repo. Run option 1 (Install) via install.sh first.")
+
+    write_audit(db, admin.username, "admin.update",
+                "Web console update triggered", request.client.host if request.client else "")
+    db.commit()
+
+    async def _do_update():
+        await _asyncio.sleep(0.8)   # let the HTTP response reach the browser
+        pip = str(install_dir / ".venv" / "bin" / "pip")
+        req = str(install_dir / "requirements-linux.txt")
+        if not _Path(req).exists():
+            req = str(install_dir / "requirements.txt")
+        try:
+            _log.info("Update: running git pull")
+            await _asyncio.to_thread(_sp.run,
+                ["git", "pull", "origin", "main"],
+                cwd=str(install_dir), capture_output=True, timeout=120)
+            _log.info("Update: running pip install")
+            await _asyncio.to_thread(_sp.run,
+                [pip, "install", "-r", req,
+                 "--quiet", "--no-cache-dir", "--timeout", "120"],
+                capture_output=True, timeout=600)
+        except Exception as exc:
+            _log.error("Update failed during git/pip: %s", exc)
+        # Restart: try sudo systemctl first, fall back to SIGTERM so systemd restarts
+        _log.info("Update: restarting service")
+        r = await _asyncio.to_thread(_sp.run,
+            ["sudo", "systemctl", "restart", "syslog-siem"],
+            capture_output=True, timeout=15)
+        if r.returncode != 0:
+            _log.info("sudo systemctl failed — sending SIGTERM for systemd auto-restart")
+            _os.kill(_os.getpid(), _signal.SIGTERM)
+
+    _asyncio.create_task(_do_update())
+    return {
+        "status": "started",
+        "message": "Update in progress. The service will restart shortly.",
+        "restart_wait_seconds": 35,
+    }
 
 
 # ===================== Audit Log =====================

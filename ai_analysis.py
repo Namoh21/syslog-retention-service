@@ -64,7 +64,7 @@ async def analyze_logs(
             "log_count": len(entries),
         }
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client = anthropic.AsyncAnthropic(api_key=api_key)
     claude_model = get_service_setting("claude_model") or settings.claude_model
     log_text = _format_entries(entries)
     focus_safe = focus[:200] if focus else "security threats and anomalies"
@@ -76,7 +76,7 @@ async def analyze_logs(
     )
 
     try:
-        response = client.messages.create(
+        response = await client.messages.create(
             model=claude_model,
             max_tokens=4096,
             system=_SYSTEM_PROMPT,
