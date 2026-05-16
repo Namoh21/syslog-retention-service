@@ -1153,14 +1153,19 @@ async function svcSettings() {
 
         <div>
           <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Claude Model</div>
-          <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+          <div class="form-row" style="align-items:flex-end;margin-bottom:8px">
             <div class="form-group">
-              <label>Model used for AI analysis</label>
-              <select id="claude-model">${modelOptions}</select>
+              <label>Select a model</label>
+              <select id="claude-model" onchange="syncCustomModel()">${modelOptions}</select>
             </div>
             <button class="btn btn-primary" onclick="saveModel()">Save</button>
           </div>
-          <div class="help-tip">Sonnet is recommended — best balance of speed and quality for log analysis.</div>
+          <div class="form-group" style="margin-bottom:0">
+            <label>Or enter a custom model ID <span style="color:var(--muted);font-size:11px">(overrides selection above)</span></label>
+            <input type="text" id="claude-model-custom" placeholder="e.g. claude-3-5-sonnet-20241022"
+              style="font-family:monospace;width:100%" autocomplete="off" />
+            <div class="help-tip">Find valid model IDs at <strong>docs.anthropic.com/en/docs/about-claude/models</strong></div>
+          </div>
         </div>
 
         <div id="settings-msg" style="margin-top:14px"></div>
@@ -1348,12 +1353,21 @@ async function removeApiKey() {
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
+function syncCustomModel() {
+  // Clear custom field when a preset is chosen from the dropdown
+  const custom = document.getElementById('claude-model-custom');
+  if (custom) custom.value = '';
+}
+
 async function saveModel() {
   const msg = document.getElementById('settings-msg');
-  const val = document.getElementById('claude-model').value;
+  const custom = document.getElementById('claude-model-custom')?.value.trim();
+  const val = custom || document.getElementById('claude-model').value;
+  if (!val) { msg.innerHTML = '<div class="alert alert-warn">No model selected.</div>'; return; }
   try {
     await apiFetch('/api/admin/settings/claude-model', { method:'PUT', body:JSON.stringify({value:val}) });
-    msg.innerHTML = `<div class="alert alert-ok">Model updated to ${esc(val)}. Takes effect on next analysis.</div>`;
+    msg.innerHTML = `<div class="alert alert-ok">Model set to <code>${esc(val)}</code>. Takes effect on next analysis.</div>`;
+    if (custom) document.getElementById('claude-model-custom').value = '';
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 

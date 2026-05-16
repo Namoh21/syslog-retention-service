@@ -601,14 +601,10 @@ async def get_settings(_: User = Depends(require_admin)):
         "anthropic_api_key_hint": "configured" if api_key else "not set",
         "claude_model": claude_model,
         "available_models": [
-            {"id": "claude-sonnet-4-6",          "label": "Claude Sonnet 4.6  (recommended — best balance of speed and quality)"},
-            {"id": "claude-sonnet-4-5",           "label": "Claude Sonnet 4.5  (previous Sonnet generation)"},
-            {"id": "claude-opus-4-7",             "label": "Claude Opus 4.7    (most capable, slower and more expensive)"},
-            {"id": "claude-haiku-4-5-20251001",   "label": "Claude Haiku 4.5   (fastest, lowest cost, lighter analysis)"},
-            {"id": "claude-3-7-sonnet-20250219",  "label": "Claude 3.7 Sonnet  (extended thinking capable)"},
-            {"id": "claude-3-5-sonnet-20241022",  "label": "Claude 3.5 Sonnet  (stable, widely tested)"},
-            {"id": "claude-3-5-haiku-20241022",   "label": "Claude 3.5 Haiku   (very fast, low cost)"},
-            {"id": "claude-3-opus-20240229",      "label": "Claude 3 Opus      (legacy high-capability model)"},
+            {"id": "claude-sonnet-4-6",        "label": "Claude Sonnet 4.6  (recommended — best balance)"},
+            {"id": "claude-sonnet-4-5",         "label": "Claude Sonnet 4.5  (previous Sonnet)"},
+            {"id": "claude-opus-4-7",           "label": "Claude Opus 4.7    (most capable, higher cost)"},
+            {"id": "claude-haiku-4-5-20251001", "label": "Claude Haiku 4.5   (fastest, lowest token cost)"},
         ],
     }
 
