@@ -670,6 +670,7 @@ do_install() {
 Description=Syslog Retention and SIEM Service
 After=network.target
 Wants=network.target
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -680,25 +681,32 @@ ExecStart=${PYTHON} main.py
 Environment=PYTHONDONTWRITEBYTECODE=1
 Restart=always
 RestartSec=30
-StartLimitIntervalSec=0
 MemoryMax=512M
 CPUQuota=50%
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service_err.log
-
-# Allow binding to privileged ports (e.g. UDP 514) without running as root
-AmbientCapabilities=CAP_NET_BIND_SERVICE
-CapabilityBoundingSet=CAP_NET_BIND_SERVICE
-
-# Harden: /usr and /boot read-only; /etc read-only; /opt stays writable for Python
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=full
-ReadWritePaths=${M2_MOUNT}
+ReadWritePaths=${M2_MOUNT} /etc/syslog-retention
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    # Grant the Python binary permission to bind to privileged ports (<1024)
+    # without running the entire service as root. setcap is per-binary and
+    # survives reboots. This avoids the NoNewPrivileges + AmbientCapabilities
+    # conflict in systemd that causes startup failures on some kernels.
+    if command -v setcap &>/dev/null; then
+        setcap 'cap_net_bind_service=+ep' "$PYTHON" 2>/dev/null \
+            && ok "setcap: Python may bind to privileged ports (514)" \
+            || warn "setcap failed — if syslog UDP port is 514, start may fail. Use port 5514 instead."
+    else
+        apt-get install -y -qq libcap2-bin 2>/dev/null
+        setcap 'cap_net_bind_service=+ep' "$PYTHON" 2>/dev/null \
+            && ok "setcap: Python may bind to privileged ports (514)" \
+            || warn "setcap unavailable — if syslog UDP port is 514, use port 5514 instead."
+    fi
+
     systemctl daemon-reload
     systemctl enable "$SERVICE_NAME"
     ok "Service enabled (starts at boot, runs as '$SERVICE_USER')"
