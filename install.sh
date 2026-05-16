@@ -820,9 +820,6 @@ MemoryMax=512M
 CPUQuota=50%
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service_err.log
-PrivateTmp=yes
-ProtectSystem=full
-ReadWritePaths=${M2_MOUNT} /etc/syslog-retention
 
 [Install]
 WantedBy=multi-user.target
