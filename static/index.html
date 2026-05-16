@@ -168,22 +168,25 @@
   .help-tip{font-size:11px;color:var(--muted);margin-top:6px;}
   .divider{border:none;border-top:1px solid var(--border);margin:16px 0;}
 
-  /* ── Search tag pills ── */
-  .tag-input-wrap{display:flex;flex-wrap:wrap;gap:4px;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:4px 8px;min-height:34px;cursor:text;}
-  .tag-input-wrap:focus-within{border-color:var(--accent);}
-  .tag-pill{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:500;white-space:nowrap;}
-  .tag-pill-and{background:rgba(88,166,255,.18);color:var(--accent);}
-  .tag-pill-not{background:rgba(248,81,73,.18);color:var(--danger);}
-  .tag-pill-or{background:rgba(63,185,80,.18);color:var(--accent2);}
-  .tag-pill .pill-x{cursor:pointer;opacity:.7;font-size:11px;line-height:1;margin-left:2px;}
-  .tag-pill .pill-x:hover{opacity:1;}
-  .tag-bare-input{border:none;outline:none;background:transparent;color:var(--text);font-size:13px;min-width:120px;flex:1;padding:2px 0;}
-  .search-mode-row{display:flex;gap:6px;align-items:center;margin-top:6px;flex-wrap:wrap;}
-  .search-mode-btn{padding:2px 10px;border-radius:10px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);}
-  .search-mode-btn.active-and{background:rgba(88,166,255,.18);color:var(--accent);border-color:var(--accent);}
-  .search-mode-btn.active-not{background:rgba(248,81,73,.18);color:var(--danger);border-color:var(--danger);}
-  .search-mode-btn.active-or{background:rgba(63,185,80,.18);color:var(--accent2);border-color:var(--accent2);}
-  .search-hint{font-size:11px;color:var(--muted);}
+  /* ── KQL Query Bar ── */
+  .qbar{display:flex;flex-direction:column;gap:8px;}
+  .qbar-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .qbar-iw{flex:1;min-width:240px;display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:0 10px;transition:border-color .15s;}
+  .qbar-iw:focus-within{border-color:var(--accent);}
+  .qbar-icon{color:var(--muted);margin-right:6px;font-size:14px;flex-shrink:0;}
+  .qbar-input{flex:1;border:none;outline:none;background:transparent;color:var(--text);font-size:13px;padding:8px 0;font-family:monospace;}
+  .qbar-input::placeholder{font-family:'Segoe UI',sans-serif;color:var(--muted);font-size:12px;}
+  .qbar-x{color:var(--muted);cursor:pointer;padding:2px 4px;font-size:13px;flex-shrink:0;}
+  .qbar-x:hover{color:var(--danger);}
+  .qbar-builder{background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;}
+  .qbar-builder label{font-size:11px;color:var(--muted);display:block;margin-bottom:4px;}
+  .qbar-syntax{font-size:11px;color:var(--muted);line-height:1.6;}
+  .qbar-syntax code{background:var(--bg);border:1px solid var(--border);padding:1px 5px;border-radius:3px;font-size:10px;color:var(--accent2);}
+  .qbar-history{position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:200;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:0 4px 20px rgba(0,0,0,.5);max-height:220px;overflow-y:auto;}
+  .qbar-hi{padding:8px 12px;font-size:12px;color:var(--muted);font-family:monospace;cursor:pointer;border-bottom:1px solid rgba(48,54,61,.5);display:flex;justify-content:space-between;align-items:center;}
+  .qbar-hi:hover{background:rgba(88,166,255,.08);color:var(--text);}
+  .qbar-hi-del{color:var(--muted);font-size:11px;padding:0 4px;}
+  .qbar-hi-del:hover{color:var(--danger);}
 
   /* ── AI progress bar ── */
   .ai-progress-bar-wrap{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:10px;}
@@ -637,98 +640,290 @@ async function dashboard() {
 
 // ── Log Viewer ────────────────────────────────────────────────────────────────
 let logPage = { offset:0, limit:100, total:0 };
-let logFilters = {};
 
-// ── Search tag-pill state ─────────────────────────────────────────────────────
-let _searchTags = [];       // [{text, mode}]  mode: 'and'|'or'|'not'
-let _searchMode = 'and';    // current input mode
+// ── KQL Query Bar ─────────────────────────────────────────────────────────────
+let _qbQuery   = '';
+let _qbSearch  = null;   // onSearch callback
+let _qbBuilder = false;  // builder panel open?
+let _qbHistVis = false;  // history dropdown visible?
+const _QB_HIST_KEY = 'kql_query_history';
 
-function setSearchMode(mode) {
-  _searchMode = mode;
-  ['and','or','not'].forEach(m => {
-    const btn = document.getElementById(`sm-${m}`);
-    if (!btn) return;
-    btn.className = `search-mode-btn${mode === m ? ' active-'+m : ''}`;
-  });
-  const hint = document.getElementById('search-hint-text');
-  if (hint) hint.textContent = mode === 'and' ? 'Terms must all match' :
-                                mode === 'or'  ? 'Any term matches' :
-                                                 'Terms must not appear';
-  document.getElementById('tag-bare')?.focus();
+const QB_FIELDS = [
+  {id:'source_ip', label:'Source IP',           type:'ip',       group:'Network'},
+  {id:'src_ip',    label:'Src IP (normalized)', type:'ip',       group:'Network'},
+  {id:'dst_ip',    label:'Dst IP',              type:'ip',       group:'Network'},
+  {id:'dst_port',  label:'Dst Port',            type:'number',   group:'Network'},
+  {id:'protocol',  label:'Protocol',            type:'enum',     group:'Network',
+     values:['TCP','UDP','ICMP','DNS','SSH','VPN']},
+  {id:'hostname',  label:'Hostname',            type:'text',     group:'Log'},
+  {id:'message',   label:'Message',             type:'text',     group:'Log'},
+  {id:'severity',  label:'Severity',            type:'severity', group:'Log',
+     values:['0 Emergency','1 Alert','2 Critical','3 Error','4 Warning','5 Notice','6 Informational','7 Debug']},
+  {id:'app',       label:'Application',         type:'text',     group:'Log'},
+  {id:'action',    label:'Action',              type:'enum',     group:'Firewall',
+     values:['BLOCK','ALLOW','ALERT']},
+  {id:'event_type',label:'Event Type',          type:'enum',     group:'Firewall',
+     values:['firewall_block','firewall_allow','ids_alert','threat_block','auth_failure',
+             'auth_success','dhcp_ack','vpn_connect','vpn_disconnect','dns_query','port_scan','unknown']},
+];
+
+const QB_OPS = {
+  text:[
+    {id:'contains',    label:'contains',         kql:(f,v)=>`${f}:*${v}*`},
+    {id:'not_contains',label:'does not contain', kql:(f,v)=>`NOT ${f}:*${v}*`},
+    {id:'is',          label:'is (exact)',        kql:(f,v)=>`${f}:"${v}"`},
+    {id:'is_not',      label:'is not (exact)',    kql:(f,v)=>`NOT ${f}:"${v}"`},
+    {id:'starts',      label:'starts with',       kql:(f,v)=>`${f}:${v}*`},
+    {id:'ends',        label:'ends with',         kql:(f,v)=>`${f}:*${v}`},
+    {id:'exists',      label:'exists',            kql:(f,v)=>`${f}:*`},
+  ],
+  ip:[
+    {id:'is',      label:'is',      kql:(f,v)=>`${f}:${v}`},
+    {id:'is_not',  label:'is not',  kql:(f,v)=>`NOT ${f}:${v}`},
+    {id:'contains',label:'contains',kql:(f,v)=>`${f}:*${v}*`},
+    {id:'exists',  label:'exists',  kql:(f,v)=>`${f}:*`},
+  ],
+  enum:[
+    {id:'is',    label:'is',    kql:(f,v)=>`${f}:${v}`},
+    {id:'is_not',label:'is not',kql:(f,v)=>`NOT ${f}:${v}`},
+  ],
+  number:[
+    {id:'eq', label:'= equals',        kql:(f,v)=>`${f}:${v}`},
+    {id:'neq',label:'≠ not equals',    kql:(f,v)=>`NOT ${f}:${v}`},
+    {id:'lt', label:'< less than',     kql:(f,v)=>`${f}:<${v}`},
+    {id:'lte',label:'≤ less or equal', kql:(f,v)=>`${f}:<=${v}`},
+    {id:'gt', label:'> greater than',  kql:(f,v)=>`${f}:>${v}`},
+    {id:'gte',label:'≥ greater/equal', kql:(f,v)=>`${f}:>=${v}`},
+  ],
+  severity:[
+    {id:'is', label:'is',             kql:(f,v)=>`${f}:${v.split(' ')[0]}`},
+    {id:'lte',label:'≤ at most',      kql:(f,v)=>`${f}:<=${v.split(' ')[0]}`},
+    {id:'gte',label:'≥ at least',     kql:(f,v)=>`${f}:>=${v.split(' ')[0]}`},
+    {id:'lt', label:'< strictly less',kql:(f,v)=>`${f}:<${v.split(' ')[0]}`},
+    {id:'gt', label:'> strictly more',kql:(f,v)=>`${f}:>${v.split(' ')[0]}`},
+  ],
+};
+
+function qbInit(containerId, {initialQuery='', onSearch}={}) {
+  _qbQuery  = initialQuery;
+  _qbSearch = onSearch;
+  _qbBuilder= false;
+  const el = document.getElementById(containerId);
+  if (el) el.innerHTML = _qbHtml();
 }
 
-function _renderTags() {
-  const wrap = document.getElementById('tag-input-wrap');
-  const bare = document.getElementById('tag-bare');
-  if (!wrap || !bare) return;
-  // Remove existing pills (not the input)
-  wrap.querySelectorAll('.tag-pill').forEach(el => el.remove());
-  _searchTags.forEach((tag, i) => {
-    const pill = document.createElement('span');
-    pill.className = `tag-pill tag-pill-${tag.mode}`;
-    const prefix = tag.mode === 'not' ? '−' : tag.mode === 'or' ? '∪' : '∩';
-    pill.innerHTML = `<span style="opacity:.6;font-size:10px">${prefix}</span> ${esc(tag.text)} <span class="pill-x" onclick="_removeTag(${i})">✕</span>`;
-    wrap.insertBefore(pill, bare);
-  });
+function _qbHtml() {
+  const fieldOpts = QB_FIELDS.map(f=>`<option value="${f.id}">${f.label}</option>`).join('');
+  return `<div class="qbar">
+  <div class="qbar-row" style="position:relative">
+    <div class="qbar-iw">
+      <span class="qbar-icon">&#x1F50D;</span>
+      <input class="qbar-input" id="qbar-input" value="${esc(_qbQuery)}" autocomplete="off" spellcheck="false"
+        placeholder="source_ip:192.168.1.1  action:BLOCK  severity:&lt;=3  message:*firewall*"
+        onkeydown="_qbKey(event)" onfocus="_qbShowHist()" oninput="_qbQuery=this.value" />
+      <span class="qbar-x" onclick="qbClear()" title="Clear query" style="${_qbQuery?'':'display:none'}">&#x2715;</span>
+    </div>
+    <button class="btn btn-ghost btn-sm" onclick="qbToggleBuilder()" title="Build filter visually">&#x2795; Add Filter</button>
+    <button class="btn btn-primary btn-sm" onclick="qbSearch()">Search</button>
+    <button class="btn btn-ghost btn-sm" onclick="_qbToggleHist()" title="Recent queries">&#x1F55B;</button>
+    <button class="btn btn-ghost btn-sm" onclick="exportCsv()" title="Export current query as CSV">&#x2B07; CSV</button>
+    <label class="btn btn-ghost btn-sm" style="cursor:pointer;gap:4px;display:flex;align-items:center">
+      <input type="checkbox" id="live-toggle" onchange="toggleLive(this.checked)" style="margin:0" /> Live
+    </label>
+    <div class="qbar-history" id="qbar-hist" style="display:none"></div>
+  </div>
+  <div class="qbar-builder" id="qbar-builder" style="display:none">
+    <div class="form-group" style="min-width:150px">
+      <label>Field</label>
+      <select id="qb-field" onchange="qbFieldChange()">${fieldOpts}</select>
+    </div>
+    <div class="form-group" style="min-width:170px">
+      <label>Operator</label>
+      <select id="qb-op"></select>
+    </div>
+    <div class="form-group" style="flex:1;min-width:150px" id="qb-val-wrap">
+      <label>Value</label>
+      <input id="qb-val" placeholder="value..." style="width:100%"
+        onkeydown="if(event.key==='Enter')qbAddFilter()" />
+    </div>
+    <div class="form-group" style="min-width:80px">
+      <label>Join</label>
+      <select id="qb-join"><option value="AND">AND</option><option value="OR">OR</option></select>
+    </div>
+    <div class="form-group" style="padding-top:19px;display:flex;gap:6px;flex-shrink:0">
+      <button class="btn btn-primary btn-sm" onclick="qbAddFilter()">&#x2795; Add</button>
+      <button class="btn btn-ghost btn-sm" onclick="qbToggleBuilder()">&#x2715;</button>
+    </div>
+  </div>
+  <div class="qbar-syntax">
+    <strong>KQL syntax:</strong>&nbsp;
+    <code>field:value</code> exact &nbsp;
+    <code>field:*text*</code> contains &nbsp;
+    <code>field:&gt;=N</code> numeric &nbsp;
+    <code>AND</code> / <code>OR</code> / <code>NOT</code> &nbsp;
+    <code>(expr)</code> group &nbsp;&middot;&nbsp;
+    <span style="color:var(--accent);cursor:pointer" onclick="qbShowExamples()">examples &#x2197;</span>
+  </div>
+</div>`;
 }
 
-function _removeTag(i) {
-  _searchTags.splice(i, 1);
-  _renderTags();
+function _qbKey(e) {
+  if (e.key === 'Enter') { _qbHideHist(); qbSearch(); }
+  else if (e.key === 'Escape') _qbHideHist();
+  else _qbHideHist();
 }
 
-function _addTagFromInput() {
-  const bare = document.getElementById('tag-bare');
-  if (!bare) return;
-  const val = bare.value.trim().replace(/,+$/, '').trim();
-  if (!val) return;
-  // Support pasting comma/space separated terms
-  const terms = val.split(/[,\s]+/).filter(Boolean);
-  terms.forEach(t => {
-    if (t && !_searchTags.find(x => x.text === t && x.mode === _searchMode)) {
-      _searchTags.push({ text: t, mode: _searchMode });
-    }
-  });
-  bare.value = '';
-  _renderTags();
+function qbSearch() {
+  const inp = document.getElementById('qbar-input');
+  if (inp) _qbQuery = inp.value.trim();
+  _qbHideHist();
+  if (_qbSearch) _qbSearch(_qbQuery);
+  if (_qbQuery) _qbSaveHist(_qbQuery);
 }
 
-function _serializeSearch() {
-  // Build the search string the backend understands:
-  //   AND terms: joined with space
-  //   NOT terms: prefixed with -
-  //   OR terms: grouped per unique-term, joined with |
-  if (!_searchTags.length) return '';
-  const parts = [];
-  const orTerms = _searchTags.filter(t => t.mode === 'or').map(t => t.text);
-  _searchTags.filter(t => t.mode === 'and').forEach(t => {
-    parts.push(t.text.includes(' ') ? `"${t.text}"` : t.text);
-  });
-  _searchTags.filter(t => t.mode === 'not').forEach(t => {
-    parts.push(`-${t.text.includes(' ') ? `"${t.text}"` : t.text}`);
-  });
-  if (orTerms.length) parts.push(orTerms.join('|'));
-  return parts.join(' ');
+function qbClear() {
+  _qbQuery = '';
+  const inp = document.getElementById('qbar-input');
+  if (inp) inp.value = '';
+  const x = document.querySelector('.qbar-x');
+  if (x) x.style.display = 'none';
+  _qbHideHist();
+  if (_qbSearch) _qbSearch('');
 }
 
-function _initTagInput() {
-  const bare = document.getElementById('tag-bare');
-  if (!bare) return;
-  bare.addEventListener('keydown', e => {
-    if (e.key === 'Enter' || e.key === ',') {
-      e.preventDefault();
-      _addTagFromInput();
-      return;
-    }
-    if (e.key === 'Backspace' && bare.value === '' && _searchTags.length) {
-      _searchTags.pop();
-      _renderTags();
-    }
-  });
-  bare.addEventListener('paste', () => {
-    // Defer so the pasted text is in the input
-    setTimeout(() => { _addTagFromInput(); }, 0);
-  });
+function qbSetQuery(q, andRun=false) {
+  _qbQuery = q;
+  const inp = document.getElementById('qbar-input');
+  if (inp) inp.value = q;
+  const x = document.querySelector('.qbar-x');
+  if (x) x.style.display = q ? '' : 'none';
+  if (andRun && _qbSearch) _qbSearch(q);
+}
+
+// Navigate to Log Viewer with a pre-populated query
+function qbLaunchLogs(query) {
+  showPage('logs');
+  setTimeout(() => { qbSetQuery(query, true); }, 50);
+}
+
+function qbToggleBuilder() {
+  _qbBuilder = !_qbBuilder;
+  const b = document.getElementById('qbar-builder');
+  if (b) b.style.display = _qbBuilder ? 'flex' : 'none';
+  if (_qbBuilder) { qbFieldChange(); document.getElementById('qb-val')?.focus(); }
+}
+
+function qbFieldChange() {
+  const fEl = document.getElementById('qb-field');
+  const oEl = document.getElementById('qb-op');
+  const vEl = document.getElementById('qb-val-wrap');
+  if (!fEl || !oEl || !vEl) return;
+  const field = QB_FIELDS.find(f=>f.id===fEl.value);
+  if (!field) return;
+  const ops = QB_OPS[field.type] || QB_OPS.text;
+  oEl.innerHTML = ops.map(o=>`<option value="${o.id}">${o.label}</option>`).join('');
+  if (field.type === 'enum' || field.type === 'severity') {
+    const opts = (field.values||[]).map(v=>`<option value="${v}">${v}</option>`).join('');
+    vEl.innerHTML = `<label>Value</label><select id="qb-val" style="width:100%">${opts}</select>`;
+  } else {
+    const ph = field.type==='ip' ? '192.168.1.1' : field.type==='number' ? '443' : 'value...';
+    vEl.innerHTML = `<label>Value</label><input id="qb-val" placeholder="${ph}"
+      style="width:100%" onkeydown="if(event.key==='Enter')qbAddFilter()" />`;
+  }
+}
+
+function qbAddFilter() {
+  const fEl = document.getElementById('qb-field');
+  const oEl = document.getElementById('qb-op');
+  const vEl = document.getElementById('qb-val');
+  const jEl = document.getElementById('qb-join');
+  if (!fEl || !oEl || !vEl) return;
+  const field = QB_FIELDS.find(f=>f.id===fEl.value);
+  const op = (QB_OPS[field?.type]||QB_OPS.text).find(o=>o.id===oEl.value);
+  const val = (vEl.value||'').trim();
+  const join = jEl?.value || 'AND';
+  if (!field || !op) return;
+  if (!val && op.id !== 'exists') return;
+  const term = op.kql(field.id, val);
+  const inp = document.getElementById('qbar-input');
+  const cur = (inp?.value||'').trim();
+  const next = cur ? `${cur} ${join} ${term}` : term;
+  if (inp) inp.value = next;
+  _qbQuery = next;
+  const x = document.querySelector('.qbar-x');
+  if (x) x.style.display = next ? '' : 'none';
+  if (vEl.tagName === 'INPUT') vEl.value = '';
+  vEl.focus();
+}
+
+function qbShowExamples() {
+  const examples = [
+    'source_ip:192.168.1.1',
+    'action:BLOCK AND src_ip:10.0.0.5',
+    'severity:<=3',
+    'message:*firewall* AND NOT action:ALLOW',
+    '(action:BLOCK OR action:ALERT) AND severity:<=4',
+    'dst_port:443 AND protocol:TCP',
+    'event_type:ids_alert AND severity:<=2',
+    'NOT src_ip:192.168.1.0',
+  ];
+  const inp = document.getElementById('qbar-input');
+  if (!inp) return;
+  const ex = examples[Math.floor(Math.random() * examples.length)];
+  inp.value = ex; _qbQuery = ex;
+  inp.focus();
+}
+
+// ── History ───────────────────────────────────────────────────────────────────
+function _qbSaveHist(q) {
+  if (!q) return;
+  try {
+    const h = JSON.parse(localStorage.getItem(_QB_HIST_KEY)||'[]').filter(x=>x!==q);
+    h.unshift(q);
+    localStorage.setItem(_QB_HIST_KEY, JSON.stringify(h.slice(0,15)));
+  } catch(e) {}
+}
+
+function _qbShowHist() {
+  const el = document.getElementById('qbar-hist');
+  if (!el) return;
+  try {
+    const h = JSON.parse(localStorage.getItem(_QB_HIST_KEY)||'[]');
+    if (!h.length) return;
+    el.innerHTML = h.map((q,i)=>`
+      <div class="qbar-hi" onclick="_qbPickHist(${i})">
+        <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(q)}</span>
+        <span class="qbar-hi-del" onclick="event.stopPropagation();_qbDelHist(${i})">&#x2715;</span>
+      </div>`).join('');
+    el.style.display = '';
+    _qbHistVis = true;
+  } catch(e) {}
+}
+
+function _qbHideHist() {
+  const el = document.getElementById('qbar-hist');
+  if (el) el.style.display = 'none';
+  _qbHistVis = false;
+}
+
+function _qbToggleHist() {
+  if (_qbHistVis) _qbHideHist(); else _qbShowHist();
+}
+
+function _qbPickHist(i) {
+  try {
+    const h = JSON.parse(localStorage.getItem(_QB_HIST_KEY)||'[]');
+    if (h[i]) { qbSetQuery(h[i]); _qbHideHist(); qbSearch(); }
+  } catch(e) {}
+}
+
+function _qbDelHist(i) {
+  try {
+    const h = JSON.parse(localStorage.getItem(_QB_HIST_KEY)||'[]');
+    h.splice(i, 1);
+    localStorage.setItem(_QB_HIST_KEY, JSON.stringify(h));
+    _qbShowHist();  // re-render
+  } catch(e) {}
 }
 
 const EVENT_TYPES = [
@@ -756,85 +951,20 @@ let _liveRefreshTimer = null;
 
 async function logs() {
   if (_liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
-  const etOptions = EVENT_TYPES.map(t=>`<option value="${t}">${t}</option>`).join('');
   render(`
-    <div class="page-header"><h1>Log Viewer</h1><p>Search and filter all incoming syslog events from your network devices.</p></div>
-    <div class="card">
-      <details open>
-        <summary style="cursor:pointer;color:var(--accent);font-size:13px;font-weight:600;user-select:none;list-style:none;display:flex;align-items:center;gap:6px">
-          <span>&#x1F50D;</span> Filter Logs
-        </summary>
-        <div style="margin-top:14px">
-          <div class="form-row">
-            <div class="form-group"><label>Source IP</label><input id="f-ip" placeholder="e.g. 192.168.1.1" /></div>
-            <div class="form-group"><label>Hostname</label><input id="f-host" placeholder="partial match" /></div>
-            <div class="form-group"><label>Max Severity</label>
-              <select id="f-sev">
-                <option value="">All severities</option>
-                <option value="0">0 Emergency</option><option value="1">1 Alert</option>
-                <option value="2">2 Critical</option><option value="3">3 Error</option>
-                <option value="4">4 Warning</option><option value="5">5 Notice</option>
-                <option value="6">6 Informational</option><option value="7">7 Debug</option>
-              </select>
-            </div>
-            <div class="form-group" style="flex:1;min-width:240px">
-              <label>Search message text</label>
-              <div class="tag-input-wrap" id="tag-input-wrap" onclick="document.getElementById('tag-bare').focus()">
-                <input id="tag-bare" class="tag-bare-input" placeholder="type term + Enter" autocomplete="off" />
-              </div>
-              <div class="search-mode-row">
-                <span class="search-hint">Add as:</span>
-                <button class="search-mode-btn active-and" id="sm-and" onclick="setSearchMode('and')">AND ∩</button>
-                <button class="search-mode-btn" id="sm-or"  onclick="setSearchMode('or')">OR ∪</button>
-                <button class="search-mode-btn" id="sm-not" onclick="setSearchMode('not')">NOT ∅</button>
-                <span class="search-hint" id="search-hint-text" style="margin-left:4px">Terms must all match</span>
-              </div>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group"><label>Event Type</label>
-              <select id="f-et"><option value="">All event types</option>${etOptions}</select>
-            </div>
-            <div class="form-group"><label>Source IP (normalized)</label><input id="f-src" placeholder="attacker IP" /></div>
-            <div class="form-group"><label>Destination IP</label><input id="f-dst" placeholder="target IP" /></div>
-            <div class="form-group"><label>Dest Port</label><input type="number" id="f-dport" placeholder="443" style="width:90px" /></div>
-            <div class="form-group"><label>Protocol</label>
-              <select id="f-proto"><option value="">All</option><option>TCP</option><option>UDP</option><option>ICMP</option><option>DNS</option><option>SSH</option><option>VPN</option></select>
-            </div>
-            <div class="form-group"><label>Action</label>
-              <select id="f-action"><option value="">All actions</option><option>BLOCK</option><option>ALLOW</option><option>ALERT</option></select>
-            </div>
-          </div>
-          <div class="form-row">
-            <div class="form-group"><label>From date/time</label><input type="datetime-local" id="f-since" /></div>
-            <div class="form-group"><label>To date/time</label><input type="datetime-local" id="f-until" /></div>
-            <div class="form-group"><label>&nbsp;</label>
-              <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button class="btn btn-primary" onclick="applyLogFilters()">Search</button>
-                <button class="btn btn-ghost" onclick="clearLogFilters()">Clear</button>
-                <button class="btn btn-ghost" onclick="exportCsv()" title="Download current filters as CSV">&#x2B07; CSV</button>
-                <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--muted);border:1px solid var(--border);padding:4px 10px;border-radius:var(--radius)">
-                  <input type="checkbox" id="live-toggle" onchange="toggleLive(this.checked)" /> Live
-                </label>
-              </div>
-            </div>
-          </div>
-        </div>
-      </details>
+    <div class="page-header">
+      <h1>Log Viewer</h1>
+      <p>Query logs using KQL. Use <strong>+ Add Filter</strong> to build queries visually, or type directly in the query bar.</p>
+    </div>
+    <div class="card" style="padding:16px">
+      <div id="qbar-container"></div>
     </div>
     <div id="log-table-wrap"><div class="card"><div class="spinner"></div> Loading logs...</div></div>
   `);
   logPage = { offset:0, limit:100, total:0 };
-  logFilters = {};
-  _searchTags = [];
-  _searchMode = 'and';
+  _qbQuery = '';
+  qbInit('qbar-container', { onSearch: () => { logPage.offset = 0; fetchLogs(); } });
   await fetchLogs();
-  // Enter key on text inputs triggers search
-  ['f-ip','f-host','f-src','f-dst','f-dport'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) el.addEventListener('keydown', e => { if(e.key==='Enter') applyLogFilters(); });
-  });
-  _initTagInput();
 }
 
 function toggleLive(on) {
@@ -844,14 +974,7 @@ function toggleLive(on) {
 
 function exportCsv() {
   let qs = '?max_rows=50000';
-  for (const [k,v] of Object.entries(logFilters)) {
-    if (v !== null && v !== '') qs += `&${k}=${encodeURIComponent(v)}`;
-  }
-  const a = document.createElement('a');
-  a.href = `${API}/api/logs/export${qs}`;
-  a.setAttribute('download', '');
-  a.setAttribute('data-auth', token);
-  // Need to pass auth — fetch and trigger blob download
+  if (_qbQuery) qs += `&q=${encodeURIComponent(_qbQuery)}`;
   fetch(`${API}/api/logs/export${qs}`, { headers:{ Authorization:`Bearer ${token}` } })
     .then(r => r.blob())
     .then(blob => {
@@ -865,75 +988,50 @@ function exportCsv() {
     .catch(e => alert('Export failed: ' + e.message));
 }
 
-function applyLogFilters() {
-  // Commit any text still in the bare input before searching
-  _addTagFromInput();
-  logPage.offset = 0;
-  const v = id => document.getElementById(id)?.value.trim() || null;
-  const search = _serializeSearch() || null;
-  logFilters = {
-    source_ip:v('f-ip'), hostname:v('f-host'), severity_max:v('f-sev'), search,
-    event_type:v('f-et'), src_ip:v('f-src'), dst_ip:v('f-dst'), dst_port:v('f-dport'),
-    protocol:v('f-proto'), action:v('f-action'),
-    since: document.getElementById('f-since')?.value ? new Date(document.getElementById('f-since').value).toISOString() : null,
-    until: document.getElementById('f-until')?.value ? new Date(document.getElementById('f-until').value).toISOString() : null,
-  };
-  fetchLogs();
-}
-
-function clearLogFilters() {
-  ['f-ip','f-host','f-sev','f-et','f-src','f-dst','f-dport','f-proto','f-action','f-since','f-until']
-    .forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
-  _searchTags = [];
-  _searchMode = 'and';
-  _renderTags();
-  setSearchMode('and');
-  logFilters = {}; logPage.offset = 0; fetchLogs();
-}
-
 async function fetchLogs() {
   const wrap = document.getElementById('log-table-wrap');
   if (!wrap) return;
   wrap.innerHTML = '<div class="card"><div class="spinner"></div> Fetching logs...</div>';
   let qs = `?limit=${logPage.limit}&offset=${logPage.offset}`;
-  for (const [k,v] of Object.entries(logFilters)) {
-    if (v !== null && v !== '') qs += `&${k}=${encodeURIComponent(v)}`;
-  }
+  if (_qbQuery) qs += `&q=${encodeURIComponent(_qbQuery)}`;
   try {
     const d = await apiFetch(`/api/logs${qs}`);
     if (!d) return;
     logPage.total = d.total;
-    if (d.total === 0 && Object.values(logFilters).every(v => !v)) {
+    if (d.total === 0 && !_qbQuery) {
       wrap.innerHTML = `<div class="card"><div class="empty-state">
-        <div class="empty-icon">&#x1F4ED;</div>
-        <h3>No logs yet</h3>
-        <p>Your service is running and listening. Point your Unifi Dream Machine syslog to this server on port ${serviceInfo?.syslog_udp_port||514} to start seeing events here.</p>
+        <div class="empty-icon">&#x1F4ED;</div><h3>No logs yet</h3>
+        <p>Point your Unifi Dream Machine syslog to this server on port ${serviceInfo?.syslog_udp_port||514}.</p>
         <button class="btn btn-ghost" onclick="showPage('setup')" style="margin-top:16px">View Setup Guide</button>
       </div></div>`;
       return;
     }
     if (d.total === 0) {
       wrap.innerHTML = `<div class="card"><div class="empty-state">
-        <div class="empty-icon">&#x1F50D;</div>
-        <h3>No results</h3>
-        <p>No logs match your current filters. Try broadening your search.</p>
-        <button class="btn btn-ghost" onclick="clearLogFilters()" style="margin-top:16px">Clear Filters</button>
+        <div class="empty-icon">&#x1F50D;</div><h3>No results</h3>
+        <p>No logs match your query. Try adjusting or clearing the filter.</p>
+        <button class="btn btn-ghost" onclick="qbClear()" style="margin-top:16px">Clear Query</button>
       </div></div>`;
       return;
     }
     const rows = d.entries.map(e=>`
-      <tr>
+      <tr onclick="_logRowClick(event,'${esc(e.src_ip||e.source_ip||'')}','${esc(e.dst_ip||'')}','${esc(e.event_type||'')}','${esc(e.action||'')}')">
         <td style="white-space:nowrap;color:var(--muted);font-size:11px">${fmtDate(e.received_at)}</td>
         <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
-        <td style="font-size:12px;font-family:monospace">${e.src_ip||e.source_ip||''}</td>
-        <td style="font-size:12px;font-family:monospace">${e.dst_ip?`${e.dst_ip}${e.dst_port?':'+e.dst_port:''}`:''}</td>
+        <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
+            onclick="event.stopPropagation();qbLaunchLogs('source_ip:${esc(e.src_ip||e.source_ip||'')}')"
+            title="Filter for this IP">${e.src_ip||e.source_ip||''}</td>
+        <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
+            onclick="event.stopPropagation();qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}')"
+            title="Filter for this IP">${e.dst_ip?`${e.dst_ip}${e.dst_port?':'+e.dst_port:''}`:''}</td>
         <td style="font-size:12px">${e.protocol||''}</td>
         <td style="font-size:12px">${e.hostname||''}</td>
         <td><span class="sev sev-${e.severity}" style="font-size:10px">${e.severity_name||e.severity}</span></td>
         <td class="truncate" style="max-width:300px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
       </tr>`).join('');
     const start = logPage.offset+1, end = Math.min(logPage.offset+logPage.limit, logPage.total);
+    const queryInfo = _qbQuery ? `<span style="color:var(--muted);font-size:11px;margin-left:8px">query: <code style="font-size:11px">${esc(_qbQuery)}</code></span>` : '';
     wrap.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
       <div class="tbl-wrap">
         <table><thead><tr>
@@ -942,13 +1040,17 @@ async function fetchLogs() {
           <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
-      <div class="pagination" style="padding:10px 16px">
-        <button class="btn btn-ghost btn-sm" onclick="logNav(-1)" ${logPage.offset===0?'disabled':''}>← Previous</button>
-        <span class="page-info">${start}–${end} of ${d.total.toLocaleString()} entries</span>
-        <button class="btn btn-ghost btn-sm" onclick="logNav(1)" ${end>=logPage.total?'disabled':''}>Next →</button>
+      <div class="pagination" style="padding:10px 16px;display:flex;align-items:center;flex-wrap:wrap;gap:8px">
+        <button class="btn btn-ghost btn-sm" onclick="logNav(-1)" ${logPage.offset===0?'disabled':''}>&#x2190; Prev</button>
+        <span class="page-info">${start}–${end} of ${d.total.toLocaleString()} entries${queryInfo}</span>
+        <button class="btn btn-ghost btn-sm" onclick="logNav(1)" ${end>=logPage.total?'disabled':''}>Next &#x2192;</button>
       </div>
     </div>`;
   } catch(e) { wrap.innerHTML = `<div class="alert alert-warn">Error loading logs: ${e.message}</div>`; }
+}
+
+function _logRowClick(event, srcIp, dstIp, eventType, action) {
+  // Right-click context or quick-filter via the query bar
 }
 
 function logNav(dir) {
@@ -2122,6 +2224,7 @@ async function investigate(ip) {
           <select id="inv-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
         </div>
         <button class="btn btn-primary" onclick="runInvestigation()">Investigate</button>
+        <button class="btn btn-ghost" onclick="qbLaunchLogs('source_ip:'+(document.getElementById('inv-ip')?.value||''))" title="Open in Log Viewer with KQL filter">&#x1F50D; View Logs</button>
       </div>
     </div>
     <div id="inv-result"></div>
@@ -2222,7 +2325,7 @@ async function loadRuleHits() {
     const d = await apiFetch(`/api/analysis/rule-hits?hours=${hours}&limit=30`);
     if (!d) return;
     const rows = (d.rules||[]).map(r => {
-      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="showPage('investigate');document.getElementById('inv-ip')&&(document.getElementById('inv-ip').value='${s.ip}')&&runInvestigation()">${s.ip}(${s.count})</span>`).join(' ');
+      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="qbLaunchLogs('source_ip:${s.ip}')" title="View logs for ${s.ip}">${s.ip}(${s.count})</span>`).join(' ');
       return `<tr>
         <td style="font-size:12px;font-weight:600">${esc(r.rule)}</td>
         <td>${actionBadge(r.action)}</td>
@@ -3059,6 +3162,15 @@ function setup() {
     </div>
   `);
 }
+
+// Close query bar history dropdown when clicking outside
+document.addEventListener('mousedown', e => {
+  const hist = document.getElementById('qbar-hist');
+  const inp  = document.getElementById('qbar-input');
+  if (hist && inp && !hist.contains(e.target) && e.target !== inp) {
+    _qbHideHist();
+  }
+});
 </script>
 </body>
 </html>

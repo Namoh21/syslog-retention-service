@@ -761,16 +761,22 @@ def _build_log_query(
     return q
 
 
-def query_logs(db: Session, *, limit: int = 200, offset: int = 0, **kwargs) -> tuple[list[SyslogEntry], int]:
+def query_logs(db: Session, *, limit: int = 200, offset: int = 0, kql: Optional[str] = None, **kwargs) -> tuple[list[SyslogEntry], int]:
     q = _build_log_query(db, **kwargs)
+    if kql:
+        from kql_parser import apply_kql
+        q = apply_kql(q, kql)
     total = q.count()
     entries = q.order_by(SyslogEntry.received_at.desc()).offset(offset).limit(limit).all()
     return entries, total
 
 
-def query_logs_for_export(db: Session, *, max_rows: int = 50_000, **kwargs):
+def query_logs_for_export(db: Session, *, max_rows: int = 50_000, kql: Optional[str] = None, **kwargs):
     """Return a query iterator for CSV export — does not load all rows into memory."""
     q = _build_log_query(db, **kwargs)
+    if kql:
+        from kql_parser import apply_kql
+        q = apply_kql(q, kql)
     return q.order_by(SyslogEntry.received_at.desc()).limit(max_rows)
 
 

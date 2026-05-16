@@ -248,13 +248,13 @@ async def login(
 
 @router.get("/logs", response_model=LogsPage, tags=["logs"])
 async def list_logs(
+    q: Optional[str] = Query(None),          # KQL query string (takes priority)
     source_ip: Optional[str] = Query(None),
     severity_max: Optional[int] = Query(None, ge=0, le=7),
     hostname: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     since: Optional[datetime] = Query(None),
     until: Optional[datetime] = Query(None),
-    # normalized filters
     event_type: Optional[str] = Query(None),
     src_ip: Optional[str] = Query(None),
     dst_ip: Optional[str] = Query(None),
@@ -268,6 +268,7 @@ async def list_logs(
 ):
     entries, total = query_logs(
         db,
+        kql=q,
         source_ip=source_ip,
         severity_max=severity_max,
         hostname=hostname,
@@ -1109,6 +1110,7 @@ async def get_audit_log(
 
 @router.get("/logs/export", tags=["logs"])
 async def export_logs_csv(
+    q: Optional[str] = Query(None),          # KQL query string
     source_ip: Optional[str] = Query(None),
     severity_max: Optional[int] = Query(None, ge=0, le=7),
     hostname: Optional[str] = Query(None),
@@ -1126,7 +1128,7 @@ async def export_logs_csv(
     _: User = Depends(get_current_user),
 ):
     rows = query_logs_for_export(
-        db, max_rows=max_rows,
+        db, max_rows=max_rows, kql=q,
         source_ip=source_ip, severity_max=severity_max, hostname=hostname,
         search=search, since=since, until=until, event_type=event_type,
         src_ip=src_ip, dst_ip=dst_ip, dst_port=dst_port,
