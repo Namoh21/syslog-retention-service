@@ -515,36 +515,90 @@ do_install() {
         pause; return
     fi
 
-    # System packages
-    step "Updating package list and installing system dependencies"
+    # ── System packages ───────────────────────────────────────────────────────
+    step "Installing system dependencies"
     apt-get update -qq
-    apt-get install -y -qq python3 python3-pip python3-venv git ufw curl 2>/dev/null
-    ok "System packages ready"
+    apt-get install -y -qq \
+        git ufw curl rsync libcap2-bin \
+        python3 python3-pip python3-venv \
+        2>/dev/null
+    ok "Base packages installed"
 
-    # Python version check — enforce 3.10+ hard requirement
-    step "Checking Python version"
-    local py_ver
-    py_ver=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-    local py_major py_minor
-    py_major=$(echo "$py_ver" | cut -d. -f1)
-    py_minor=$(echo "$py_ver" | cut -d. -f2)
-    if [[ "$py_major" -lt 3 || ("$py_major" -eq 3 && "$py_minor" -lt 10) ]]; then
-        err "Python 3.10+ required, found $py_ver"
+    # ── Python 3.10+ — auto-install if system default is too old ─────────────
+    step "Checking Python 3.10+"
+
+    _find_python310() {
+        for cmd in python3.13 python3.12 python3.11 python3.10; do
+            if command -v "$cmd" &>/dev/null; then
+                local maj min
+                maj=$("$cmd" -c "import sys; print(sys.version_info.major)" 2>/dev/null)
+                min=$("$cmd" -c "import sys; print(sys.version_info.minor)" 2>/dev/null)
+                if [[ "$maj" -ge 3 && "$min" -ge 10 ]]; then
+                    echo "$cmd"; return 0
+                fi
+            fi
+        done
+        return 1
+    }
+
+    SYS_PYTHON=$(_find_python310 || true)
+
+    if [[ -z "$SYS_PYTHON" ]]; then
+        warn "Python 3.10+ not found. Attempting automatic installation..."
         echo ""
-        echo "  To install Python 3.11 on Raspberry Pi OS:"
-        echo "    sudo apt-get install python3.11 python3.11-venv"
-        echo "    sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1"
-        pause; return
-    fi
-    ok "Python $py_ver found"
 
-    # Git check
-    step "Checking Git"
-    if command -v git &>/dev/null; then
-        ok "Git $(git --version | awk '{print $3}')"
-    else
-        warn "Git not found - update feature unavailable"
+        # Raspberry Pi OS / Debian Bookworm: python3.11 is in the main repo
+        # Bullseye: python3.9 is default, try python3.11 from backports or deadsnakes
+        local installed=false
+        for pkg in python3.12 python3.11 python3.10; do
+            step "Trying: apt-get install $pkg ${pkg}-venv"
+            if apt-get install -y -qq "$pkg" "${pkg}-venv" 2>/dev/null; then
+                ok "$pkg installed"
+                installed=true
+                break
+            fi
+        done
+
+        # Fallback: deadsnakes PPA (works on Ubuntu/Debian-based systems)
+        if ! $installed; then
+            warn "Standard repos did not have Python 3.10+. Trying deadsnakes PPA..."
+            apt-get install -y -qq software-properties-common 2>/dev/null
+            if command -v add-apt-repository &>/dev/null; then
+                add-apt-repository -y ppa:deadsnakes/ppa 2>/dev/null
+                apt-get update -qq
+                for pkg in python3.12 python3.11 python3.10; do
+                    if apt-get install -y -qq "$pkg" "${pkg}-venv" 2>/dev/null; then
+                        ok "$pkg installed from deadsnakes PPA"
+                        installed=true
+                        break
+                    fi
+                done
+            fi
+        fi
+
+        SYS_PYTHON=$(_find_python310 || true)
+        if [[ -z "$SYS_PYTHON" ]]; then
+            err "Could not install Python 3.10+ automatically."
+            echo ""
+            echo "  Please install it manually, then re-run this installer:"
+            echo "    sudo apt-get install python3.11 python3.11-venv"
+            echo "  Or on older Pi OS:"
+            echo "    sudo add-apt-repository ppa:deadsnakes/ppa"
+            echo "    sudo apt-get update && sudo apt-get install python3.11 python3.11-venv"
+            pause; return
+        fi
     fi
+
+    local py_ver
+    py_ver=$("$SYS_PYTHON" --version 2>&1)
+    ok "Using $SYS_PYTHON  ($py_ver)"
+
+    # Ensure the venv module is available for the chosen Python
+    local py_short
+    py_short=$(basename "$SYS_PYTHON")  # e.g. python3.11
+    apt-get install -y -qq "${py_short}-venv" 2>/dev/null || true
+
+    ok "Git $(git --version 2>/dev/null | awk '{print $3}' || echo 'not found')"
 
     # rsyslog conflict check — rsyslog binds UDP 514 by default on Debian/Pi OS
     # If we try to bind 514 too, the service crashes and restarts in a tight loop
@@ -600,13 +654,15 @@ do_install() {
         SYSLOG_TCP_PORT=$(grep '^SYSLOG_TCP_PORT=' "$ENV_FILE" | cut -d= -f2 | tr -d ' ' || echo "6514")
     fi
 
-    # Virtual environment
+    # Virtual environment — always use the verified Python 3.10+ binary
     step "Creating Python virtual environment"
     if [[ ! -d "$VENV_DIR" ]]; then
-        python3 -m venv "$VENV_DIR"
-        ok "Venv created at $VENV_DIR"
+        "$SYS_PYTHON" -m venv "$VENV_DIR"
+        ok "Venv created at $VENV_DIR  ($(${VENV_DIR}/bin/python --version 2>&1))"
     else
-        ok "Venv already exists"
+        local venv_ver
+        venv_ver=$("${VENV_DIR}/bin/python" --version 2>&1)
+        ok "Venv already exists  ($venv_ver)"
     fi
 
     # Dependencies
@@ -698,13 +754,10 @@ EOF
     # conflict in systemd that causes startup failures on some kernels.
     if command -v setcap &>/dev/null; then
         setcap 'cap_net_bind_service=+ep' "$PYTHON" 2>/dev/null \
-            && ok "setcap: Python may bind to privileged ports (514)" \
-            || warn "setcap failed — if syslog UDP port is 514, start may fail. Use port 5514 instead."
+            && ok "setcap: Python may bind to privileged ports (e.g. UDP 514)" \
+            || warn "setcap failed — service will still run, but port 514 binding requires root or a port > 1023"
     else
-        apt-get install -y -qq libcap2-bin 2>/dev/null
-        setcap 'cap_net_bind_service=+ep' "$PYTHON" 2>/dev/null \
-            && ok "setcap: Python may bind to privileged ports (514)" \
-            || warn "setcap unavailable — if syslog UDP port is 514, use port 5514 instead."
+        warn "setcap not available — skipping. Use port > 1023 for syslog if running as non-root."
     fi
 
     systemctl daemon-reload
