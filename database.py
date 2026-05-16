@@ -249,6 +249,47 @@ class AlertEvent(Base):
     acknowledged = Column(Boolean, default=False)
 
 
+class AIAnalysis(Base):
+    """Persisted record of each AI analysis run."""
+    __tablename__ = "ai_analyses"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    analyzed_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    focus        = Column(String(256))
+    hours_covered = Column(Integer)
+    log_count    = Column(Integer)
+    threat_level = Column(String(16))
+    summary      = Column(Text)
+    immediate_actions_json = Column(Text)   # JSON array of strings
+    findings_json          = Column(Text)   # JSON array of finding dicts
+
+
+class AIRecommendation(Base):
+    """Individual finding/recommendation extracted from an analysis."""
+    __tablename__ = "ai_recommendations"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    analysis_id = Column(Integer, index=True, nullable=False)
+    title       = Column(String(256))
+    severity    = Column(String(16))
+    detail      = Column(Text)
+    recommendation = Column(Text)
+    # open | implemented | working | investigating | dismissed
+    status      = Column(String(32), default="open", nullable=False)
+    user_notes  = Column(Text)
+    created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class AINetworkContext(Base):
+    """User-maintained notes about the network, included in every analysis."""
+    __tablename__ = "ai_network_context"
+
+    id         = Column(Integer, primary_key=True)
+    content    = Column(Text, default="")
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class IpReputationCache(Base):
     """Cached AbuseIPDB + GeoIP results — avoids re-querying the same IP repeatedly."""
     __tablename__ = "ip_reputation_cache"
@@ -286,6 +327,52 @@ def _migrate_db():
         if "token_version" not in user_cols:
             conn.execute(text("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0"))
 
+        conn.commit()
+
+
+def _migrate_ai_tables():
+    """Create AI analysis/recommendation tables if they don't exist yet."""
+    with engine.connect() as conn:
+        existing = {
+            row[0] for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "ai_analyses" not in existing:
+            conn.execute(text("""
+                CREATE TABLE ai_analyses (
+                    id INTEGER PRIMARY KEY,
+                    analyzed_at DATETIME,
+                    focus VARCHAR(256),
+                    hours_covered INTEGER,
+                    log_count INTEGER,
+                    threat_level VARCHAR(16),
+                    summary TEXT,
+                    immediate_actions_json TEXT,
+                    findings_json TEXT
+                )"""))
+        if "ai_recommendations" not in existing:
+            conn.execute(text("""
+                CREATE TABLE ai_recommendations (
+                    id INTEGER PRIMARY KEY,
+                    analysis_id INTEGER,
+                    title VARCHAR(256),
+                    severity VARCHAR(16),
+                    detail TEXT,
+                    recommendation TEXT,
+                    status VARCHAR(32) DEFAULT 'open',
+                    user_notes TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""))
+        if "ai_network_context" not in existing:
+            conn.execute(text("""
+                CREATE TABLE ai_network_context (
+                    id INTEGER PRIMARY KEY,
+                    content TEXT DEFAULT '',
+                    updated_at DATETIME
+                )"""))
+            conn.execute(text("INSERT INTO ai_network_context (id, content, updated_at) VALUES (1, '', datetime('now'))"))
         conn.commit()
 
 
@@ -342,6 +429,7 @@ def _migrate_secret_key_to_keystore():
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
+    _migrate_ai_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

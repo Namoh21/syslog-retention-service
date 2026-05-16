@@ -381,6 +381,104 @@ async def ai_quick_recommendations(
     return await analyze_logs(entries, focus="security threats and anomalies", hours=24)
 
 
+# ===================== AI History & Context =====================
+
+class RecommendationUpdate(BaseModel):
+    status: str       # open | implemented | working | investigating | dismissed
+    user_notes: Optional[str] = None
+
+
+@router.get("/ai/history", tags=["ai"])
+async def get_ai_history(
+    limit: int = Query(20, ge=1, le=100),
+    analysis_id: int = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import AIAnalysis, AIRecommendation
+    q = db.query(AIAnalysis)
+    if analysis_id is not None:
+        q = q.filter(AIAnalysis.id == analysis_id)
+    analyses = (
+        q.order_by(AIAnalysis.analyzed_at.desc())
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for a in analyses:
+        recs = db.query(AIRecommendation).filter_by(analysis_id=a.id).all()
+        out.append({
+            "id": a.id,
+            "analyzed_at": a.analyzed_at,
+            "focus": a.focus,
+            "hours_covered": a.hours_covered,
+            "log_count": a.log_count,
+            "threat_level": a.threat_level,
+            "summary": a.summary,
+            "recommendations": [
+                {
+                    "id": r.id,
+                    "title": r.title,
+                    "severity": r.severity,
+                    "detail": r.detail,
+                    "recommendation": r.recommendation,
+                    "status": r.status,
+                    "user_notes": r.user_notes,
+                    "updated_at": r.updated_at,
+                }
+                for r in recs
+            ],
+        })
+    return out
+
+
+@router.patch("/ai/recommendations/{rec_id}", tags=["ai"])
+async def update_recommendation(
+    rec_id: int,
+    body: RecommendationUpdate,
+    db: Session = Depends(get_db),
+    current: User = Depends(get_current_user),
+):
+    from database import AIRecommendation
+    valid = {"open", "implemented", "working", "investigating", "dismissed"}
+    if body.status not in valid:
+        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(valid))}")
+    rec = db.query(AIRecommendation).filter_by(id=rec_id).first()
+    if not rec:
+        raise HTTPException(status_code=404)
+    rec.status = body.status
+    if body.user_notes is not None:
+        rec.user_notes = body.user_notes
+    rec.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": rec.id, "status": rec.status, "user_notes": rec.user_notes}
+
+
+@router.get("/ai/network-context", tags=["ai"])
+async def get_network_context(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    from database import AINetworkContext
+    ctx = db.query(AINetworkContext).filter_by(id=1).first()
+    return {"content": ctx.content if ctx else "", "updated_at": ctx.updated_at if ctx else None}
+
+
+@router.put("/ai/network-context", tags=["ai"])
+async def update_network_context(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import AINetworkContext
+    content = str(body.get("content", ""))[:4000]
+    ctx = db.query(AINetworkContext).filter_by(id=1).first()
+    if ctx:
+        ctx.content = content
+        ctx.updated_at = datetime.now(timezone.utc)
+    else:
+        db.add(AINetworkContext(id=1, content=content))
+    db.commit()
+    return {"message": "Network context saved."}
+
+
 # ===================== Retention =====================
 
 @router.get("/admin/retention", response_model=RetentionOut, tags=["admin"])

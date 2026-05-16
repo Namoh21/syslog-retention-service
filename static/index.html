@@ -118,6 +118,27 @@
   .threat-HIGH{background:rgba(210,153,34,.2);color:#d29922;}
   .threat-CRITICAL{background:rgba(248,81,73,.2);color:#f85149;}
 
+  /* ── AI recommendation status ── */
+  .rec-status{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
+  .rec-status-open{background:rgba(88,166,255,.15);color:#58a6ff;}
+  .rec-status-implemented{background:rgba(63,185,80,.2);color:#3fb950;}
+  .rec-status-working{background:rgba(63,185,80,.35);color:#3fb950;}
+  .rec-status-investigating{background:rgba(210,153,34,.2);color:#d29922;}
+  .rec-status-dismissed{background:rgba(139,148,158,.15);color:#8b949e;}
+  .finding-controls{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .finding-controls select{padding:4px 8px;font-size:12px;}
+  .finding-controls input{padding:4px 8px;font-size:12px;flex:1;min-width:160px;}
+  .ai-history-item{border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:10px;background:var(--surface2);}
+  .ai-history-item .hist-header{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;}
+  .ai-history-item .hist-recs{margin-top:8px;display:flex;flex-direction:column;gap:4px;}
+  .ai-history-rec{font-size:12px;display:flex;align-items:baseline;gap:6px;}
+  textarea.network-notes{width:100%;min-height:100px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:var(--radius);font-size:13px;font-family:inherit;resize:vertical;outline:none;}
+  textarea.network-notes:focus{border-color:var(--accent);}
+  .ai-tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px;}
+  .ai-tab{padding:8px 18px;font-size:13px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-1px;transition:.15s;}
+  .ai-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
+  .ai-tab:hover:not(.active){color:var(--text);}
+
   /* ── Login ── */
   #login-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);}
   .login-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:40px;width:360px;box-shadow:0 8px 32px rgba(0,0,0,.4);}
@@ -807,38 +828,148 @@ async function ai() {
       Add your Anthropic API key in <span style="cursor:pointer;text-decoration:underline" onclick="showPage('svcSettings')">Service Settings</span>.
       The key is encrypted and stored in the database — no need to edit any files.
     </div>` : ''}
-    <div class="card">
-      <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Analysis Options</div>
-      <div class="form-row" style="align-items:flex-end">
-        <div class="form-group">
-          <label>Time Window</label>
-          <select id="ai-hours">
-            <option value="1">Last 1 hour</option>
-            <option value="6">Last 6 hours</option>
-            <option value="24" selected>Last 24 hours</option>
-            <option value="72">Last 3 days</option>
-            <option value="168">Last 7 days</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label>Focus Area</label>
-          <input id="ai-focus" value="${esc(savedFocus)}" style="width:280px" maxlength="200" />
-        </div>
-        <div class="form-group"><label>&nbsp;</label>
-          <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()" ${!aiEnabled?'disabled':''}>
-            &#x1F916; Analyze Logs
-          </button>
+    <div class="ai-tabs">
+      <div class="ai-tab active" id="aitab-analyze" onclick="aiShowTab('analyze')">&#x1F916; Analyze</div>
+      <div class="ai-tab" id="aitab-history" onclick="aiShowTab('history')">&#x1F4DC; History</div>
+    </div>
+
+    <!-- Analyze tab -->
+    <div id="aitab-panel-analyze">
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x1F4DD;</span> Network Notes <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Included in every analysis — describe your network, known exceptions, and resolved issues</span></div>
+        <textarea class="network-notes" id="ai-network-notes" placeholder="e.g. 192.168.1.1 = Unifi UDM Pro. 192.168.10.0/24 = IoT VLAN. Port scans from 192.168.1.50 are expected (Nessus). WireGuard on UDP 51820 is intentional..."></textarea>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="saveNetworkNotes()">&#x1F4BE; Save Notes</button>
+          <span id="ai-notes-status" style="font-size:12px;color:var(--muted)"></span>
         </div>
       </div>
-      <p class="help-tip">Claude will review up to 500 log entries from the selected window. Analysis typically takes 10–30 seconds.</p>
-      <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis.</p>
+      <div class="card">
+        <div class="card-title"><span class="icon">&#x2699;&#xFE0F;</span> Analysis Options</div>
+        <div class="form-row" style="align-items:flex-end">
+          <div class="form-group">
+            <label>Time Window</label>
+            <select id="ai-hours">
+              <option value="1">Last 1 hour</option>
+              <option value="6">Last 6 hours</option>
+              <option value="24" selected>Last 24 hours</option>
+              <option value="72">Last 3 days</option>
+              <option value="168">Last 7 days</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Focus Area</label>
+            <input id="ai-focus" value="${esc(savedFocus)}" style="width:280px" maxlength="200" />
+          </div>
+          <div class="form-group"><label>&nbsp;</label>
+            <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()" ${!aiEnabled?'disabled':''}>
+              &#x1F916; Analyze Logs
+            </button>
+          </div>
+        </div>
+        <p class="help-tip">Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.</p>
+        <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis.</p>
+      </div>
+      <div id="ai-progress" style="display:none" class="alert alert-info">
+        <span class="spinner"></span><span id="ai-progress-msg">Sending logs to Claude for analysis...</span>
+        <span id="ai-elapsed" style="margin-left:12px;color:var(--muted)"></span>
+      </div>
+      <div id="ai-output"></div>
     </div>
-    <div id="ai-progress" style="display:none" class="alert alert-info">
-      <span class="spinner"></span><span id="ai-progress-msg">Sending logs to Claude for analysis...</span>
-      <span id="ai-elapsed" style="margin-left:12px;color:var(--muted)"></span>
+
+    <!-- History tab -->
+    <div id="aitab-panel-history" style="display:none">
+      <div id="ai-history-output"><div class="card"><div class="spinner"></div> Loading history...</div></div>
     </div>
-    <div id="ai-output"></div>
   `);
+
+  // Load saved network notes
+  try {
+    const nc = await apiFetch('/api/ai/network-context');
+    if (nc && document.getElementById('ai-network-notes')) {
+      document.getElementById('ai-network-notes').value = nc.content || '';
+    }
+  } catch(e) { /* non-fatal */ }
+}
+
+function aiShowTab(name) {
+  ['analyze','history'].forEach(t => {
+    document.getElementById(`aitab-${t}`).classList.toggle('active', t===name);
+    document.getElementById(`aitab-panel-${t}`).style.display = t===name ? '' : 'none';
+  });
+  if (name === 'history') loadAiHistory();
+}
+
+async function saveNetworkNotes() {
+  const el = document.getElementById('ai-network-notes');
+  const st = document.getElementById('ai-notes-status');
+  if (!el) return;
+  try {
+    await apiFetch('/api/ai/network-context', { method:'PUT', body: JSON.stringify({ content: el.value }) });
+    st.textContent = 'Saved ✓'; st.style.color = 'var(--accent2)';
+    setTimeout(() => { if(st) st.textContent=''; }, 3000);
+  } catch(e) {
+    st.textContent = 'Save failed: ' + e.message; st.style.color = 'var(--danger)';
+  }
+}
+
+async function loadAiHistory() {
+  const out = document.getElementById('ai-history-output');
+  if (!out) return;
+  try {
+    const data = await apiFetch('/api/ai/history');
+    if (!data || !data.length) {
+      out.innerHTML = `<div class="empty-state"><div class="empty-icon">&#x1F4DC;</div><h3>No analysis history yet</h3><p>Run your first AI analysis to start building analyst memory.</p></div>`;
+      return;
+    }
+    const items = data.map(a => {
+      const recs = (a.recommendations || []).map(r => `
+        <div class="ai-history-rec" data-rec-id="${r.id}">
+          <span class="rec-status rec-status-${r.status}">${r.status}</span>
+          <span style="flex:1;color:var(--text)">${esc(r.title)}</span>
+          <select class="btn btn-ghost btn-sm" style="padding:2px 6px;font-size:11px" onchange="updateRecStatus(${r.id},this.value,this)">
+            ${['open','implemented','working','investigating','dismissed'].map(s=>`<option value="${s}"${s===r.status?' selected':''}>${s}</option>`).join('')}
+          </select>
+        </div>`).join('');
+      return `<div class="ai-history-item">
+        <div class="hist-header">
+          <span style="color:var(--muted);font-size:12px">${fmtDate(a.analyzed_at)}</span>
+          <span class="threat-badge threat-${a.threat_level||'UNKNOWN'}" style="margin-bottom:0;font-size:12px;padding:2px 8px">Threat: ${a.threat_level||'?'}</span>
+          <span style="font-size:12px;color:var(--muted)">${a.log_count} logs &middot; ${a.hours_covered}h window</span>
+        </div>
+        <p style="font-size:13px;color:var(--text);margin-bottom:8px">${esc(a.summary||'')}</p>
+        ${recs ? `<div class="hist-recs">${recs}</div>` : ''}
+      </div>`;
+    }).join('');
+    out.innerHTML = `<div class="card"><div class="card-title">&#x1F4DC; Past Analyses</div>${items}</div>`;
+  } catch(e) {
+    out.innerHTML = `<div class="alert alert-warn">Failed to load history: ${e.message}</div>`;
+  }
+}
+
+async function updateRecStatus(recId, status, selectEl) {
+  try {
+    await apiFetch(`/api/ai/recommendations/${recId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    });
+    // Update the status badge next to the select
+    const row = selectEl.closest('[data-rec-id]');
+    if (row) {
+      const badge = row.querySelector('.rec-status');
+      if (badge) {
+        badge.className = `rec-status rec-status-${status}`;
+        badge.textContent = status;
+      }
+    }
+  } catch(e) {
+    alert('Failed to update status: ' + e.message);
+    // revert select
+    selectEl.value = selectEl.dataset.prev || selectEl.value;
+  }
+}
+
+function aiSetRecStatus(recId, status, el) {
+  updateRecStatus(recId, status, el);
 }
 
 async function runAnalysis() {
@@ -910,14 +1041,32 @@ function renderAnalysis(d, out) {
     return;
   }
   const tl = a.threat_level||'UNKNOWN';
-  const findings = (a.findings||[]).map(f=>`
-    <div class="finding finding-${f.severity}">
-      <h4><span class="tag">${f.severity}</span>&nbsp;${esc(f.title)}</h4>
-      <p>${esc(f.detail)}</p>
-      ${f.recommendation?`<div class="rec">&#x2192; ${esc(f.recommendation)}</div>`:''}
-    </div>`).join('');
+  const analysisId = d.analysis_id;
+
+  // If we have an analysis_id we can load recommendations with DB IDs for status tracking
+  const renderFindings = (findings, recMap) => findings.map((f, i) => {
+    const recId = recMap ? recMap[i] : null;
+    const statusControls = recId ? `
+      <div class="finding-controls">
+        <span style="font-size:11px;color:var(--muted)">Status:</span>
+        <select class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:11px" onchange="updateRecStatus(${recId},this.value,this)">
+          ${['open','implemented','working','investigating','dismissed'].map(s=>`<option value="${s}">${s}</option>`).join('')}
+        </select>
+        <input type="text" placeholder="Add a note..." style="padding:3px 8px;font-size:11px;flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius)" id="rec-note-${recId}" onblur="saveRecNote(${recId},this.value)" />
+        <button class="btn btn-ghost btn-sm" onclick="saveRecNote(${recId},document.getElementById('rec-note-${recId}').value)">Save</button>
+      </div>` : '';
+    return `
+      <div class="finding finding-${f.severity}">
+        <h4><span class="tag">${f.severity}</span>&nbsp;${esc(f.title)}</h4>
+        <p>${esc(f.detail)}</p>
+        ${f.recommendation?`<div class="rec">&#x2192; ${esc(f.recommendation)}</div>`:''}
+        ${statusControls}
+      </div>`;
+  }).join('');
+
   const imm = (a.immediate_actions||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
   const lng = (a.long_term_recommendations||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
+
   out.innerHTML=`
     <div class="card">
       <div style="margin-bottom:12px">
@@ -926,10 +1075,35 @@ function renderAnalysis(d, out) {
       </div>
       <p style="font-size:14px;line-height:1.6">${esc(a.summary||'')}</p>
     </div>
-    ${findings?`<div class="card"><div class="card-title">Findings</div>${findings}</div>`:''}
+    <div id="ai-findings-container"></div>
     ${imm?`<div class="card"><div class="card-title">Immediate Actions</div><ul style="padding-left:20px">${imm}</ul></div>`:''}
     ${lng?`<div class="card"><div class="card-title">Long-term Recommendations</div><ul style="padding-left:20px">${lng}</ul></div>`:''}
     <p style="color:var(--muted);font-size:11px;margin-top:4px">Analyzed at ${fmtDate(d.analyzed_at)}</p>`;
+
+  // Populate findings — fetch rec IDs if analysis was saved
+  const fc = document.getElementById('ai-findings-container');
+  if (fc && (a.findings||[]).length) {
+    if (analysisId) {
+      apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
+        const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
+        const recMap = recs.reduce((m,r,i) => { m[i]=r.id; return m; }, {});
+        fc.innerHTML = `<div class="card"><div class="card-title">Findings <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Set status to track which recommendations you've addressed</span></div>${renderFindings(a.findings, recMap)}</div>`;
+      }).catch(() => {
+        fc.innerHTML = `<div class="card"><div class="card-title">Findings</div>${renderFindings(a.findings, null)}</div>`;
+      });
+    } else {
+      fc.innerHTML = `<div class="card"><div class="card-title">Findings</div>${renderFindings(a.findings, null)}</div>`;
+    }
+  }
+}
+
+async function saveRecNote(recId, note) {
+  try {
+    await apiFetch(`/api/ai/recommendations/${recId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ user_notes: note })
+    });
+  } catch(e) { /* non-fatal */ }
 }
 
 // ── Retention ─────────────────────────────────────────────────────────────────

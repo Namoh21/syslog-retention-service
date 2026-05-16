@@ -14,17 +14,20 @@ from database import FACILITY_NAMES, SEVERITY_NAMES, SyslogEntry
 logger = logging.getLogger("ai_analysis")
 
 _SYSTEM_PROMPT = """\
-You are a network security analyst reviewing syslog data from a Unifi Dream Machine \
-(UDM) and associated network devices. Your job is to:
+You are a network security analyst with persistent memory reviewing syslog data \
+from a Unifi Dream Machine (UDM) and associated network devices. Your job is to:
 
 1. Identify security threats, anomalies, and suspicious patterns in the log data.
 2. Highlight configuration weaknesses or misconfigurations.
 3. Surface high-severity events (Emergency, Alert, Critical, Error) for immediate attention.
 4. Provide concrete, actionable recommendations to improve network security.
+5. When historical context is provided, avoid repeating recommendations already marked as
+   IMPLEMENTED or WORKING. Reference prior findings when relevant (e.g. "previously flagged
+   issue X now appears resolved"). Note any regressions.
 
 Format your response as structured JSON with these keys:
 {
-  "summary": "<2-3 sentence executive summary>",
+  "summary": "<2-3 sentence executive summary that references prior context if relevant>",
   "threat_level": "<LOW | MEDIUM | HIGH | CRITICAL>",
   "findings": [
     {"severity": "<CRITICAL|HIGH|MEDIUM|LOW|INFO>", "title": "...", "detail": "...", "recommendation": "..."}
@@ -58,13 +61,100 @@ def _format_entries(entries: list[SyslogEntry]) -> str:
     return "\n".join(lines)
 
 
+def _build_history_context(db) -> str:
+    """
+    Build an analyst-memory block from stored analyses and recommendation outcomes.
+    Included in every new analysis so Claude knows what's been addressed.
+    """
+    import json as _json
+    from database import AIAnalysis, AIRecommendation, AINetworkContext
+
+    lines = ["=== ANALYST MEMORY ===\n"]
+
+    # User's network notes
+    ctx = db.query(AINetworkContext).filter_by(id=1).first()
+    if ctx and ctx.content and ctx.content.strip():
+        lines.append("NETWORK CONTEXT (provided by the analyst):")
+        lines.append(ctx.content.strip())
+        lines.append("")
+
+    # Recent analyses — last 5
+    past = (
+        db.query(AIAnalysis)
+        .order_by(AIAnalysis.analyzed_at.desc())
+        .limit(5)
+        .all()
+    )
+    if past:
+        lines.append("PREVIOUS ANALYSES AND RECOMMENDATION STATUS:")
+        for a in reversed(past):  # oldest first
+            ts = a.analyzed_at.strftime("%Y-%m-%d") if a.analyzed_at else "?"
+            lines.append(f"\n[{ts}] Threat: {a.threat_level or '?'} | {a.summary or ''}")
+            recs = (
+                db.query(AIRecommendation)
+                .filter_by(analysis_id=a.id)
+                .all()
+            )
+            non_open = [r for r in recs if r.status != "open"]
+            open_recs = [r for r in recs if r.status == "open"]
+            for r in non_open:
+                note = f" — {r.user_notes}" if r.user_notes else ""
+                lines.append(f"  [{r.status.upper()}] {r.title}{note}")
+            if open_recs:
+                lines.append(f"  Still open: {', '.join(r.title or '?' for r in open_recs[:5])}")
+
+    lines.append("\n=== END ANALYST MEMORY ===\n")
+    return "\n".join(lines) if len(lines) > 3 else ""
+
+
+def _save_analysis(db, result: dict, focus: str, hours: int) -> "AIAnalysis | None":
+    """Persist an analysis result and its individual findings."""
+    import json as _json
+    from database import AIAnalysis, AIRecommendation
+    analysis = result.get("analysis", {})
+    if not isinstance(analysis, dict) or analysis.get("raw"):
+        return None
+    try:
+        record = AIAnalysis(
+            focus=focus[:256],
+            hours_covered=hours,
+            log_count=result.get("log_count", 0),
+            threat_level=analysis.get("threat_level"),
+            summary=analysis.get("summary"),
+            immediate_actions_json=_json.dumps(analysis.get("immediate_actions", [])),
+            findings_json=_json.dumps(analysis.get("findings", [])),
+        )
+        db.add(record)
+        db.flush()  # get record.id
+
+        for f in analysis.get("findings", []):
+            if not isinstance(f, dict):
+                continue
+            db.add(AIRecommendation(
+                analysis_id=record.id,
+                title=str(f.get("title", ""))[:256],
+                severity=str(f.get("severity", "INFO"))[:16],
+                detail=str(f.get("detail", "")),
+                recommendation=str(f.get("recommendation", "")),
+                status="open",
+            ))
+        db.commit()
+        return record
+    except Exception as exc:
+        logger.warning("Could not save analysis to DB: %s", exc)
+        db.rollback()
+        return None
+
+
 async def analyze_logs(
     entries: list[SyslogEntry],
     *,
     focus: str = "security",
     hours: int = 24,
+    db=None,          # optional session — used to load/save history
 ) -> dict[str, Any]:
-    from database import get_service_setting
+    import json as _json
+    from database import get_service_setting, SessionLocal
     api_key = get_service_setting("anthropic_api_key") or settings.anthropic_api_key
     if not api_key:
         return {
@@ -72,12 +162,26 @@ async def analyze_logs(
             "log_count": len(entries),
         }
 
+    own_session = db is None
+    if own_session:
+        db = SessionLocal()
+
+    try:
+        history_block = _build_history_context(db)
+    except Exception:
+        history_block = ""
+    finally:
+        if own_session:
+            db.close()
+            db = None   # will open fresh for save after API call
+
     client = anthropic.AsyncAnthropic(api_key=api_key)
     claude_model = get_service_setting("claude_model") or settings.claude_model
     log_text = _format_entries(entries)
     focus_safe = focus[:200] if focus else "security threats and anomalies"
 
     user_message = (
+        f"{history_block}"
         f"Please analyze the following {len(entries)} syslog entries from the last {hours} hours. "
         f"Focus on: {focus_safe}.\n\n"
         f"=== LOG DATA ===\n{log_text}\n=== END LOG DATA ==="
@@ -93,28 +197,38 @@ async def analyze_logs(
         )
         raw_text = response.content[0].text
 
-        # Try to parse as JSON; fall back to returning raw text
-        import json
         try:
-            analysis = json.loads(raw_text)
-        except json.JSONDecodeError:
-            # Claude returned narrative — wrap it
+            analysis = _json.loads(raw_text)
+        except _json.JSONDecodeError:
             analysis = {"summary": raw_text, "raw": True}
 
-        return {
+        result = {
             "analysis": analysis,
             "log_count": len(entries),
             "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "model": claude_model,
             "hours_covered": hours,
         }
+
+        # Save to history (best-effort)
+        try:
+            save_db = SessionLocal()
+            saved = _save_analysis(save_db, result, focus_safe, hours)
+            if saved:
+                result["analysis_id"] = saved.id
+            save_db.close()
+        except Exception as exc:
+            logger.warning("Analysis save failed: %s", exc)
+
+        return result
+
     except anthropic.RateLimitError:
-        logger.warning("Anthropic rate limit hit — too many tokens per minute")
+        logger.warning("Anthropic rate limit hit")
         return {
             "error": (
                 "Rate limit reached (30,000 input tokens/min). "
                 "Try a shorter time window or reduce 'Max logs per AI analysis' "
-                "in Settings → Service Configuration (current default: 200). "
+                "in Settings → Service Configuration. "
                 "Wait 60 seconds and try again."
             ),
             "log_count": len(entries),
