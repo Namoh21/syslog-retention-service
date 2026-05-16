@@ -188,6 +188,23 @@
   .qbar-hi-del{color:var(--muted);font-size:11px;padding:0 4px;}
   .qbar-hi-del:hover{color:var(--danger);}
 
+  /* ── Log detail modal ── */
+  .modal-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:1000;display:flex;align-items:center;justify-content:center;padding:24px;}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:8px;width:100%;max-width:800px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 8px 40px rgba(0,0,0,.6);}
+  .modal-hdr{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid var(--border);flex-shrink:0;}
+  .modal-hdr h2{font-size:15px;font-weight:600;color:var(--text);margin:0;}
+  .modal-close{cursor:pointer;color:var(--muted);font-size:20px;line-height:1;padding:2px 8px;border-radius:4px;border:none;background:none;}
+  .modal-close:hover{color:var(--text);background:rgba(255,255,255,.07);}
+  .modal-body{overflow-y:auto;padding:20px;flex:1;}
+  .ldg{display:grid;grid-template-columns:150px 1fr;row-gap:2px;column-gap:12px;font-size:13px;margin-bottom:16px;}
+  .ldg .dk{color:var(--muted);font-size:12px;padding:4px 0;white-space:nowrap;align-self:start;}
+  .ldg .dv{color:var(--text);padding:4px 0;word-break:break-all;font-family:monospace;font-size:12px;}
+  .ldg .dv a{color:var(--accent);cursor:pointer;text-decoration:none;}
+  .ldg .dv a:hover{text-decoration:underline;}
+  .raw-box{background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;font-family:monospace;font-size:11px;color:var(--accent2);word-break:break-all;white-space:pre-wrap;line-height:1.7;margin-top:4px;}
+  .ts-link{cursor:pointer;color:var(--muted);text-decoration:underline dotted;text-underline-offset:2px;}
+  .ts-link:hover{color:var(--accent);}
+
   /* ── AI progress bar ── */
   .ai-progress-bar-wrap{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:10px;}
   .ai-progress-bar{height:100%;background:var(--accent);border-radius:3px;transition:width 1s linear;}
@@ -1015,8 +1032,10 @@ async function fetchLogs() {
       return;
     }
     const rows = d.entries.map(e=>`
-      <tr onclick="_logRowClick(event,'${esc(e.src_ip||e.source_ip||'')}','${esc(e.dst_ip||'')}','${esc(e.event_type||'')}','${esc(e.action||'')}')">
-        <td style="white-space:nowrap;color:var(--muted);font-size:11px">${fmtDate(e.received_at)}</td>
+      <tr>
+        <td style="white-space:nowrap;font-size:11px">
+          <span class="ts-link" onclick="showLogDetail(${e.id})" title="View raw entry">${fmtDate(e.received_at)}</span>
+        </td>
         <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
         <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
@@ -3162,6 +3181,98 @@ function setup() {
     </div>
   `);
 }
+
+// ── Log entry detail modal ────────────────────────────────────────────────────
+
+async function showLogDetail(id) {
+  // Show backdrop immediately while fetching
+  let backdrop = document.getElementById('log-modal-backdrop');
+  if (!backdrop) {
+    backdrop = document.createElement('div');
+    backdrop.id = 'log-modal-backdrop';
+    backdrop.className = 'modal-backdrop';
+    backdrop.onclick = e => { if (e.target === backdrop) closeLogDetail(); };
+    document.body.appendChild(backdrop);
+  }
+  backdrop.innerHTML = `<div class="modal"><div class="modal-hdr"><h2>Log Entry</h2>
+    <button class="modal-close" onclick="closeLogDetail()">&#x2715;</button></div>
+    <div class="modal-body"><div class="spinner"></div> Loading...</div></div>`;
+  backdrop.style.display = 'flex';
+
+  try {
+    const e = await apiFetch(`/api/logs/${id}`);
+    if (!e) return;
+    const sev = e.severity_name ?? e.severity;
+
+    const row = (label, val, extra='') => val != null && val !== ''
+      ? `<div class="dk">${label}</div><div class="dv">${extra || esc(String(val))}</div>` : '';
+
+    const netSection = [e.src_ip, e.dst_ip, e.dst_port, e.protocol, e.action, e.direction,
+      e.interface_in, e.interface_out, e.rule_name, e.mac_address].some(v => v != null)
+      ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Network (normalized)</div>
+         ${row('Src IP', e.src_ip, `<a onclick="qbLaunchLogs('src_ip:${esc(e.src_ip||'')}');closeLogDetail()">${esc(e.src_ip||'')}</a>`)}
+         ${row('Dst IP', e.dst_ip, `<a onclick="qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}');closeLogDetail()">${esc(e.dst_ip||'')}</a>`)}
+         ${row('Dst Port', e.dst_port)}
+         ${row('Protocol', e.protocol, `<a onclick="qbLaunchLogs('protocol:${esc(e.protocol||'')}');closeLogDetail()">${esc(e.protocol||'')}</a>`)}
+         ${row('Action', e.action, `<a onclick="qbLaunchLogs('action:${esc(e.action||'')}');closeLogDetail()">${esc(e.action||'')}</a>`)}
+         ${row('Direction', e.direction)}
+         ${row('Interface in', e.interface_in)}
+         ${row('Interface out', e.interface_out)}
+         ${row('Rule', e.rule_name)}
+         ${row('MAC', e.mac_address)}` : '';
+
+    const extraSection = e.extra && Object.keys(e.extra).length
+      ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Extra fields</div>
+         ${Object.entries(e.extra).map(([k,v])=>row(k, v)).join('')}` : '';
+
+    backdrop.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-hdr">
+        <h2>&#x1F4CB; Log Entry #${e.id}</h2>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()" title="Filter all logs from this device">&#x1F50D; Filter source</button>
+          <button class="modal-close" onclick="closeLogDetail()">&#x2715;</button>
+        </div>
+      </div>
+      <div class="modal-body">
+        <div class="ldg">
+          <div class="dk">Received at</div><div class="dv">${fmtDate(e.received_at)}</div>
+          <div class="dk">Source device</div><div class="dv">
+            <a onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">${esc(e.source_ip||'')}</a>
+          </div>
+          ${row('Hostname', e.hostname, `<a onclick="qbLaunchLogs('hostname:${esc(e.hostname||'')}');closeLogDetail()">${esc(e.hostname||'')}</a>`)}
+          ${row('Application', e.app_name, `<a onclick="qbLaunchLogs('app:${esc(e.app_name||'')}');closeLogDetail()">${esc(e.app_name||'')}</a>`)}
+          ${row('Process ID', e.proc_id)}
+          ${row('Msg ID', e.msg_id)}
+          <div class="dk">Severity</div><div class="dv"><span class="sev sev-${e.severity}">${e.severity} ${sev}</span></div>
+          ${row('Facility', e.facility)}
+          ${row('Event type', e.event_type, `<a onclick="qbLaunchLogs('event_type:${esc(e.event_type||'')}');closeLogDetail()">${esc(e.event_type||'')}</a>`)}
+          ${row('User', e.user)}
+          ${row('Domain', e.domain)}
+          ${netSection}
+          ${extraSection}
+          <div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Message</div>
+          <div style="grid-column:1/-1;font-family:monospace;font-size:12px;color:var(--text);word-break:break-all;line-height:1.6">${esc(e.message||'')}</div>
+          ${e.raw ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Raw syslog</div>
+          <div style="grid-column:1/-1"><div class="raw-box">${esc(e.raw)}</div></div>` : ''}
+        </div>
+      </div>
+    </div>`;
+  } catch(err) {
+    backdrop.innerHTML = `<div class="modal"><div class="modal-hdr"><h2>Error</h2>
+      <button class="modal-close" onclick="closeLogDetail()">&#x2715;</button></div>
+      <div class="modal-body"><div class="alert alert-warn">${esc(err.message)}</div></div></div>`;
+  }
+}
+
+function closeLogDetail() {
+  const b = document.getElementById('log-modal-backdrop');
+  if (b) b.style.display = 'none';
+}
+
+// Keyboard: Escape closes the modal
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') closeLogDetail();
+});
 
 // Close query bar history dropdown when clicking outside
 document.addEventListener('mousedown', e => {
