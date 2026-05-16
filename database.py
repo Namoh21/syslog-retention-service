@@ -66,20 +66,39 @@ _NORMALIZED_COLUMNS = [
 ]
 
 
-try:
-    Path(settings.db_path).parent.mkdir(parents=True, exist_ok=True)
-except OSError as _mkdir_err:
+def _ensure_db_dir(db_path_str: str) -> str:
+    """
+    Ensure the database directory is writable.
+    If the configured path is on an external mount that is unavailable or
+    not writable, fall back to the local data/ directory so the service
+    always starts rather than crashing on a missing M.2 drive.
+    """
     import sys as _sys
-    print(
-        f"FATAL: Cannot create database directory '{Path(settings.db_path).parent}': {_mkdir_err}\n"
-        f"Check that the parent path exists and the service user has write permission.\n"
-        f"If DB_PATH points to an M.2 drive, verify it is mounted.",
-        file=_sys.stderr,
-    )
-    _sys.exit(1)
+    path = Path(db_path_str)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Quick write-permission probe
+        test = path.parent / ".write_test"
+        test.touch()
+        test.unlink()
+        return db_path_str
+    except OSError as err:
+        fallback = Path(__file__).parent / "data" / "syslog.db"
+        print(
+            f"WARNING: Cannot write to DB_PATH directory '{path.parent}': {err}\n"
+            f"  This usually means the M.2 drive is not mounted or has wrong ownership.\n"
+            f"  Falling back to local storage: {fallback}\n"
+            f"  Fix: sudo chown -R syslog-siem:syslog-siem /mnt/syslog-data\n"
+            f"  Then restart the service to use the configured path again.",
+            file=_sys.stderr,
+        )
+        fallback.parent.mkdir(parents=True, exist_ok=True)
+        return str(fallback)
+
+_resolved_db_path = _ensure_db_dir(settings.db_path)
 
 engine = create_engine(
-    f"sqlite:///{settings.db_path}",
+    f"sqlite:///{_resolved_db_path}",
     connect_args={"check_same_thread": False},
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
