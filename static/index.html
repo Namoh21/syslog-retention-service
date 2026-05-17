@@ -2506,28 +2506,61 @@ class NetworkGraph {
   }
 
   _layout(nodes, edges, iters) {
-    const K = 90, spring = 0.015, ideal = 160;
-    for (let i = 0; i < iters; i++) {
+    if (!nodes.length) return;
+
+    // For large graphs, start from a circle so nodes are spread out and
+    // repulsion forces start at manageable magnitudes.
+    const initR = Math.max(120, nodes.length * 12);
+    nodes.forEach((n, i) => {
+      const angle = (i / nodes.length) * Math.PI * 2;
+      n.x = initR * Math.cos(angle) + (Math.random()-0.5)*10;
+      n.y = initR * Math.sin(angle) + (Math.random()-0.5)*10;
+      n.vx = 0; n.vy = 0;
+    });
+
+    // Reduce iterations for large graphs to avoid blocking the main thread.
+    const actualIters = Math.min(iters, Math.max(30, Math.floor(4000 / nodes.length)));
+    const K = 80, spring = 0.012, ideal = 150;
+    const maxForce = 40, maxV = 12;
+
+    for (let i = 0; i < actualIters; i++) {
       nodes.forEach(a => { a.vx = 0; a.vy = 0; });
+
+      // Repulsion — every pair
       for (let a = 0; a < nodes.length; a++) {
         for (let b = a+1; b < nodes.length; b++) {
-          const dx = nodes[a].x - nodes[b].x, dy = nodes[a].y - nodes[b].y;
-          const d = Math.sqrt(dx*dx+dy*dy) || 0.1;
-          const f = K*K/d * 0.08;
-          nodes[a].vx += dx/d*f; nodes[a].vy += dy/d*f;
-          nodes[b].vx -= dx/d*f; nodes[b].vy -= dy/d*f;
+          let dx = nodes[a].x - nodes[b].x;
+          let dy = nodes[a].y - nodes[b].y;
+          if (dx === 0 && dy === 0) { dx = 0.5; dy = 0.5; }  // jitter exact overlaps
+          const d2 = dx*dx + dy*dy;
+          const d  = Math.sqrt(d2) || 0.1;
+          const f  = Math.min(K*K / d * 0.06, maxForce);
+          nodes[a].vx += (dx/d)*f;  nodes[a].vy += (dy/d)*f;
+          nodes[b].vx -= (dx/d)*f;  nodes[b].vy -= (dy/d)*f;
         }
       }
+
+      // Spring attraction along edges
       edges.forEach(e => {
-        if (!e.sn||!e.dn) return;
-        const dx = e.dn.x-e.sn.x, dy = e.dn.y-e.sn.y;
-        const d = Math.sqrt(dx*dx+dy*dy)||0.1;
-        const f = (d-ideal)*spring;
-        e.sn.vx += dx*f; e.sn.vy += dy*f;
-        e.dn.vx -= dx*f; e.dn.vy -= dy*f;
+        if (!e.sn || !e.dn) return;
+        const dx = e.dn.x - e.sn.x, dy = e.dn.y - e.sn.y;
+        const d  = Math.sqrt(dx*dx + dy*dy) || 0.1;
+        const f  = Math.min((d - ideal) * spring, maxForce);
+        e.sn.vx += (dx/d)*f;  e.sn.vy += (dy/d)*f;
+        e.dn.vx -= (dx/d)*f;  e.dn.vy -= (dy/d)*f;
       });
-      const damp = 1 - i/iters * 0.5;
-      nodes.forEach(n => { n.x += n.vx*damp; n.y += n.vy*damp; });
+
+      const damp = 0.85 - (i / actualIters) * 0.3;
+      nodes.forEach(n => {
+        // Clamp velocity to prevent float overflow → Infinity → NaN
+        n.vx = Math.max(-maxV, Math.min(maxV, n.vx)) * damp;
+        n.vy = Math.max(-maxV, Math.min(maxV, n.vy)) * damp;
+        n.x += n.vx;
+        n.y += n.vy;
+        // Safety net: restore finite position if something still goes wrong
+        if (!isFinite(n.x)) n.x = (Math.random()-0.5)*initR*2;
+        if (!isFinite(n.y)) n.y = (Math.random()-0.5)*initR*2;
+      });
     }
   }
 
@@ -2582,23 +2615,6 @@ class NetworkGraph {
     const subnetView = this.zoom < 1.8;
     const nodes = subnetView ? this.snodes : this.nodes;
     const edges = subnetView ? this.sedges : this.edges;
-
-    // ── Debug overlay (always drawn so we can diagnose) ──────────────────────
-    ctx.save();
-    ctx.fillStyle = 'rgba(88,166,255,0.7)';
-    ctx.font = '11px monospace';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText(`canvas:${W}×${H}  nodes:${this.nodes.length}  snodes:${this.snodes.length}  zoom:${this.zoom.toFixed(2)}  loaded:${!!this._dataLoaded}`, 8, 8);
-    if (this.snodes.length) {
-      const n0 = this.snodes[0];
-      ctx.fillText(`snode[0] pos:(${n0.x.toFixed(0)},${n0.y.toFixed(0)}) events:${n0.events}`, 8, 22);
-      // Draw a reference dot at absolute canvas center
-      ctx.fillStyle = 'red';
-      ctx.beginPath(); ctx.arc(W/2, H/2, 5, 0, Math.PI*2); ctx.fill();
-    }
-    ctx.restore();
-    // ── End debug ─────────────────────────────────────────────────────────────
 
     if (!nodes.length) {
       ctx.fillStyle = 'rgba(139,148,158,0.6)';
@@ -2696,8 +2712,25 @@ class NetworkGraph {
   }
 
   resetView() {
-    this.zoom = 0.9;
     this.px = 0; this.py = 0;
+    // Fit all subnet nodes into the canvas with some margin
+    const nodes = this.snodes.length ? this.snodes : this.nodes;
+    if (!nodes.length) { this.zoom = 0.9; return; }
+    let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+    nodes.forEach(n => {
+      if (!isFinite(n.x) || !isFinite(n.y)) return;
+      minX=Math.min(minX,n.x); maxX=Math.max(maxX,n.x);
+      minY=Math.min(minY,n.y); maxY=Math.max(maxY,n.y);
+    });
+    const spanX = (maxX - minX) || 200;
+    const spanY = (maxY - minY) || 200;
+    this.zoom = Math.min(0.95, Math.min(
+      (this.W * 0.85) / spanX,
+      (this.H * 0.85) / spanY
+    ));
+    // Centre on the graph's bounding box midpoint
+    this.px = -((minX + maxX) / 2) * this.zoom;
+    this.py = -((minY + maxY) / 2) * this.zoom;
   }
 
   _loop() {
