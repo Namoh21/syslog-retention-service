@@ -2583,13 +2583,29 @@ class NetworkGraph {
     const nodes = subnetView ? this.snodes : this.nodes;
     const edges = subnetView ? this.sedges : this.edges;
 
+    // ── Debug overlay (always drawn so we can diagnose) ──────────────────────
+    ctx.save();
+    ctx.fillStyle = 'rgba(88,166,255,0.7)';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`canvas:${W}×${H}  nodes:${this.nodes.length}  snodes:${this.snodes.length}  zoom:${this.zoom.toFixed(2)}  loaded:${!!this._dataLoaded}`, 8, 8);
+    if (this.snodes.length) {
+      const n0 = this.snodes[0];
+      ctx.fillText(`snode[0] pos:(${n0.x.toFixed(0)},${n0.y.toFixed(0)}) events:${n0.events}`, 8, 22);
+      // Draw a reference dot at absolute canvas center
+      ctx.fillStyle = 'red';
+      ctx.beginPath(); ctx.arc(W/2, H/2, 5, 0, Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    // ── End debug ─────────────────────────────────────────────────────────────
+
     if (!nodes.length) {
-      // Show a waiting message until data loads
       ctx.fillStyle = 'rgba(139,148,158,0.6)';
       ctx.font = '14px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(this._dataLoaded ? 'No traffic data for this time window' : 'Loading graph data…', W/2, H/2);
+      ctx.fillText(this._dataLoaded ? 'No traffic data for this time window — try a longer time range' : 'Loading graph data…', W/2, H/2);
       ctx.textBaseline = 'alphabetic';
       return;
     }
