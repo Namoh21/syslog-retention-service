@@ -2420,11 +2420,9 @@ async function trafficmatrix() {
         <span id="tm-node-count" style="font-size:12px;color:var(--muted);margin-left:8px"></span>
       </div>
     </div>
-    <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px">
-      <canvas id="net-graph-canvas"
-        style="width:100%;height:560px;display:block;background:var(--card);cursor:grab"></canvas>
-      <div id="ng-overlay" style="display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-           text-align:center;color:var(--muted);pointer-events:none"></div>
+    <div class="card" style="padding:0;overflow:hidden;margin-bottom:16px;position:relative">
+      <canvas id="net-graph-canvas" data-w="900" data-h="560"
+        style="width:100%;height:560px;display:block;background:#0d1117;cursor:grab"></canvas>
     </div>
     <div id="tm-tables"><div class="spinner"></div> Loading tables...</div>
   `);
@@ -2447,18 +2445,16 @@ class NetworkGraph {
     // Size the canvas backing store to match its CSS layout size.
     // We read the bounding rect now; if it's zero (not yet painted)
     // we fall back to the inline style height so we always get a valid size.
-    const dpr = window.devicePixelRatio || 1;
-    const cssW = canvas.offsetWidth  || canvas.clientWidth  || 800;
-    const cssH = canvas.offsetHeight || canvas.clientHeight || 560;
-    canvas.width  = cssW * dpr;
-    canvas.height = cssH * dpr;
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.W = cssW;
-    this.H = cssH;
+    // Read logical dimensions set explicitly in HTML — no DOM measurement needed
+    this.W = parseInt(canvas.dataset.w) || 800;
+    this.H = parseInt(canvas.dataset.h) || 560;
+    canvas.width  = this.W;
+    canvas.height = this.H;
+    // No DPR scaling — keep it simple; CSS width:100% handles display scaling
+    this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     this._events();
-    // Start the render loop immediately so the "loading" state is visible
-    this._loop();
+    this._loop();   // start immediately so "loading" text appears while API fetches
   }
 
   load(data) {
@@ -2699,8 +2695,11 @@ class NetworkGraph {
 
   _worldPos(ex, ey) {
     const rect = this.cv.getBoundingClientRect();
-    const cx = (ex - rect.left - this.W/2 - this.px) / this.zoom;
-    const cy = (ey - rect.top  - this.H/2 - this.py) / this.zoom;
+    // Scale mouse position from CSS display pixels to canvas logical pixels
+    const scaleX = this.W / (rect.width  || this.W);
+    const scaleY = this.H / (rect.height || this.H);
+    const cx = ((ex - rect.left) * scaleX - this.W/2 - this.px) / this.zoom;
+    const cy = ((ey - rect.top)  * scaleY - this.H/2 - this.py) / this.zoom;
     return {cx, cy};
   }
 
@@ -2767,16 +2766,15 @@ class NetworkGraph {
       }
     },{passive:false});
     c.addEventListener('touchend',()=>{ this.dragging=false; });
-    // Resize — re-read CSS size and rescale the canvas backing store
+    // Window resize — keep W in sync with the actual display width
     window.addEventListener('resize', () => {
-      const dpr = window.devicePixelRatio || 1;
-      const cssW = c.offsetWidth  || c.clientWidth  || 800;
-      const cssH = c.offsetHeight || c.clientHeight || 560;
-      c.width  = cssW * dpr;
-      c.height = cssH * dpr;
-      this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      this.W = cssW;
-      this.H = cssH;
+      const newW = c.offsetWidth || this.W;
+      if (newW !== this.W) {
+        this.W = newW;
+        c.width  = newW;
+        c.height = this.H;
+        this.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      }
     });
   }
 }
@@ -2795,13 +2793,21 @@ async function loadMatrix() {
     _netGraph = ng;
     document.getElementById('tm-node-count').textContent = 'Loading graph…';
     apiFetch(`/api/analysis/network-graph?hours=${hours}&limit=500`).then(gd => {
-      if (!gd || !canvas.isConnected) return;
+      if (!canvas.isConnected) return;
+      const countEl = document.getElementById('tm-node-count');
+      if (!gd || !gd.nodes) {
+        if (countEl) countEl.textContent = 'No graph data returned';
+        return;
+      }
       ng.load(gd);
       const n = gd.nodes.length, e = gd.edges.length;
-      document.getElementById('tm-node-count').textContent =
-        `${n} node${n!==1?'s':''} · ${e} connection${e!==1?'s':''}`;
-    }).catch(() => {
-      document.getElementById('tm-node-count').textContent = 'Graph load failed';
+      if (countEl) countEl.textContent =
+        n === 0
+          ? 'No traffic with both src+dst IP in this window — try a longer time range'
+          : `${n} node${n!==1?'s':''} · ${e} connection${e!==1?'s':''}`;
+    }).catch(err => {
+      const countEl = document.getElementById('tm-node-count');
+      if (countEl) countEl.textContent = `Graph error: ${err.message}`;
     });
   }
 
