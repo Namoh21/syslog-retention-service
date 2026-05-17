@@ -2439,28 +2439,60 @@ class NetworkGraph {
     this.ctx = canvas.getContext('2d');
     this.nodes = [];
     this.edges = [];
-    this.snodes = [];   // subnet-level aggregated nodes
-    this.sedges = [];   // subnet-level aggregated edges
+    this.snodes = [];
+    this.sedges = [];
     this.zoom = 1;
-    this.px = 0; this.py = 0;   // pan offsets
+    this.px = 0; this.py = 0;
     this.dragging = false;
     this.ds = {x:0, y:0};
     this.raf = null;
     this.hovered = null;
-    this._resize();
+    this.W = 0; this.H = 0;
+    this._pendingData = null;
+
+    // Defer the first size read — the canvas may not be laid out yet
+    requestAnimationFrame(() => {
+      this._resize();
+      if (this._pendingData) {
+        this._doLoad(this._pendingData);
+        this._pendingData = null;
+      }
+    });
+
+    // Keep canvas sharp when the container resizes
+    if (typeof ResizeObserver !== 'undefined') {
+      this._ro = new ResizeObserver(() => {
+        this._resize();
+        // Re-centre so content doesn't shift off-screen
+        if (this.nodes.length || this.snodes.length) this.resetView();
+      });
+      this._ro.observe(canvas);
+    }
+
     this._events();
   }
 
   _resize() {
     const rect = this.cv.getBoundingClientRect();
-    this.cv.width  = rect.width  * devicePixelRatio;
-    this.cv.height = rect.height * devicePixelRatio;
-    this.ctx.scale(devicePixelRatio, devicePixelRatio);
+    if (!rect.width || !rect.height) return;   // not laid out yet
+    const dpr = devicePixelRatio || 1;
+    this.cv.width  = rect.width  * dpr;
+    this.cv.height = rect.height * dpr;
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.W = rect.width;
     this.H = rect.height;
   }
 
   load(data) {
+    if (!this.W || !this.H) {
+      // Canvas not sized yet — defer until the rAF in constructor fires
+      this._pendingData = data;
+      return;
+    }
+    this._doLoad(data);
+  }
+
+  _doLoad(data) {
     const nodeMap = {};
     this.nodes = data.nodes.map(n => {
       const nd = { ...n, x: (Math.random()-0.5)*600, y: (Math.random()-0.5)*400, vx:0, vy:0 };
@@ -2690,6 +2722,7 @@ class NetworkGraph {
 
   stop() {
     if (this.raf) { cancelAnimationFrame(this.raf); this.raf = null; }
+    if (this._ro) { this._ro.disconnect(); this._ro = null; }
   }
 
   _worldPos(ex, ey) {
