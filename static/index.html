@@ -1601,6 +1601,7 @@ async function retention() {
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="saveRetention()">Save Policy</button>
           <button class="btn btn-ghost" onclick="purgeNow()">&#x1F5D1; Purge Old Entries Now</button>
+          <button class="btn btn-ghost" onclick="backfillActions()" title="Re-classify ALLOW/BLOCK for all firewall events using updated detection logic">&#x1F504; Fix Misclassified Actions</button>
         </div>
         <p style="color:var(--muted);font-size:12px;margin-top:12px">Last updated: ${fmtDate(d.updated_at)}</p>
         <div id="ret-msg" style="margin-top:12px"></div>
@@ -1625,6 +1626,15 @@ async function purgeNow() {
     const d = await apiFetch('/api/admin/purge',{method:'POST'});
     msg.innerHTML=`<div class="alert alert-ok">${d.message}</div>`;
   } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function backfillActions() {
+  const msg = document.getElementById('ret-msg');
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Re-classifying firewall events… this may take a minute on large databases.</div>';
+  try {
+    const d = await apiFetch('/api/admin/backfill-actions', {method:'POST'});
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${esc(d.message)}</div>`;
+  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 // ── Users ─────────────────────────────────────────────────────────────────────

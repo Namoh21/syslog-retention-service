@@ -603,6 +603,92 @@ async def manual_purge(
     return {"deleted": deleted, "message": f"Purged {deleted} entries beyond retention window."}
 
 
+@router.post("/admin/backfill-actions", tags=["admin"])
+async def backfill_actions(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """
+    Re-derive action (ALLOW/BLOCK) for all firewall log entries using the
+    updated normalizer logic.  Runs in a background thread so it doesn't
+    block the event loop on large databases.
+    """
+    import asyncio as _asyncio
+
+    async def _run():
+        import threading
+        result = {}
+
+        def _do():
+            from normalizer import _action_from_chain
+            from database import SessionLocal, SyslogEntry
+            session = SessionLocal()
+            try:
+                # Only process firewall events — they have rule_name set
+                batch_size = 500
+                offset = 0
+                updated = skipped = 0
+                while True:
+                    rows = (
+                        session.query(SyslogEntry)
+                        .filter(
+                            SyslogEntry.event_type.in_(
+                                ["firewall_block", "firewall_allow"]
+                            ),
+                            SyslogEntry.rule_name.isnot(None),
+                        )
+                        .offset(offset)
+                        .limit(batch_size)
+                        .all()
+                    )
+                    if not rows:
+                        break
+                    for row in rows:
+                        # Get DESCR from extra_json if available
+                        import json as _json
+                        descr = ""
+                        if row.extra_json:
+                            try:
+                                descr = _json.loads(row.extra_json).get("descr", "")
+                            except Exception:
+                                pass
+                        correct = _action_from_chain(row.rule_name or "", descr)
+                        correct_etype = f"firewall_{correct.lower()}"
+                        if row.action != correct or row.event_type != correct_etype:
+                            row.action = correct
+                            row.event_type = correct_etype
+                            updated += 1
+                        else:
+                            skipped += 1
+                    session.commit()
+                    offset += batch_size
+                result["updated"] = updated
+                result["skipped"] = skipped
+            except Exception as exc:
+                session.rollback()
+                result["error"] = str(exc)
+            finally:
+                session.close()
+
+        await _asyncio.to_thread(_do)
+        return result
+
+    write_audit(db, admin.username, "logs.backfill_actions",
+                "Started action backfill for firewall events",
+                request.client.host if request.client else "")
+    db.commit()
+
+    counts = await _run()
+    if "error" in counts:
+        raise HTTPException(status_code=500, detail=counts["error"])
+    return {
+        "message": f"Backfill complete: {counts.get('updated', 0)} entries corrected, "
+                   f"{counts.get('skipped', 0)} already correct.",
+        **counts,
+    }
+
+
 # ===================== Users =====================
 
 @router.get("/admin/users", response_model=List[UserOut], tags=["admin"])
