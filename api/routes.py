@@ -1041,20 +1041,27 @@ async def test_local_llm(
                 request.client.host if request.client else "")
     db.commit()
     try:
-        async with _httpx.AsyncClient(timeout=30.0) as client:
+        # Use a generous timeout — cold model load on a Pi can take 60-120s
+        async with _httpx.AsyncClient(timeout=180.0) as client:
             r = await client.post(
                 f"{base_url}/v1/chat/completions",
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Reply with one word: OK"}],
                     "max_tokens": 10,
+                    "stream": False,   # Ollama defaults to streaming — must disable
                 },
             )
             r.raise_for_status()
-            reply = r.json()["choices"][0]["message"]["content"]
+            data = r.json()
+            reply = data["choices"][0]["message"]["content"]
             return {"status": "ok", "message": f"Connected to {base_url} — model '{model}' responded: {reply.strip()[:80]}"}
     except _httpx.ConnectError:
         raise HTTPException(status_code=400, detail=f"Connection refused at {base_url}. Is the local LLM server running?")
+    except _httpx.ReadTimeout:
+        raise HTTPException(status_code=400, detail=f"Request timed out after 180s. The model may still be loading — try again in a moment.")
+    except (KeyError, IndexError) as exc:
+        raise HTTPException(status_code=400, detail=f"Unexpected response format from {base_url}: {exc}. Is this an OpenAI-compatible server?")
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Test failed: {exc}")
 

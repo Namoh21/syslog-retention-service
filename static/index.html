@@ -2133,12 +2133,15 @@ async function saveLocalLLM() {
 }
 
 async function testLocalLLM() {
-  const msg = document.getElementById('settings-msg');
-  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Testing local LLM connection...</div>';
+  const msg = document.getElementById('settings-msg') || document.getElementById('provider-msg');
+  if (msg) msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Testing local LLM — this may take up to 3 minutes while the model loads...</div>';
   try {
     const d = await apiFetch('/api/admin/settings/test-local-llm', { method:'POST' });
-    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${esc(d.message)}</div>`;
-  } catch(e) { msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`; }
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${esc(d.message)}</div>`;
+  } catch(e) {
+    console.error('testLocalLLM error:', e);
+    if (msg) msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${esc(e.message || String(e))}</div>`;
+  }
 }
 
 async function fetchLocalModels() {
