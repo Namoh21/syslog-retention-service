@@ -666,20 +666,20 @@ let _qbHistVis = false;  // history dropdown visible?
 const _QB_HIST_KEY = 'kql_query_history';
 
 const QB_FIELDS = [
-  {id:'source_ip', label:'Source IP',           type:'ip',       group:'Network'},
-  {id:'src_ip',    label:'Src IP (normalized)', type:'ip',       group:'Network'},
-  {id:'dst_ip',    label:'Dst IP',              type:'ip',       group:'Network'},
-  {id:'dst_port',  label:'Dst Port',            type:'number',   group:'Network'},
-  {id:'protocol',  label:'Protocol',            type:'enum',     group:'Network',
+  {id:'src_ip',    label:'Source IP',          type:'ip',       group:'Network'},
+  {id:'dst_ip',    label:'Destination IP',     type:'ip',       group:'Network'},
+  {id:'dst_port',  label:'Destination Port',   type:'number',   group:'Network'},
+  {id:'protocol',  label:'Protocol',           type:'enum',     group:'Network',
      values:['TCP','UDP','ICMP','DNS','SSH','VPN']},
-  {id:'hostname',  label:'Hostname',            type:'text',     group:'Log'},
-  {id:'message',   label:'Message',             type:'text',     group:'Log'},
-  {id:'severity',  label:'Severity',            type:'severity', group:'Log',
+  {id:'source_ip', label:'Device IP (syslog sender)', type:'ip', group:'Network'},
+  {id:'hostname',  label:'Hostname',           type:'text',     group:'Log'},
+  {id:'message',   label:'Message',            type:'text',     group:'Log'},
+  {id:'severity',  label:'Severity',           type:'severity', group:'Log',
      values:['0 Emergency','1 Alert','2 Critical','3 Error','4 Warning','5 Notice','6 Informational','7 Debug']},
-  {id:'app',       label:'Application',         type:'text',     group:'Log'},
-  {id:'action',    label:'Action',              type:'enum',     group:'Firewall',
+  {id:'app',       label:'Application',        type:'text',     group:'Log'},
+  {id:'action',    label:'Action',             type:'enum',     group:'Firewall',
      values:['BLOCK','ALLOW','ALERT']},
-  {id:'event_type',label:'Event Type',          type:'enum',     group:'Firewall',
+  {id:'event_type',label:'Event Type',         type:'enum',     group:'Firewall',
      values:['firewall_block','firewall_allow','ids_alert','threat_block','auth_failure',
              'auth_success','dhcp_ack','vpn_connect','vpn_disconnect','dns_query','port_scan','unknown']},
 ];
@@ -736,7 +736,7 @@ function _qbHtml() {
     <div class="qbar-iw">
       <span class="qbar-icon">&#x1F50D;</span>
       <input class="qbar-input" id="qbar-input" value="${esc(_qbQuery)}" autocomplete="off" spellcheck="false"
-        placeholder="source_ip:192.168.1.1  action:BLOCK  severity:&lt;=3  message:*firewall*"
+        placeholder="src_ip:192.168.1.1  action:BLOCK  severity:&lt;=3  message:*firewall*"
         onkeydown="_qbKey(event)" onfocus="_qbShowHist()" oninput="_qbQuery=this.value" />
       <span class="qbar-x" onclick="qbClear()" title="Clear query" style="${_qbQuery?'':'display:none'}">&#x2715;</span>
     </div>
@@ -875,7 +875,7 @@ function qbAddFilter() {
 
 function qbShowExamples() {
   const examples = [
-    'source_ip:192.168.1.1',
+    'src_ip:192.168.1.1',
     'action:BLOCK AND src_ip:10.0.0.5',
     'severity:<=3',
     'message:*firewall* AND NOT action:ALLOW',
@@ -1039,7 +1039,7 @@ async function fetchLogs() {
         <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
         <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
-            onclick="event.stopPropagation();qbLaunchLogs('source_ip:${esc(e.src_ip||e.source_ip||'')}')"
+            onclick="event.stopPropagation();qbLaunchLogs('${e.src_ip?'src_ip':'source_ip'}:${esc(e.src_ip||e.source_ip||'')}')"
             title="Filter for this IP">${e.src_ip||e.source_ip||''}</td>
         <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
             onclick="event.stopPropagation();qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}')"
@@ -2280,7 +2280,7 @@ async function investigate(ip) {
           <select id="inv-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
         </div>
         <button class="btn btn-primary" onclick="runInvestigation()">Investigate</button>
-        <button class="btn btn-ghost" onclick="qbLaunchLogs('source_ip:'+(document.getElementById('inv-ip')?.value||''))" title="Open in Log Viewer with KQL filter">&#x1F50D; View Logs</button>
+        <button class="btn btn-ghost" onclick="(ip=>(ip?qbLaunchLogs('src_ip:'+ip+' OR dst_ip:'+ip+' OR source_ip:'+ip):''))(document.getElementById('inv-ip')?.value?.trim())" title="Search all log fields for this IP">&#x1F50D; View Logs</button>
       </div>
     </div>
     <div id="inv-result"></div>
@@ -2381,7 +2381,7 @@ async function loadRuleHits() {
     const d = await apiFetch(`/api/analysis/rule-hits?hours=${hours}&limit=30`);
     if (!d) return;
     const rows = (d.rules||[]).map(r => {
-      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="qbLaunchLogs('source_ip:${s.ip}')" title="View logs for ${s.ip}">${s.ip}(${s.count})</span>`).join(' ');
+      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="qbLaunchLogs('src_ip:${s.ip} OR source_ip:${s.ip}')" title="View logs for ${s.ip}">${s.ip}(${s.count})</span>`).join(' ');
       return `<tr>
         <td style="font-size:12px;font-weight:600">${esc(r.rule)}</td>
         <td>${actionBadge(r.action)}</td>
