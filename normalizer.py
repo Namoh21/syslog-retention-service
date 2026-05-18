@@ -63,26 +63,50 @@ def _action_from_chain(chain: str) -> str:
 
 # ── Unifi / iptables firewall ─────────────────────────────────────────────────
 # kernel: [LAN_LOCAL-default-D]IN=eth0 OUT= SRC=1.2.3.4 DST=5.6.7.8 ... PROTO=TCP SPT=1234 DPT=443
-_FW_CHAIN = re.compile(r"\[([^\]]+)\]")
-_FW_KV = re.compile(r"(\w+)=(\S*)")
+# UDM extended: DESCR="rule description" SEQ= ACK= WINDOW= SYN DF MARK= ...
+_FW_CHAIN       = re.compile(r"\[([^\]]+)\]")
+_FW_KV_QUOTED   = re.compile(r'(\w+)="([^"]*)"')          # KEY="value with spaces"
+_FW_KV_PLAIN    = re.compile(r'(\w+)=([^\s"]\S*)')         # KEY=value (no quotes)
+_FW_KV_EMPTY    = re.compile(r'(\w+)=(?=\s|$)')            # KEY= (empty value)
+# Standalone TCP/IP flags (not KEY=VALUE — just the keyword alone)
+_FW_FLAGS       = re.compile(
+    r'(?<![=\w])(SYN|ACK|FIN|RST|URG|PSH|ECE|CWR|DF|MF)(?![=\w])'
+)
 
 def _parse_firewall(msg: str) -> Optional[NormalizedFields]:
     if "SRC=" not in msg or "DST=" not in msg:
         return None
     chain_m = _FW_CHAIN.search(msg)
-    kv = dict(_FW_KV.findall(msg))
+
+    # Build KV dict — quoted values first (handles DESCR="Block IoT to Internal")
+    kv: dict[str, str] = {}
+    for k, v in _FW_KV_QUOTED.findall(msg):
+        kv[k] = v
+    # Then unquoted non-empty values (skip keys already captured by quoted pass)
+    for k, v in _FW_KV_PLAIN.findall(msg):
+        if k not in kv:
+            kv[k] = v
+    # Empty-value keys (IN= OUT= etc.)
+    for (k,) in _FW_KV_EMPTY.findall(msg):
+        if k not in kv:
+            kv[k] = ""
+
     if not kv.get("SRC"):
         return None
+
     chain = chain_m.group(1) if chain_m else ""
     action = _action_from_chain(chain)
     proto = kv.get("PROTO", "").upper() or None
+
     try:
-        spt = int(kv["SPT"]) if "SPT" in kv else None
-        dpt = int(kv["DPT"]) if "DPT" in kv else None
+        spt = int(kv["SPT"]) if kv.get("SPT") else None
+        dpt = int(kv["DPT"]) if kv.get("DPT") else None
     except ValueError:
         spt = dpt = None
-    iface_in = kv.get("IN") or None
+
+    iface_in  = kv.get("IN")  or None
     iface_out = kv.get("OUT") or None
+
     direction = None
     if chain:
         cu = chain.upper()
@@ -90,12 +114,22 @@ def _parse_firewall(msg: str) -> Optional[NormalizedFields]:
             direction = "inbound" if action == "BLOCK" else "outbound"
         elif "LAN" in cu:
             direction = "lan"
-    extra = {}
-    for k in ("LEN", "TTL", "ID", "WINDOW", "TOS"):
-        if k in kv:
-            extra[k.lower()] = kv[k]
+
+    # Standalone TCP/IP flags
+    flags = _FW_FLAGS.findall(msg)
+
+    # Build extra: all remaining kv fields + flags
+    _core = {"SRC", "DST", "SPT", "DPT", "PROTO", "IN", "OUT", "MAC"}
+    extra: dict[str, str] = {}
+    for k, v in kv.items():
+        if k not in _core and v:
+            extra[k.lower()] = v
+    if flags:
+        extra["flags"] = " ".join(sorted(set(flags)))
+
     mac_raw = kv.get("MAC", "")
     mac = mac_raw[:17] if mac_raw else None
+
     return NormalizedFields(
         event_type=f"firewall_{action.lower()}",
         src_ip=kv.get("SRC"),

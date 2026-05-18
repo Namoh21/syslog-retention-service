@@ -3278,14 +3278,23 @@ function setup() {
 
 // ── Log entry detail modal ────────────────────────────────────────────────────
 
+// Human-readable labels for known extra field keys
+const _EXTRA_LABELS = {
+  descr:'Rule Description', len:'Packet Length', ttl:'TTL', tos:'Type of Service',
+  prec:'Precedence', id:'IP ID', window:'TCP Window', seq:'TCP Sequence',
+  ack:'TCP Ack', urgp:'Urgent Pointer', mark:'Netfilter Mark', flags:'TCP/IP Flags',
+  df:'Don\'t Fragment', mf:'More Fragments', qtype:'Query Type',
+  category:'IDS Category', severity:'IDS Severity',
+};
+function _extraLabel(k) { return _EXTRA_LABELS[k] || k.toUpperCase(); }
+
 async function showLogDetail(id) {
-  // Show backdrop immediately while fetching
   let backdrop = document.getElementById('log-modal-backdrop');
   if (!backdrop) {
     backdrop = document.createElement('div');
     backdrop.id = 'log-modal-backdrop';
     backdrop.className = 'modal-backdrop';
-    backdrop.onclick = e => { if (e.target === backdrop) closeLogDetail(); };
+    backdrop.onclick = ev => { if (ev.target === backdrop) closeLogDetail(); };
     document.body.appendChild(backdrop);
   }
   backdrop.innerHTML = `<div class="modal"><div class="modal-hdr"><h2>Log Entry</h2>
@@ -3297,38 +3306,68 @@ async function showLogDetail(id) {
     const e = await apiFetch(`/api/logs/${id}`);
     if (!e) return;
     const sev = e.severity_name ?? e.severity;
+    const x = e.extra || {};
 
-    const row = (label, val, extra='') => val != null && val !== ''
-      ? `<div class="dk">${label}</div><div class="dv">${extra || esc(String(val))}</div>` : '';
+    const row = (label, val, inner='') => (val != null && val !== '')
+      ? `<div class="dk">${label}</div><div class="dv">${inner || esc(String(val))}</div>` : '';
+    const sec = title =>
+      `<div style="grid-column:1/-1;margin:10px 0 4px;font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;border-top:1px solid var(--border);padding-top:8px">${title}</div>`;
+    const kv  = (label, val) => row(label, val);
 
-    const netSection = [e.src_ip, e.dst_ip, e.dst_port, e.protocol, e.action, e.direction,
-      e.interface_in, e.interface_out, e.rule_name, e.mac_address].some(v => v != null)
-      ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Network (normalized)</div>
-         ${row('Src IP', e.src_ip, `<a onclick="qbLaunchLogs('src_ip:${esc(e.src_ip||'')}');closeLogDetail()">${esc(e.src_ip||'')}</a>`)}
-         ${row('Dst IP', e.dst_ip, `<a onclick="qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}');closeLogDetail()">${esc(e.dst_ip||'')}</a>`)}
-         ${row('Dst Port', e.dst_port)}
-         ${row('Protocol', e.protocol, `<a onclick="qbLaunchLogs('protocol:${esc(e.protocol||'')}');closeLogDetail()">${esc(e.protocol||'')}</a>`)}
-         ${row('Action', e.action, `<a onclick="qbLaunchLogs('action:${esc(e.action||'')}');closeLogDetail()">${esc(e.action||'')}</a>`)}
-         ${row('Direction', e.direction)}
-         ${row('Interface in', e.interface_in)}
-         ${row('Interface out', e.interface_out)}
-         ${row('Rule', e.rule_name)}
-         ${row('MAC', e.mac_address)}` : '';
+    // ── Rule description — most important UDM field, shown prominently ─────
+    const descrRow = x.descr
+      ? `${row('Rule Description', x.descr)}`
+      : '';
 
-    const extraSection = e.extra && Object.keys(e.extra).length
-      ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Extra fields</div>
-         ${Object.entries(e.extra).map(([k,v])=>row(k, v)).join('')}` : '';
+    // ── Network / firewall section ────────────────────────────────────────
+    const hasNet = [e.src_ip, e.dst_ip, e.dst_port, e.src_port, e.protocol,
+      e.action, e.direction, e.interface_in, e.interface_out, e.rule_name,
+      e.mac_address].some(v => v != null);
+    const netSection = hasNet ? `${sec('Network')}
+      ${row('Rule', e.rule_name)}
+      ${descrRow}
+      ${row('Src IP', e.src_ip,   `<a onclick="qbLaunchLogs('src_ip:${esc(e.src_ip||'')}');closeLogDetail()">${esc(e.src_ip||'')}</a>`)}
+      ${row('Src Port', e.src_port)}
+      ${row('Dst IP', e.dst_ip,   `<a onclick="qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}');closeLogDetail()">${esc(e.dst_ip||'')}</a>`)}
+      ${row('Dst Port', e.dst_port)}
+      ${row('Protocol', e.protocol, `<a onclick="qbLaunchLogs('protocol:${esc(e.protocol||'')}');closeLogDetail()">${esc(e.protocol||'')}</a>`)}
+      ${row('Action', e.action,   `<a onclick="qbLaunchLogs('action:${esc(e.action||'')}');closeLogDetail()"><strong>${esc(e.action||'')}</strong></a>`)}
+      ${row('Direction', e.direction)}
+      ${row('Interface In', e.interface_in)}
+      ${row('Interface Out', e.interface_out)}
+      ${row('MAC Address', e.mac_address)}` : '';
+
+    // ── IP layer fields ───────────────────────────────────────────────────
+    const ipFields = ['len','ttl','tos','prec','id','mark'].filter(k => x[k]);
+    const ipSection = ipFields.length
+      ? `${sec('IP Layer')}${ipFields.map(k => kv(_extraLabel(k), x[k])).join('')}` : '';
+
+    // ── Transport layer (TCP/UDP) ─────────────────────────────────────────
+    const tcpFields = ['seq','ack','window','urgp'].filter(k => x[k]);
+    const flagsRow  = x.flags ? kv('TCP/IP Flags', x.flags) : '';
+    const tcpSection = (tcpFields.length || flagsRow)
+      ? `${sec('Transport Layer')}${flagsRow}${tcpFields.map(k => kv(_extraLabel(k), x[k])).join('')}` : '';
+
+    // ── Any remaining extra fields not already shown ───────────────────────
+    const _shown = new Set(['descr','len','ttl','tos','prec','id','mark','seq','ack','window','urgp','flags']);
+    const remaining = Object.entries(x).filter(([k]) => !_shown.has(k));
+    const remainSection = remaining.length
+      ? `${sec('Additional Fields')}${remaining.map(([k,v]) => kv(_extraLabel(k), v)).join('')}` : '';
 
     backdrop.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
       <div class="modal-hdr">
-        <h2>&#x1F4CB; Log Entry #${e.id}</h2>
+        <h2>&#x1F4CB; Log Entry #${e.id}
+          ${e.action ? `<span style="margin-left:10px" class="sev sev-${e.severity<=2?0:e.severity<=3?3:4}">${esc(e.action)}</span>` : ''}
+        </h2>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()" title="Filter all logs from this device">&#x1F50D; Filter source</button>
+          <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">&#x1F50D; Filter source</button>
           <button class="modal-close" onclick="closeLogDetail()">&#x2715;</button>
         </div>
       </div>
       <div class="modal-body">
         <div class="ldg">
+
+          ${sec('Syslog')}
           <div class="dk">Received at</div><div class="dv">${fmtDate(e.received_at)}</div>
           <div class="dk">Source device</div><div class="dv">
             <a onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">${esc(e.source_ip||'')}</a>
@@ -3336,18 +3375,21 @@ async function showLogDetail(id) {
           ${row('Hostname', e.hostname, `<a onclick="qbLaunchLogs('hostname:${esc(e.hostname||'')}');closeLogDetail()">${esc(e.hostname||'')}</a>`)}
           ${row('Application', e.app_name, `<a onclick="qbLaunchLogs('app:${esc(e.app_name||'')}');closeLogDetail()">${esc(e.app_name||'')}</a>`)}
           ${row('Process ID', e.proc_id)}
-          ${row('Msg ID', e.msg_id)}
-          <div class="dk">Severity</div><div class="dv"><span class="sev sev-${e.severity}">${e.severity} ${sev}</span></div>
+          <div class="dk">Severity</div><div class="dv"><span class="sev sev-${e.severity}">${e.severity} — ${sev}</span></div>
           ${row('Facility', e.facility)}
           ${row('Event type', e.event_type, `<a onclick="qbLaunchLogs('event_type:${esc(e.event_type||'')}');closeLogDetail()">${esc(e.event_type||'')}</a>`)}
           ${row('User', e.user)}
           ${row('Domain', e.domain)}
+
           ${netSection}
-          ${extraSection}
-          <div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Message</div>
-          <div style="grid-column:1/-1;font-family:monospace;font-size:12px;color:var(--text);word-break:break-all;line-height:1.6">${esc(e.message||'')}</div>
-          ${e.raw ? `<div style="grid-column:1/-1;margin:8px 0 4px;font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em">Raw syslog</div>
-          <div style="grid-column:1/-1"><div class="raw-box">${esc(e.raw)}</div></div>` : ''}
+          ${ipSection}
+          ${tcpSection}
+          ${remainSection}
+
+          ${sec('Message')}
+          <div style="grid-column:1/-1;font-family:monospace;font-size:12px;color:var(--text);word-break:break-all;line-height:1.7">${esc(e.message||'')}</div>
+
+          ${e.raw ? `${sec('Raw Syslog')}<div style="grid-column:1/-1"><div class="raw-box">${esc(e.raw)}</div></div>` : ''}
         </div>
       </div>
     </div>`;
