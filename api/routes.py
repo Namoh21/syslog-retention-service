@@ -1041,29 +1041,42 @@ async def test_local_llm(
                 request.client.host if request.client else "")
     db.commit()
     try:
-        # Use a generous timeout — cold model load on a Pi can take 60-120s
+        import logging as _log
+        _logger = _log.getLogger("routes.llm_test")
         async with _httpx.AsyncClient(timeout=180.0) as client:
+            _logger.info("LLM test: POST %s/v1/chat/completions model=%s", base_url, model)
             r = await client.post(
                 f"{base_url}/v1/chat/completions",
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": "Reply with one word: OK"}],
                     "max_tokens": 10,
-                    "stream": False,   # Ollama defaults to streaming — must disable
+                    "stream": False,
                 },
             )
-            r.raise_for_status()
-            data = r.json()
-            reply = data["choices"][0]["message"]["content"]
+            _logger.info("LLM test: HTTP %s  body_preview=%r", r.status_code, r.text[:300])
+            if not r.is_success:
+                raise HTTPException(status_code=400,
+                    detail=f"HTTP {r.status_code} from {base_url}: {r.text[:300]}")
+            try:
+                data = r.json()
+            except Exception:
+                raise HTTPException(status_code=400,
+                    detail=f"Response is not JSON. Raw response: {r.text[:300]}")
+            try:
+                reply = data["choices"][0]["message"]["content"]
+            except (KeyError, IndexError):
+                raise HTTPException(status_code=400,
+                    detail=f"Unexpected JSON structure: {str(data)[:300]}")
             return {"status": "ok", "message": f"Connected to {base_url} — model '{model}' responded: {reply.strip()[:80]}"}
+    except HTTPException:
+        raise
     except _httpx.ConnectError:
-        raise HTTPException(status_code=400, detail=f"Connection refused at {base_url}. Is the local LLM server running?")
+        raise HTTPException(status_code=400, detail=f"Connection refused at {base_url}. Is Ollama running?")
     except _httpx.ReadTimeout:
-        raise HTTPException(status_code=400, detail=f"Request timed out after 180s. The model may still be loading — try again in a moment.")
-    except (KeyError, IndexError) as exc:
-        raise HTTPException(status_code=400, detail=f"Unexpected response format from {base_url}: {exc}. Is this an OpenAI-compatible server?")
+        raise HTTPException(status_code=400, detail=f"Timed out after 180s. Model may still be loading — try again.")
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Test failed: {exc}")
+        raise HTTPException(status_code=400, detail=f"Test failed: {type(exc).__name__}: {exc}")
 
 
 # ===================== Web Update =====================
