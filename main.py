@@ -26,7 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from database import init_db, SessionLocal, purge_old_entries
+from database import init_db, SessionLocal, purge_old_entries, _resolved_db_path
 from syslog_listener import start_udp_listener, start_tcp_listener
 from api.routes import router
 
@@ -98,15 +98,18 @@ async def lifespan(app: FastAPI):
         logger.critical("DB_PATH = %s", settings.db_path)
         raise  # re-raise so uvicorn exits; error is now in the log file
 
-    logger.info("Database initialised at %s", settings.db_path)
+    logger.info("Database initialised at %s", _resolved_db_path)
 
-    # Lock down DB file permissions
-    db_path = Path(settings.db_path)
-    if db_path.exists():
-        try:
+    # Lock down DB file permissions — use the resolved path (may differ from
+    # settings.db_path when the M.2 drive is unavailable and we fell back to
+    # local storage). Guard with try/except so an I/O error on a failing drive
+    # does not abort startup.
+    try:
+        db_path = Path(_resolved_db_path)
+        if db_path.exists():
             os.chmod(db_path, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
+    except OSError as exc:
+        logger.warning("Could not set DB file permissions: %s", exc)
 
     try:
         _udp_transport = await start_udp_listener(settings.syslog_udp_host, settings.syslog_udp_port)
