@@ -52,13 +52,43 @@ _PORT = r"(\d{1,5})"
 _MAC = r"([0-9a-fA-F]{2}(?:[:\-][0-9a-fA-F]{2}){5})"
 
 
-def _action_from_chain(chain: str) -> str:
-    chain = chain.upper()
-    if any(x in chain for x in ("DROP", "BLOCK", "DENY", "REJECT", "FORBID")):
+_CHAIN_ALLOW_RE = re.compile(r'(?:^|[-_])A(?:[-_\d]|$)', re.IGNORECASE)  # -A- or -A10003
+_CHAIN_BLOCK_RE = re.compile(r'(?:^|[-_])D(?:[-_\d]|$)', re.IGNORECASE)  # -D- or -D10000
+
+
+def _action_from_chain(chain: str, descr: str = "") -> str:
+    """
+    Derive BLOCK/ALLOW from a Unifi/iptables chain name and optional DESCR field.
+
+    Unifi UDM naming conventions:
+      CUSTOM2_WAN-A-10003  →  -A-  = Allow
+      CUSTOM1_LAN-D-10000  →  -D-  = Drop (Block)
+      LAN_LOCAL-default-D  →  trailing -D = Drop
+      WAN_IN-default-A     →  trailing -A = Allow
+    """
+    cu = chain.upper()
+
+    # 1. Explicit keywords in chain name (highest priority)
+    if any(x in cu for x in ("DROP", "BLOCK", "DENY", "REJECT", "FORBID")):
         return "BLOCK"
-    if any(x in chain for x in ("ACCEPT", "ALLOW", "PERMIT", "PASS")):
+    if any(x in cu for x in ("ACCEPT", "ALLOW", "PERMIT", "PASS")):
         return "ALLOW"
-    return "BLOCK"  # Unifi default-D means default-Drop
+
+    # 2. Unifi single-letter action code: -A- = Allow, -D- = Drop
+    if _CHAIN_ALLOW_RE.search(chain):
+        return "ALLOW"
+    if _CHAIN_BLOCK_RE.search(chain):
+        return "BLOCK"
+
+    # 3. DESCR field as fallback (e.g. DESCR="Allow - Security to External zone")
+    dl = descr.lower()
+    if any(x in dl for x in ("allow", "accept", "permit", "pass")):
+        return "ALLOW"
+    if any(x in dl for x in ("block", "drop", "deny", "reject", "forbid")):
+        return "BLOCK"
+
+    # 4. Conservative default — unknown chain → treat as block
+    return "BLOCK"
 
 
 # ── Unifi / iptables firewall ─────────────────────────────────────────────────
@@ -95,7 +125,7 @@ def _parse_firewall(msg: str) -> Optional[NormalizedFields]:
         return None
 
     chain = chain_m.group(1) if chain_m else ""
-    action = _action_from_chain(chain)
+    action = _action_from_chain(chain, descr=kv.get("DESCR", ""))
     proto = kv.get("PROTO", "").upper() or None
 
     try:

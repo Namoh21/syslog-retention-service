@@ -3284,22 +3284,38 @@ function _parseFirewallRaw(msg) {
   if (!msg || (!msg.includes('SRC=') && !msg.includes('DST='))) return null;
   const result = {};
 
-  // KEY="quoted value" — handles DESCR="Block IoT to Internal zones"
+  // KEY="quoted value" — handles DESCR="Allow - Security to External zone"
   for (const m of msg.matchAll(/(\w+)="([^"]*)"/g))
     result[m[1].toLowerCase()] = m[2];
 
-  // KEY=value (non-quoted, non-empty) — skip keys already captured
+  // KEY=value (non-quoted, non-empty)
   for (const m of msg.matchAll(/(\w+)=([^\s"]\S*)/g)) {
     const k = m[1].toLowerCase();
     if (!(k in result)) result[k] = m[2];
   }
 
-  // Standalone TCP/IP flags (words not preceded/followed by = or word chars)
+  // Standalone TCP/IP flags
   const flagHits = [...msg.matchAll(/(?<![=\w])(SYN|ACK|FIN|RST|URG|PSH|ECE|CWR|DF|MF)(?![=\w])/g)]
     .map(m => m[1]);
   if (flagHits.length) result.flags = [...new Set(flagHits)].join(' ');
 
   return Object.keys(result).length ? result : null;
+}
+
+// Mirror the Python _action_from_chain logic in JS for the modal display.
+// Used to correct the stored action on old log entries.
+function _actionFromChainJS(chain, descr) {
+  const cu = (chain || '').toUpperCase();
+  const dl = (descr || '').toLowerCase();
+  if (/DROP|BLOCK|DENY|REJECT|FORBID/.test(cu)) return 'BLOCK';
+  if (/ACCEPT|ALLOW|PERMIT|PASS/.test(cu))      return 'ALLOW';
+  // Unifi single-letter code: -A- = Allow, -D- = Drop
+  if (/(?:^|[-_])A(?:[-_\d]|$)/i.test(chain))  return 'ALLOW';
+  if (/(?:^|[-_])D(?:[-_\d]|$)/i.test(chain))  return 'BLOCK';
+  // DESCR fallback
+  if (/allow|accept|permit|pass/.test(dl))       return 'ALLOW';
+  if (/block|drop|deny|reject|forbid/.test(dl))  return 'BLOCK';
+  return 'BLOCK';
 }
 
 // Human-readable labels for known extra field keys
@@ -3332,10 +3348,17 @@ async function showLogDetail(id) {
     const sev = e.severity_name ?? e.severity;
 
     // Merge stored extra fields with a live re-parse of the raw message.
-    // This ensures old entries (stored before the normalizer fix) still show
-    // DESCR, SEQ, ACK, flags, MARK, PREC, URGP, etc.
+    // Stored fields win, but anything missing is backfilled from the raw text.
     const rawParsed = _parseFirewallRaw(e.raw || e.message || '');
     const x = Object.assign({}, rawParsed || {}, e.extra || {});
+
+    // Re-derive the correct action from chain + DESCR in case the stored value
+    // is wrong (e.g. old entries where -A- chain was misclassified as BLOCK).
+    const correctedAction = e.rule_name
+      ? _actionFromChainJS(e.rule_name, x.descr || '')
+      : e.action;
+    // Only override if we have a rule name to reason from
+    const displayAction = e.rule_name ? correctedAction : e.action;
 
     const row = (label, val, inner='') => (val != null && val !== '')
       ? `<div class="dk">${label}</div><div class="dv">${inner || esc(String(val))}</div>` : '';
@@ -3360,7 +3383,7 @@ async function showLogDetail(id) {
       ${row('Dst IP', e.dst_ip,   `<a onclick="qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}');closeLogDetail()">${esc(e.dst_ip||'')}</a>`)}
       ${row('Dst Port', e.dst_port)}
       ${row('Protocol', e.protocol, `<a onclick="qbLaunchLogs('protocol:${esc(e.protocol||'')}');closeLogDetail()">${esc(e.protocol||'')}</a>`)}
-      ${row('Action', e.action,   `<a onclick="qbLaunchLogs('action:${esc(e.action||'')}');closeLogDetail()"><strong>${esc(e.action||'')}</strong></a>`)}
+      ${row('Action', displayAction, `<a onclick="qbLaunchLogs('action:${esc(displayAction||'')}');closeLogDetail()"><strong style="color:${displayAction==='ALLOW'?'var(--accent2)':'var(--danger)'}">${esc(displayAction||'')}</strong></a>`)}
       ${row('Direction', e.direction)}
       ${row('Interface In', e.interface_in)}
       ${row('Interface Out', e.interface_out)}
@@ -3386,7 +3409,7 @@ async function showLogDetail(id) {
     backdrop.innerHTML = `<div class="modal" role="dialog" aria-modal="true">
       <div class="modal-hdr">
         <h2>&#x1F4CB; Log Entry #${e.id}
-          ${e.action ? `<span style="margin-left:10px" class="sev sev-${e.severity<=2?0:e.severity<=3?3:4}">${esc(e.action)}</span>` : ''}
+          ${displayAction ? `<span style="margin-left:10px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;background:${displayAction==='ALLOW'?'rgba(63,185,80,.2)':'rgba(248,81,73,.2)'};color:${displayAction==='ALLOW'?'#3fb950':'#f85149'}">${esc(displayAction)}</span>` : ''}
         </h2>
         <div style="display:flex;gap:8px;align-items:center">
           <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">&#x1F50D; Filter source</button>
