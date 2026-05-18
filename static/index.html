@@ -3278,6 +3278,30 @@ function setup() {
 
 // ── Log entry detail modal ────────────────────────────────────────────────────
 
+// Re-parse a raw UDM/iptables firewall message in the browser so old log entries
+// (stored before the normalizer fix) still show full field details.
+function _parseFirewallRaw(msg) {
+  if (!msg || (!msg.includes('SRC=') && !msg.includes('DST='))) return null;
+  const result = {};
+
+  // KEY="quoted value" — handles DESCR="Block IoT to Internal zones"
+  for (const m of msg.matchAll(/(\w+)="([^"]*)"/g))
+    result[m[1].toLowerCase()] = m[2];
+
+  // KEY=value (non-quoted, non-empty) — skip keys already captured
+  for (const m of msg.matchAll(/(\w+)=([^\s"]\S*)/g)) {
+    const k = m[1].toLowerCase();
+    if (!(k in result)) result[k] = m[2];
+  }
+
+  // Standalone TCP/IP flags (words not preceded/followed by = or word chars)
+  const flagHits = [...msg.matchAll(/(?<![=\w])(SYN|ACK|FIN|RST|URG|PSH|ECE|CWR|DF|MF)(?![=\w])/g)]
+    .map(m => m[1]);
+  if (flagHits.length) result.flags = [...new Set(flagHits)].join(' ');
+
+  return Object.keys(result).length ? result : null;
+}
+
 // Human-readable labels for known extra field keys
 const _EXTRA_LABELS = {
   descr:'Rule Description', len:'Packet Length', ttl:'TTL', tos:'Type of Service',
@@ -3306,7 +3330,12 @@ async function showLogDetail(id) {
     const e = await apiFetch(`/api/logs/${id}`);
     if (!e) return;
     const sev = e.severity_name ?? e.severity;
-    const x = e.extra || {};
+
+    // Merge stored extra fields with a live re-parse of the raw message.
+    // This ensures old entries (stored before the normalizer fix) still show
+    // DESCR, SEQ, ACK, flags, MARK, PREC, URGP, etc.
+    const rawParsed = _parseFirewallRaw(e.raw || e.message || '');
+    const x = Object.assign({}, rawParsed || {}, e.extra || {});
 
     const row = (label, val, inner='') => (val != null && val !== '')
       ? `<div class="dk">${label}</div><div class="dv">${inner || esc(String(val))}</div>` : '';
@@ -3338,12 +3367,12 @@ async function showLogDetail(id) {
       ${row('MAC Address', e.mac_address)}` : '';
 
     // ── IP layer fields ───────────────────────────────────────────────────
-    const ipFields = ['len','ttl','tos','prec','id','mark'].filter(k => x[k]);
+    const ipFields = ['len','ttl','tos','prec','id','mark','urgp'].filter(k => x[k]);
     const ipSection = ipFields.length
       ? `${sec('IP Layer')}${ipFields.map(k => kv(_extraLabel(k), x[k])).join('')}` : '';
 
     // ── Transport layer (TCP/UDP) ─────────────────────────────────────────
-    const tcpFields = ['seq','ack','window','urgp'].filter(k => x[k]);
+    const tcpFields = ['seq','ack','window'].filter(k => x[k] != null && x[k] !== '');
     const flagsRow  = x.flags ? kv('TCP/IP Flags', x.flags) : '';
     const tcpSection = (tcpFields.length || flagsRow)
       ? `${sec('Transport Layer')}${flagsRow}${tcpFields.map(k => kv(_extraLabel(k), x[k])).join('')}` : '';
