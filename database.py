@@ -805,6 +805,20 @@ def get_stats(db: Session) -> dict:
         .limit(10)
         .all()
     )
+    by_action = (
+        db.query(SyslogEntry.action, func.count(SyslogEntry.id))
+        .filter(SyslogEntry.action.isnot(None))
+        .group_by(SyslogEntry.action)
+        .all()
+    )
+    by_event_type = (
+        db.query(SyslogEntry.event_type, func.count(SyslogEntry.id))
+        .filter(SyslogEntry.event_type.isnot(None))
+        .group_by(SyslogEntry.event_type)
+        .order_by(func.count(SyslogEntry.id).desc())
+        .limit(8)
+        .all()
+    )
     return {
         "total_entries": total,
         "oldest_entry": oldest.isoformat() if oldest else None,
@@ -814,4 +828,6 @@ def get_stats(db: Session) -> dict:
             for s, c in by_severity
         ],
         "top_sources": [{"ip": ip, "count": c} for ip, c in by_source],
+        "by_action": [{"action": a, "count": c} for a, c in by_action],
+        "by_event_type": [{"event_type": et, "count": c} for et, c in by_event_type],
     }

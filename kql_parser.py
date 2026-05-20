@@ -42,25 +42,28 @@ def _fmap():
     """Lazy import — avoids circular dependency with database.py."""
     from database import SyslogEntry as E
     return {
-        "source_ip":  (E.source_ip,  "ip"),
-        "src_ip":     (E.src_ip,     "ip"),
-        "dst_ip":     (E.dst_ip,     "ip"),
-        "hostname":   (E.hostname,   "text"),
-        "host":       (E.hostname,   "text"),
-        "message":    (E.message,    "text"),
-        "msg":        (E.message,    "text"),
-        "severity":   (E.severity,   "severity"),
-        "sev":        (E.severity,   "severity"),
-        "facility":   (E.facility,   "int"),
-        "action":     (E.action,     "exact"),
-        "protocol":   (E.protocol,   "itext"),
-        "proto":      (E.protocol,   "itext"),
-        "dst_port":   (E.dst_port,   "int"),
-        "port":       (E.dst_port,   "int"),
-        "event_type": (E.event_type, "exact"),
-        "type":       (E.event_type, "exact"),
-        "app":        (E.app_name,   "text"),
-        "app_name":   (E.app_name,   "text"),
+        "source_ip":   (E.source_ip,   "ip"),
+        "src_ip":      (E.src_ip,      "ip"),
+        "dst_ip":      (E.dst_ip,      "ip"),
+        "hostname":    (E.hostname,    "text"),
+        "host":        (E.hostname,    "text"),
+        "message":     (E.message,     "text"),
+        "msg":         (E.message,     "text"),
+        "severity":    (E.severity,    "severity"),
+        "sev":         (E.severity,    "severity"),
+        "facility":    (E.facility,    "int"),
+        "action":      (E.action,      "exact"),
+        "protocol":    (E.protocol,    "itext"),
+        "proto":       (E.protocol,    "itext"),
+        "dst_port":    (E.dst_port,    "int"),
+        "port":        (E.dst_port,    "int"),
+        "event_type":  (E.event_type,  "exact"),
+        "type":        (E.event_type,  "exact"),
+        "app":         (E.app_name,    "text"),
+        "app_name":    (E.app_name,    "text"),
+        "received_at": (E.received_at, "datetime"),
+        "timestamp":   (E.received_at, "datetime"),
+        "ts":          (E.received_at, "datetime"),
     }
 
 
@@ -245,6 +248,17 @@ def _build(field: str, val: str, quoted: bool):
     if ftype == "exact":
         return col.ilike(val, escape="\\")
 
+    if ftype == "datetime":
+        from datetime import datetime, timezone
+        op, dt_s = _split_op(val)
+        try:
+            dt = datetime.fromisoformat(dt_s.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return _dtcmp(col, op, dt)
+        except ValueError:
+            return None
+
     if ftype in ("int", "severity"):
         if ftype == "severity":
             stripped = val.lstrip("<>=! ")
@@ -265,6 +279,14 @@ def _split_op(val: str) -> tuple[str, str]:
         if val.startswith(op):
             return op, val[len(op):]
     return "=", val
+
+
+def _dtcmp(col, op: str, dt):
+    return {
+        "=":  col == dt, "!=": col != dt,
+        "<":  col <  dt, "<=": col <= dt,
+        ">":  col >  dt, ">=": col >= dt,
+    }.get(op, col == dt)
 
 
 def _numcmp(col, op: str, num: int):

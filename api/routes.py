@@ -97,6 +97,8 @@ class StatsOut(BaseModel):
     newest_entry: Optional[str]
     by_severity: list
     top_sources: list
+    by_action: list = []
+    by_event_type: list = []
 
 
 class RetentionIn(BaseModel):

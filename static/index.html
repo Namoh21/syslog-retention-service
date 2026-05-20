@@ -45,6 +45,10 @@
   .stat .val{font-size:26px;font-weight:700;color:var(--accent);line-height:1.2;}
   .stat .lbl{font-size:12px;color:var(--muted);margin-top:4px;}
   .stat .delta{font-size:11px;margin-top:4px;}
+  .clickable-stat{cursor:pointer;transition:border-color .15s,box-shadow .15s;}
+  .clickable-stat:hover{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
+  .stat-arrow{opacity:0;margin-left:4px;font-size:12px;color:var(--accent);transition:opacity .15s;}
+  .clickable-stat:hover .stat-arrow{opacity:1;}
 
   /* ── Onboarding checklist ── */
   .checklist{display:flex;flex-direction:column;gap:10px;}
@@ -70,6 +74,10 @@
   th{text-align:left;padding:8px 12px;color:var(--muted);font-weight:600;border-bottom:1px solid var(--border);white-space:nowrap;font-size:12px;}
   td{padding:7px 12px;border-bottom:1px solid rgba(48,54,61,.5);vertical-align:top;}
   tr:hover td{background:rgba(88,166,255,.04);}
+  .clickable-row{cursor:pointer;}
+  .clickable-row:hover td{background:rgba(88,166,255,.10)!important;}
+  .row-arrow{opacity:0;color:var(--accent);font-size:12px;margin-left:6px;transition:opacity .15s;}
+  .clickable-row:hover .row-arrow{opacity:1;}
   .truncate{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   /* ── Severity / event badges ── */
@@ -554,10 +562,16 @@ async function dashboard() {
     const host = location.hostname;
 
     const sevRows = (s.by_severity||[]).map(x =>
-      `<tr><td><span class="sev sev-${x.severity}">${x.name}</span></td><td>${x.count.toLocaleString()}</td></tr>`
+      `<tr class="clickable-row" onclick="qbLaunchLogs('severity:${x.severity}')" title="View logs with severity ${x.name}">
+        <td><span class="sev sev-${x.severity}">${x.name}</span></td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${x.count.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+      </tr>`
     ).join('');
     const srcRows = (s.top_sources||[]).map(x =>
-      `<tr><td style="font-family:monospace">${x.ip}</td><td>${x.count.toLocaleString()}</td></tr>`
+      `<tr class="clickable-row" onclick="qbLaunchLogs('src_ip:${x.ip} OR source_ip:${x.ip}')" title="View logs from ${x.ip}">
+        <td style="font-family:monospace">${x.ip}</td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${x.count.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+      </tr>`
     ).join('');
 
     // Checklist state
@@ -617,20 +631,25 @@ async function dashboard() {
       const bars = buckets.map(b => {
         const h = Math.round((b.total / maxVal) * 40);
         const col = b.blocks > b.allows ? 'var(--danger)' : b.total > 0 ? 'var(--accent)' : 'var(--border)';
-        return `<div title="${b.hour}: ${b.total} events (${b.blocks} blocks)" style="flex:1;height:${Math.max(2,h)}px;background:${col};border-radius:2px;min-width:2px"></div>`;
+        const nextHour = b.hour.replace(/T(\d{2}):00/, (_, hh) => `T${String(Number(hh)+1).padStart(2,'0')}:00`);
+        const clickable = b.total > 0 ? `cursor:pointer;` : '';
+        const onclick = b.total > 0 ? `onclick="qbLaunchLogs('received_at:>=${b.hour} AND received_at:<${nextHour}')"` : '';
+        const label = b.hour.replace('T', ' ') + ` — ${b.total} events (${b.blocks} blocks, ${b.allows} allows)`;
+        return `<div title="${label}" ${onclick} style="${clickable}flex:1;height:${Math.max(2,h)}px;background:${col};border-radius:2px;min-width:2px;transition:opacity .15s" onmouseenter="if(this.style.cursor)this.style.opacity='.7'" onmouseleave="this.style.opacity='1'"></div>`;
       }).join('');
       el.innerHTML = `<div style="display:flex;align-items:flex-end;gap:1px;height:40px">${bars}</div>
         <div style="font-size:10px;color:var(--muted);margin-top:4px;display:flex;justify-content:space-between">
           <span>24h ago</span><span style="color:var(--danger)">&#x25A0; blocks</span><span style="color:var(--accent)">&#x25A0; allows</span><span>now</span>
-        </div>`;
+        </div>
+        <div style="font-size:10px;color:var(--muted);margin-top:2px">Click any bar to view logs for that hour</div>`;
     }).catch(() => {});
 
     render(`
       <div class="page-header"><h1>Dashboard</h1><p>Network logging activity and service status.</p></div>
       ${onboarding}
       <div class="stat-grid">
-        <div class="stat"><div class="val">${total.toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
-        <div class="stat"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry${stalenessHtml}</div></div>
+        <div class="stat clickable-stat" onclick="showPage('logs')" title="View all logs"><div class="val">${total.toLocaleString()}</div><div class="lbl">Total Log Entries <span class="stat-arrow">&#x2192;</span></div></div>
+        <div class="stat clickable-stat" onclick="showPage('logs')" title="View most recent logs"><div class="val" style="color:var(--accent2)">${fmtDate(s.newest_entry)}</div><div class="lbl">Latest Entry${stalenessHtml}<span class="stat-arrow">&#x2192;</span></div></div>
         <div class="stat"><div class="val" style="color:var(--muted)">${fmtDate(s.oldest_entry)}</div><div class="lbl">Oldest Entry</div></div>
       </div>
       <div class="card" style="margin-bottom:16px">
@@ -641,13 +660,40 @@ async function dashboard() {
       <div class="two-col">
         <div class="card">
           <div class="card-title"><span class="icon">&#x26A0;&#xFE0F;</span> Events by Severity</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a row to filter logs</div>
           ${sevRows ? `<div class="tbl-wrap"><table><thead><tr><th>Severity</th><th>Count</th></tr></thead><tbody>${sevRows}</tbody></table></div>`
             : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>Waiting for logs from your UDM</p></div>`}
         </div>
         <div class="card">
           <div class="card-title"><span class="icon">&#x1F5A7;</span> Top Source Devices</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a row to filter logs</div>
           ${srcRows ? `<div class="tbl-wrap"><table><thead><tr><th>IP Address</th><th>Log Count</th></tr></thead><tbody>${srcRows}</tbody></table></div>`
             : `<div class="empty-state" style="padding:24px"><div class="empty-icon" style="font-size:28px">&#x1F4ED;</div><p>No devices seen yet — point your UDM at this server</p></div>`}
+        </div>
+      </div>
+      <div class="two-col">
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x1F6E1;</span> Events by Action</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a row to filter logs</div>
+          ${(s.by_action||[]).length ? `<div class="tbl-wrap"><table><thead><tr><th>Action</th><th>Count</th></tr></thead><tbody>
+            ${(s.by_action||[]).map(x => {
+              const col = x.action==='BLOCK'?'var(--danger)':x.action==='ALLOW'?'var(--accent2)':'var(--muted)';
+              return `<tr class="clickable-row" onclick="qbLaunchLogs('action:${x.action}')" title="View ${x.action} logs">
+                <td><strong style="color:${col}">${x.action}</strong></td>
+                <td style="display:flex;align-items:center;justify-content:space-between">${x.count.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+              </tr>`;
+            }).join('')}
+          </tbody></table></div>` : `<div class="empty-state" style="padding:24px"><p>No action data yet</p></div>`}
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x1F4CB;</span> Event Types</div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Click a row to filter logs</div>
+          ${(s.by_event_type||[]).length ? `<div class="tbl-wrap"><table><thead><tr><th>Type</th><th>Count</th></tr></thead><tbody>
+            ${(s.by_event_type||[]).map(x => `<tr class="clickable-row" onclick="qbLaunchLogs('event_type:${x.event_type}')" title="View ${x.event_type} logs">
+              <td style="font-family:monospace;font-size:12px">${x.event_type}</td>
+              <td style="display:flex;align-items:center;justify-content:space-between">${x.count.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+            </tr>`).join('')}
+          </tbody></table></div>` : `<div class="empty-state" style="padding:24px"><p>No event type data yet</p></div>`}
         </div>
       </div>
       ${hasLogs ? `<div class="checklist" style="margin-top:0">${checkAI}${checkAPI}</div>` : ''}
@@ -682,6 +728,7 @@ const QB_FIELDS = [
   {id:'event_type',label:'Event Type',         type:'enum',     group:'Firewall',
      values:['firewall_block','firewall_allow','ids_alert','threat_block','auth_failure',
              'auth_success','dhcp_ack','vpn_connect','vpn_disconnect','dns_query','port_scan','unknown']},
+  {id:'received_at', label:'Timestamp',        type:'datetime', group:'Log'},
 ];
 
 const QB_OPS = {
@@ -718,6 +765,12 @@ const QB_OPS = {
     {id:'gte',label:'≥ at least',     kql:(f,v)=>`${f}:>=${v.split(' ')[0]}`},
     {id:'lt', label:'< strictly less',kql:(f,v)=>`${f}:<${v.split(' ')[0]}`},
     {id:'gt', label:'> strictly more',kql:(f,v)=>`${f}:>${v.split(' ')[0]}`},
+  ],
+  datetime:[
+    {id:'gte',label:'≥ on or after',  kql:(f,v)=>`${f}:>=${v}`},
+    {id:'lte',label:'≤ on or before', kql:(f,v)=>`${f}:<=${v}`},
+    {id:'gt', label:'> after',        kql:(f,v)=>`${f}:>${v}`},
+    {id:'lt', label:'< before',       kql:(f,v)=>`${f}:<${v}`},
   ],
 };
 
@@ -842,6 +895,11 @@ function qbFieldChange() {
   if (field.type === 'enum' || field.type === 'severity') {
     const opts = (field.values||[]).map(v=>`<option value="${v}">${v}</option>`).join('');
     vEl.innerHTML = `<label>Value</label><select id="qb-val" style="width:100%">${opts}</select>`;
+  } else if (field.type === 'datetime') {
+    const now = new Date(); now.setSeconds(0,0);
+    const local = new Date(now.getTime() - now.getTimezoneOffset()*60000).toISOString().slice(0,16);
+    vEl.innerHTML = `<label>Value</label><input id="qb-val" type="datetime-local" value="${local}"
+      style="width:100%" onkeydown="if(event.key==='Enter')qbAddFilter()" />`;
   } else {
     const ph = field.type==='ip' ? '192.168.1.1' : field.type==='number' ? '443' : 'value...';
     vEl.innerHTML = `<label>Value</label><input id="qb-val" placeholder="${ph}"
