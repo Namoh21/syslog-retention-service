@@ -518,12 +518,70 @@ function showPage(name) {
 
 function render(html) { document.getElementById('main-content').innerHTML = html; }
 
+// ── Timezone display preference ──────────────────────────────────────────────
+let _displayTZ = localStorage.getItem('display_tz') || 'local';  // 'UTC' or IANA zone or 'local'
+
 function fmtDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
-  const pad = n => String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `+
-         `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  if (isNaN(d.getTime())) return '—';
+  const tz = _displayTZ === 'local' ? Intl.DateTimeFormat().resolvedOptions().timeZone : _displayTZ;
+  try {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: tz,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).format(d).replace(',', '');
+  } catch {
+    // Fallback for invalid tz
+    const pad = n => String(n).padStart(2,'0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} `+
+           `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+}
+
+function tzLabel() {
+  if (_displayTZ === 'UTC') return 'UTC';
+  if (_displayTZ === 'local') return Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return _displayTZ;
+}
+
+function setDisplayTZ(tz) {
+  _displayTZ = tz;
+  localStorage.setItem('display_tz', tz);
+}
+
+function initTZSelect() {
+  const sel = document.getElementById('tz-select');
+  if (!sel) return;
+  // Set saved value; if not found as an option, add it
+  let found = false;
+  for (const opt of sel.options) { if (opt.value === _displayTZ) { opt.selected = true; found = true; break; } }
+  if (!found && _displayTZ !== 'local' && _displayTZ !== 'UTC') {
+    const opt = new Option(_displayTZ, _displayTZ, true, true);
+    sel.add(opt, 1);
+  }
+  previewTZ();
+}
+
+function previewTZ() {
+  const sel = document.getElementById('tz-select');
+  const prev = document.getElementById('tz-preview');
+  if (!sel || !prev) return;
+  const tz = sel.value;
+  const tmpTZ = _displayTZ;
+  _displayTZ = tz;
+  prev.innerHTML = `Example: <strong>${fmtDate(new Date().toISOString())}</strong> <span style="color:var(--accent2)">(${tzLabel()})</span>`;
+  _displayTZ = tmpTZ;
+}
+
+function saveTZ() {
+  const sel = document.getElementById('tz-select');
+  const msg = document.getElementById('tz-msg');
+  if (!sel) return;
+  setDisplayTZ(sel.value);
+  if (msg) { msg.innerHTML = `<div class="alert alert-ok">Timezone saved — all timestamps now show in <strong>${tzLabel()}</strong></div>`; setTimeout(()=>{ if(msg) msg.innerHTML=''; }, 3000); }
 }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 
@@ -1112,7 +1170,7 @@ async function fetchLogs() {
     wrap.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
       <div class="tbl-wrap">
         <table><thead><tr>
-          <th>Timestamp</th><th>Event Type</th><th>Action</th>
+          <th>Timestamp <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th><th>Event Type</th><th>Action</th>
           <th>Src IP</th><th>Dst IP:Port</th><th>Protocol</th>
           <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
         </tr></thead><tbody>${rows}</tbody></table>
@@ -1944,6 +2002,57 @@ async function svcSettings() {
       </div>
 
       <div class="card" style="max-width:560px">
+        <div class="card-title"><span class="icon">&#x1F5D3;</span> Display Settings</div>
+        <div style="margin-bottom:16px">
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Timestamp Timezone</label>
+          <div class="form-row" style="align-items:flex-end;margin-bottom:0">
+            <div class="form-group" style="flex:1;margin-bottom:0">
+              <select id="tz-select" style="width:100%" onchange="previewTZ()">
+                <option value="local">Browser local (${Intl.DateTimeFormat().resolvedOptions().timeZone})</option>
+                <option value="UTC">UTC</option>
+                <optgroup label="Americas">
+                  <option value="America/New_York">America/New_York (ET)</option>
+                  <option value="America/Chicago">America/Chicago (CT)</option>
+                  <option value="America/Denver">America/Denver (MT)</option>
+                  <option value="America/Los_Angeles">America/Los_Angeles (PT)</option>
+                  <option value="America/Anchorage">America/Anchorage (AK)</option>
+                  <option value="Pacific/Honolulu">Pacific/Honolulu (HT)</option>
+                  <option value="America/Toronto">America/Toronto</option>
+                  <option value="America/Vancouver">America/Vancouver</option>
+                  <option value="America/Chicago">America/Chicago</option>
+                  <option value="America/Sao_Paulo">America/Sao_Paulo</option>
+                </optgroup>
+                <optgroup label="Europe">
+                  <option value="Europe/London">Europe/London (GMT/BST)</option>
+                  <option value="Europe/Paris">Europe/Paris (CET)</option>
+                  <option value="Europe/Berlin">Europe/Berlin</option>
+                  <option value="Europe/Amsterdam">Europe/Amsterdam</option>
+                  <option value="Europe/Stockholm">Europe/Stockholm</option>
+                  <option value="Europe/Helsinki">Europe/Helsinki</option>
+                  <option value="Europe/Moscow">Europe/Moscow</option>
+                </optgroup>
+                <optgroup label="Asia / Pacific">
+                  <option value="Asia/Dubai">Asia/Dubai (GST)</option>
+                  <option value="Asia/Kolkata">Asia/Kolkata (IST)</option>
+                  <option value="Asia/Singapore">Asia/Singapore (SGT)</option>
+                  <option value="Asia/Tokyo">Asia/Tokyo (JST)</option>
+                  <option value="Asia/Seoul">Asia/Seoul (KST)</option>
+                  <option value="Asia/Shanghai">Asia/Shanghai (CST)</option>
+                  <option value="Australia/Sydney">Australia/Sydney (AEST)</option>
+                  <option value="Pacific/Auckland">Pacific/Auckland (NZST)</option>
+                </optgroup>
+              </select>
+            </div>
+            <button class="btn btn-primary" onclick="saveTZ()">Save</button>
+          </div>
+          <div id="tz-preview" style="font-size:12px;color:var(--muted);margin-top:8px">
+            Example: ${fmtDate(new Date().toISOString())} <span style="color:var(--accent2)">(${tzLabel()})</span>
+          </div>
+          <div id="tz-msg" style="margin-top:8px"></div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width:560px">
         <div class="card-title"><span class="icon">&#x1F512;</span> Security Architecture</div>
         <ul style="font-size:13px;line-height:2;padding-left:20px;color:var(--text)">
           <li>All API keys and credentials are encrypted with AES-256 (Fernet) in the database</li>
@@ -1962,6 +2071,7 @@ async function svcSettings() {
     `);
     loadSvcConfig();
     loadUpdateInfo();
+    initTZSelect();
   } catch(e) { render(`<div class="alert alert-warn">${e.message}</div>`); }
 }
 
@@ -2309,7 +2419,7 @@ async function fetchAudit() {
     const end = Math.min(auditPage.offset + auditPage.limit, auditPage.total);
     wrap.innerHTML = `<div class="card" style="padding:0;overflow:hidden">
       <div class="tbl-wrap"><table>
-        <thead><tr><th>Timestamp</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
+        <thead><tr><th>Timestamp <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr></thead>
         <tbody>${rows || '<tr><td colspan=5 style="text-align:center;padding:24px;color:var(--muted)">No audit events yet</td></tr>'}</tbody>
       </table></div>
       <div class="pagination" style="padding:10px 16px">
@@ -2412,7 +2522,7 @@ async function runInvestigation() {
       </div>` : ''}
       <div class="card" style="padding:0;overflow:hidden">
         <div style="padding:16px 16px 8px"><div class="card-title" style="margin:0">Recent Events</div></div>
-        <div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Type</th><th>Action</th><th>Destination</th><th>Rule / Message</th></tr></thead>
+        <div class="tbl-wrap"><table><thead><tr><th>Time <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th><th>Type</th><th>Action</th><th>Destination</th><th>Rule / Message</th></tr></thead>
         <tbody>${evRows||'<tr><td colspan=5 style="color:var(--muted);text-align:center;padding:20px">No events</td></tr>'}</tbody></table></div>
       </div>`;
   } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
@@ -3024,7 +3134,7 @@ async function runSimulation() {
       </div>
       ${sampleRows ? `<div class="card" style="padding:0;overflow:hidden">
         <div style="padding:12px 16px 8px"><strong style="font-size:13px">Sample Matching Events</strong></div>
-        <div class="tbl-wrap"><table><thead><tr><th>Time</th><th>Src IP</th><th>Dst IP:Port</th><th>Proto</th><th>Action</th><th>Rule</th></tr></thead>
+        <div class="tbl-wrap"><table><thead><tr><th>Time <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th><th>Src IP</th><th>Dst IP:Port</th><th>Proto</th><th>Action</th><th>Rule</th></tr></thead>
         <tbody>${sampleRows}</tbody></table></div>
       </div>` : ''}`;
   } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
