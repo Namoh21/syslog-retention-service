@@ -166,8 +166,8 @@ class AiAnalyzeBody(BaseModel):
     @field_validator("agent")
     @classmethod
     def validate_agent(cls, v: str) -> str:
-        from ai_analysis import AGENTS
-        return v if v in AGENTS else "siem_cti"
+        # Allow any non-empty string — custom agents are resolved at analysis time
+        return v if v.strip() else "siem_cti"
 
     @field_validator("hours")
     @classmethod
@@ -655,6 +655,103 @@ async def delete_context_entry(
         db.delete(entry)
         db.commit()
     return {"message": "Entry deleted."}
+
+
+# ===================== Custom Agents =====================
+
+@router.get("/ai/agents", tags=["ai"])
+async def list_agents(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    from ai_analysis import AGENTS
+    from database import CustomAgent
+    result = []
+    # Built-ins
+    for key, cfg in AGENTS.items():
+        # Check if there's a DB override
+        override = db.query(CustomAgent).filter_by(key=key).first()
+        result.append({
+            "key": key,
+            "label": override.label if override else cfg["label"],
+            "description": override.description if override else None,
+            "system_prompt": override.system_prompt if override else cfg["system"],
+            "use_kb_history": override.use_kb_history if override else True,
+            "schema_type": override.schema_type if override else cfg["schema"],
+            "is_builtin": True,
+            "is_overridden": override is not None,
+            "id": override.id if override else None,
+        })
+    # Custom agents (not overrides)
+    customs = db.query(CustomAgent).filter(CustomAgent.key.notin_(list(AGENTS.keys()))).all()
+    for a in customs:
+        result.append({
+            "key": a.key, "label": a.label, "description": a.description,
+            "system_prompt": a.system_prompt, "use_kb_history": a.use_kb_history,
+            "schema_type": a.schema_type, "is_builtin": False, "is_overridden": False, "id": a.id,
+        })
+    return result
+
+
+@router.post("/ai/agents", tags=["ai"])
+async def create_agent(body: dict, db: Session = Depends(get_db), _: User = Depends(require_write)):
+    from database import CustomAgent
+    from ai_analysis import AGENTS
+    import re, datetime
+    key = str(body.get("key", "")).strip()
+    if not key:
+        label = str(body.get("label", "custom")).strip()
+        key = re.sub(r'[^a-z0-9_]', '_', label.lower())[:64]
+    key = key[:64]
+    if not key:
+        raise HTTPException(400, "key required")
+    existing = db.query(CustomAgent).filter_by(key=key).first()
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if existing:
+        existing.label = str(body.get("label", existing.label))[:128]
+        existing.description = body.get("description")
+        existing.system_prompt = str(body.get("system_prompt", existing.system_prompt))
+        existing.use_kb_history = bool(body.get("use_kb_history", existing.use_kb_history))
+        existing.schema_type = str(body.get("schema_type", existing.schema_type))[:32]
+        existing.updated_at = now
+        db.commit()
+        return {"key": existing.key, "id": existing.id}
+    agent = CustomAgent(
+        key=key,
+        label=str(body.get("label", "Custom Agent"))[:128],
+        description=body.get("description"),
+        system_prompt=str(body.get("system_prompt", "")),
+        use_kb_history=bool(body.get("use_kb_history", True)),
+        schema_type=str(body.get("schema_type", "auto"))[:32],
+        created_at=now, updated_at=now,
+    )
+    db.add(agent); db.commit(); db.refresh(agent)
+    return {"key": agent.key, "id": agent.id}
+
+
+@router.delete("/ai/agents/{key}", tags=["ai"])
+async def delete_agent(key: str, db: Session = Depends(get_db), _: User = Depends(require_write)):
+    from database import CustomAgent
+    from ai_analysis import AGENTS
+    if key in AGENTS:
+        # For built-ins, delete the override to restore default
+        db.query(CustomAgent).filter_by(key=key).delete()
+        db.commit()
+        return {"reset": True}
+    agent = db.query(CustomAgent).filter_by(key=key).first()
+    if agent:
+        db.delete(agent); db.commit()
+    return {"deleted": True}
+
+
+@router.post("/ai/kb/from-finding", tags=["ai"])
+async def kb_from_finding(body: dict, db: Session = Depends(get_db), _: User = Depends(require_write)):
+    from database import AIContextEntry
+    entry = AIContextEntry(
+        title=str(body.get("title", "Allowlist Entry"))[:256],
+        category=str(body.get("category", "known_exceptions"))[:64],
+        content=str(body.get("content", ""))[:8000],
+        active=1,
+    )
+    db.add(entry); db.commit(); db.refresh(entry)
+    return {"id": entry.id, "title": entry.title}
 
 
 # ===================== NetFlow =====================

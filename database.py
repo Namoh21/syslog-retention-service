@@ -305,6 +305,20 @@ class AIContextEntry(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class CustomAgent(Base):
+    __tablename__ = "custom_agents"
+    id         = Column(Integer, primary_key=True)
+    key        = Column(String(64), unique=True, nullable=False)   # slug, e.g. "my_agent"
+    label      = Column(String(128), nullable=False)
+    description= Column(Text, nullable=True)
+    system_prompt = Column(Text, nullable=False)
+    use_kb_history = Column(Boolean, default=True)
+    schema_type = Column(String(32), default="auto")  # siem_cti | nre | auto
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                        onupdate=lambda: datetime.now(timezone.utc))
+
+
 class NetFlowRecord(Base):
     """A single IP flow record received from the NetFlow exporter (UDM Pro)."""
     __tablename__ = "netflow_records"
@@ -462,6 +476,26 @@ def _migrate_ai_tables():
         conn.commit()
 
 
+def _migrate_agent_tables():
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "custom_agents" not in existing:
+            conn.execute(text("""
+                CREATE TABLE custom_agents (
+                    id INTEGER PRIMARY KEY,
+                    key VARCHAR(64) UNIQUE NOT NULL,
+                    label VARCHAR(128) NOT NULL,
+                    description TEXT,
+                    system_prompt TEXT NOT NULL,
+                    use_kb_history BOOLEAN DEFAULT 1,
+                    schema_type VARCHAR(32) DEFAULT 'auto',
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )
+            """))
+            conn.commit()
+
+
 def _migrate_secret_key_to_keystore():
     """
     On first run (or after upgrade), move SECRET_KEY from .env into the OS
@@ -516,6 +550,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
     _migrate_ai_tables()
+    _migrate_agent_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

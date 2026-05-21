@@ -566,6 +566,31 @@ END STRUCTURAL EXAMPLE — output must contain ONLY real data from the logs, not
 # Wire SIEM-CTI local example now that it's defined
 AGENTS["siem_cti"]["local_example"] = _LOCAL_EXAMPLE
 
+
+def resolve_agent(agent_key: str, db=None):
+    """Resolve agent config from DB (custom/override) or built-in AGENTS dict."""
+    from database import CustomAgent, SessionLocal
+    own = db is None
+    if own:
+        db = SessionLocal()
+    try:
+        record = db.query(CustomAgent).filter_by(key=agent_key).first()
+        if record:
+            return {
+                "label":         record.label,
+                "system":        record.system_prompt,
+                "local_example": AGENTS.get(record.schema_type, {}).get("local_example") or _LOCAL_EXAMPLE,
+                "schema":        record.schema_type if record.schema_type != "auto" else agent_key,
+                "use_kb_history": record.use_kb_history,
+            }
+    except Exception:
+        pass
+    finally:
+        if own:
+            db.close()
+    cfg = AGENTS.get(agent_key) or AGENTS["siem_cti"]
+    return dict(cfg, use_kb_history=True)
+
 # ── Log formatting ────────────────────────────────────────────────────────────
 
 _MAX_MSG_CHARS = 160
@@ -1158,13 +1183,16 @@ async def analyze_logs(
 
     ai_provider  = get_service_setting("ai_provider") or "anthropic"
     is_local     = ai_provider == "local"
-    agent_cfg    = AGENTS.get(agent) or AGENTS["siem_cti"]
 
+    # Resolve agent — check DB for custom/override, fall back to built-in
     own_session = db is None
     if own_session:
         db = SessionLocal()
+    agent_cfg = resolve_agent(agent, db)
+    use_kb = agent_cfg.get("use_kb_history", True)
+
     try:
-        history_block = _build_history_context(db)
+        history_block = _build_history_context(db) if use_kb else ""
     except Exception as exc:
         logger.warning("History context failed: %s", exc)
         history_block = ""
@@ -1187,8 +1215,8 @@ async def analyze_logs(
         "          Skip any finding that matches a DISMISSED item unconditionally.\n"
         "STEP 3 — Use NETWORK CONTEXT and KNOWLEDGE BASE to classify IOCs and filter\n"
         "          known-good traffic before generating events.\n"
-        "STEP 4 — Analyze the log data below and produce the SIEM-CTI JSON report.\n"
-    ) if history_block else ""
+        "STEP 4 — Analyze the log data below and produce the JSON report.\n"
+    ) if (history_block and use_kb) else ""
 
     user_message = (
         f"{history_block}"

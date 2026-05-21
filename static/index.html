@@ -1410,6 +1410,7 @@ async function ai() {
       <div class="ai-tab active" id="aitab-analyze" onclick="aiShowTab('analyze')">&#x1F916; Analyze</div>
       <div class="ai-tab" id="aitab-history" onclick="aiShowTab('history')">&#x1F4DC; History</div>
       <div class="ai-tab" id="aitab-kb" onclick="aiShowTab('kb')">&#x1F4DA; Knowledge Base</div>
+      <div class="ai-tab" id="aitab-agents" onclick="aiShowTab('agents')">&#x1F916; Agents</div>
     </div>
 
     <!-- Analyze tab -->
@@ -1442,8 +1443,7 @@ async function ai() {
           <div class="form-group">
             <label>Analysis Agent</label>
             <select id="ai-agent" style="width:280px" onchange="localStorage.setItem('ai_last_agent',this.value)">
-              <option value="siem_cti"${savedAgent==='siem_cti'?' selected':''}>&#x1F50D; Cyber Threat Intelligence (SIEM-CTI)</option>
-              <option value="nre"${savedAgent==='nre'?' selected':''}>&#x1F6E0; Network Reliability Engineer (NRE-OPS)</option>
+              <option value="">Loading agents...</option>
             </select>
           </div>
           <div class="form-group"><label>&nbsp;</label>
@@ -1526,6 +1526,11 @@ async function ai() {
         <div id="kb-list"><div style="color:var(--muted);font-size:13px"><span class="spinner"></span> Loading...</div></div>
       </div>
     </div>
+
+    <!-- Agents tab -->
+    <div id="aitab-panel-agents" style="display:none">
+      <div id="agents-list-panel"></div>
+    </div>
   `);
 
   // Load saved network notes
@@ -1535,6 +1540,16 @@ async function ai() {
       document.getElementById('ai-network-notes').value = nc.content || '';
     }
   } catch(e) { /* non-fatal */ }
+
+  // Load agents into dropdown
+  apiFetch('/api/ai/agents').then(agents => {
+    const sel = document.getElementById('ai-agent');
+    if (!sel || !agents) return;
+    const saved = localStorage.getItem('ai_last_agent') || 'siem_cti';
+    sel.innerHTML = agents.map(a =>
+      `<option value="${esc(a.key)}"${a.key===saved?' selected':''}>${esc(a.label)}${a.is_builtin?' (built-in)':''}</option>`
+    ).join('');
+  }).catch(() => {});
 
   aiUpdateEntryCount();
 
@@ -1575,12 +1590,13 @@ async function ai() {
 }
 
 function aiShowTab(name) {
-  ['analyze','history','kb'].forEach(t => {
+  ['analyze','history','kb','agents'].forEach(t => {
     document.getElementById(`aitab-${t}`).classList.toggle('active', t===name);
     document.getElementById(`aitab-panel-${t}`).style.display = t===name ? '' : 'none';
   });
   if (name === 'history') loadAiHistory();
   if (name === 'kb') loadKbEntries();
+  if (name === 'agents') agentsLoadList();
 }
 
 async function aiUpdateEntryCount() {
@@ -2039,6 +2055,244 @@ function _resumeActiveJob() {
 }
 
 let _lastAnalysisRaw = null;   // kept for export
+let _currentAnalysisEvents = [];  // raw event objects from most recent analysis
+
+// ── Agent management UI ───────────────────────────────────────────────────────
+
+async function agentsLoadList() {
+  const panel = document.getElementById('agents-list-panel');
+  if (!panel) return;
+  panel.innerHTML = '<div class="spinner"></div>';
+  const agents = await apiFetch('/api/ai/agents').catch(() => []);
+  const builtins = agents.filter(a => a.is_builtin);
+  const custom = agents.filter(a => !a.is_builtin);
+
+  panel.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div>
+        <div style="font-size:16px;font-weight:700">Analysis Agents</div>
+        <div style="font-size:12px;color:var(--muted)">Create custom agents or modify built-in prompts</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="agentEditor(null)">+ New Agent</button>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F3E0; Built-in Agents</div>
+      ${builtins.map(a => `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px">${esc(a.label)}</div>
+            <div style="font-size:11px;color:var(--muted)">Key: ${esc(a.key)} · Schema: ${esc(a.schema_type)} · KB/History: ${a.use_kb_history?'✓ On':'✗ Off'}${a.is_overridden?' · <span style="color:#e67e22">Custom prompt active</span>':''}</div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="agentEditor('${esc(a.key)}')">Edit Prompt</button>
+          ${a.is_overridden ? `<button class="btn btn-ghost btn-sm" style="color:#e74c3c" onclick="agentReset('${esc(a.key)}')">Reset</button>` : ''}
+        </div>`).join('')}
+    </div>
+
+    ${custom.length ? `<div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x2728; Custom Agents</div>
+      ${custom.map(a => `
+        <div style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+          <div style="flex:1">
+            <div style="font-weight:600;font-size:14px">${esc(a.label)}</div>
+            <div style="font-size:11px;color:var(--muted)">Key: ${esc(a.key)} · Schema: ${esc(a.schema_type)} · KB/History: ${a.use_kb_history?'✓ On':'✗ Off'}</div>
+            ${a.description ? `<div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(a.description)}</div>` : ''}
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="agentEditor('${esc(a.key)}')">Edit</button>
+          <button class="btn btn-ghost btn-sm" style="color:#e74c3c" onclick="agentDelete('${esc(a.key)}')">Delete</button>
+        </div>`).join('')}
+    </div>` : ''}
+
+    <div id="agent-editor-container"></div>
+  `;
+}
+
+async function agentEditor(key) {
+  let agent = null;
+  if (key) {
+    const agents = await apiFetch('/api/ai/agents').catch(() => []);
+    agent = agents.find(a => a.key === key);
+  }
+
+  const container = document.getElementById('agent-editor-container') || document.getElementById('agents-list-panel');
+  if (!container) return;
+
+  const isBuiltin = agent?.is_builtin;
+  const title = key ? (isBuiltin ? `Edit Prompt — ${agent.label}` : `Edit — ${agent.label}`) : 'New Agent';
+
+  container.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">${esc(title)}</div>
+      ${!isBuiltin ? `
+      <div class="form-row" style="margin-bottom:12px">
+        <div class="form-group" style="flex:2">
+          <label>Display Name</label>
+          <input id="age-label" value="${esc(agent?.label||'')}" placeholder="e.g. Threat Hunter" style="width:100%" maxlength="128" />
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>Key (auto-generated)</label>
+          <input id="age-key" value="${esc(key||'')}" placeholder="auto" style="width:100%" maxlength="64" />
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Description (optional)</label>
+        <input id="age-desc" value="${esc(agent?.description||'')}" style="width:100%" maxlength="256" placeholder="What does this agent specialize in?" />
+      </div>` : ''}
+      <div class="form-group" style="margin-bottom:12px">
+        <label>Output Schema <span style="font-weight:400;color:var(--muted)">(which renderer the SIEM uses for results)</span></label>
+        <select id="age-schema" style="width:260px">
+          <option value="siem_cti"${(agent?.schema_type==='siem_cti')?' selected':''}>SIEM-CTI (IOCs, MITRE ATT&CK, Diamond)</option>
+          <option value="nre"${(agent?.schema_type==='nre')?' selected':''}>NRE-OPS (Service health, reliability)</option>
+          <option value="auto"${(!agent||agent?.schema_type==='auto')?' selected':''}>Auto-detect</option>
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:12px">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="age-kb" ${(!agent||agent?.use_kb_history)?'checked':''} />
+          Use KB &amp; History — inject Knowledge Base, network context, and prior finding statuses into analysis
+        </label>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;margin-left:22px">When enabled: the agent receives your Knowledge Base, resolved/open findings, and network notes before analyzing logs. Closed issues will not be re-raised unless regression is detected.</div>
+      </div>
+      <div class="form-group" style="margin-bottom:16px">
+        <label>System Prompt <span style="font-weight:400;color:var(--muted)">— the full instructions sent to the LLM before the log data</span></label>
+        ${!isBuiltin && !key ? `<div style="margin-bottom:8px;display:flex;gap:8px;flex-wrap:wrap">
+          <span style="font-size:12px;color:var(--muted);align-self:center">Start from:</span>
+          <button class="btn btn-ghost btn-sm" onclick="agentForkFrom('siem_cti')">&#x1F4CB; SIEM-CTI prompt</button>
+          <button class="btn btn-ghost btn-sm" onclick="agentForkFrom('nre')">&#x1F4CB; NRE-OPS prompt</button>
+          <button class="btn btn-ghost btn-sm" onclick="agentForkFrom('blank')">&#x1F4C4; Blank</button>
+        </div>` : ''}
+        <textarea id="age-prompt" style="width:100%;min-height:380px;background:var(--bg);border:1px solid var(--border);color:var(--text);padding:10px;border-radius:var(--radius);font-size:12px;font-family:monospace;resize:vertical;outline:none"
+          onfocus="this.style.borderColor='var(--accent)'" onblur="this.style.borderColor='var(--border)'"
+        >${esc(agent?.system_prompt||'')}</textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-ghost" onclick="agentsLoadList()">Cancel</button>
+        <button class="btn btn-primary" onclick="agentSave('${esc(key||'')}')">&#x1F4BE; Save Agent</button>
+      </div>
+    </div>
+  `;
+}
+
+async function agentForkFrom(sourceKey) {
+  if (sourceKey === 'blank') {
+    const ta = document.getElementById('age-prompt');
+    if (ta) ta.value = '';
+    return;
+  }
+  const agents = await apiFetch('/api/ai/agents').catch(() => []);
+  const src = agents.find(a => a.key === sourceKey);
+  const ta = document.getElementById('age-prompt');
+  if (ta && src) ta.value = src.system_prompt;
+}
+
+async function agentSave(key) {
+  const label    = document.getElementById('age-label')?.value?.trim() || '';
+  const keyInput = document.getElementById('age-key')?.value?.trim() || '';
+  const desc     = document.getElementById('age-desc')?.value?.trim() || '';
+  const schema   = document.getElementById('age-schema')?.value || 'auto';
+  const useKb    = document.getElementById('age-kb')?.checked ?? true;
+  const prompt   = document.getElementById('age-prompt')?.value?.trim() || '';
+
+  if (!prompt) { alert('System prompt is required.'); return; }
+
+  const body = {
+    key: keyInput || key || undefined,
+    label: label || key,
+    description: desc || undefined,
+    system_prompt: prompt,
+    use_kb_history: useKb,
+    schema_type: schema,
+  };
+
+  try {
+    await apiFetch('/api/ai/agents', { method: 'POST', body: JSON.stringify(body) });
+    // Reload agent dropdown
+    apiFetch('/api/ai/agents').then(agents => {
+      const sel = document.getElementById('ai-agent');
+      if (!sel || !agents) return;
+      const saved = localStorage.getItem('ai_last_agent') || 'siem_cti';
+      sel.innerHTML = agents.map(a =>
+        `<option value="${esc(a.key)}"${a.key===saved?' selected':''}>${esc(a.label)}${a.is_builtin?' (built-in)':''}</option>`
+      ).join('');
+    });
+    agentsLoadList();
+  } catch(e) { alert('Save failed: ' + e.message); }
+}
+
+async function agentDelete(key) {
+  if (!confirm(`Delete agent "${key}"? This cannot be undone.`)) return;
+  await apiFetch(`/api/ai/agents/${encodeURIComponent(key)}`, { method: 'DELETE' }).catch(e => alert(e.message));
+  agentsLoadList();
+  apiFetch('/api/ai/agents').then(agents => {
+    const sel = document.getElementById('ai-agent');
+    if (!sel || !agents) return;
+    const saved = localStorage.getItem('ai_last_agent') || 'siem_cti';
+    sel.innerHTML = agents.map(a =>
+      `<option value="${esc(a.key)}"${a.key===saved?' selected':''}>${esc(a.label)}${a.is_builtin?' (built-in)':''}</option>`
+    ).join('');
+  });
+}
+
+async function agentReset(key) {
+  if (!confirm(`Reset "${key}" to its built-in default prompt? Your edits will be lost.`)) return;
+  await apiFetch(`/api/ai/agents/${encodeURIComponent(key)}`, { method: 'DELETE' }).catch(e => alert(e.message));
+  agentsLoadList();
+}
+
+// ── Go Hunt + Add to KB helpers ───────────────────────────────────────────────
+
+function _showAddToKb(idx, btn) {
+  const form = document.getElementById(`kb-form-${idx}`);
+  if (form) form.style.display = form.style.display === 'none' ? 'block' : 'none';
+}
+
+async function _submitAddToKb(idx) {
+  const title   = document.getElementById(`kb-ft-title-${idx}`)?.value?.trim() || 'Allowlist Entry';
+  const category= document.getElementById(`kb-ft-cat-${idx}`)?.value || 'known_exceptions';
+  const content = document.getElementById(`kb-ft-content-${idx}`)?.value?.trim() || '';
+  if (!content) { alert('Please add a description.'); return; }
+  try {
+    await apiFetch('/api/ai/kb/from-finding', {
+      method: 'POST',
+      body: JSON.stringify({ title, category, content })
+    });
+    const form = document.getElementById(`kb-form-${idx}`);
+    if (form) {
+      form.innerHTML = '<div style="color:#3fb950;font-size:12px;padding:4px">&#x2713; Added to Knowledge Base</div>';
+      setTimeout(() => { form.style.display = 'none'; }, 2000);
+    }
+  } catch(e) { alert('Failed to save: ' + e.message); }
+}
+
+function _goHunt(idx) {
+  const ev = _currentAnalysisEvents[idx];
+  if (!ev) return;
+  const parts = [];
+
+  // SIEM-CTI: extract from IOCs
+  if (ev.iocs) {
+    const ips = (ev.iocs||[]).filter(i=>i.type==='ip').map(i=>i.value);
+    if (ips.length) parts.push(ips.map(ip=>`src_ip:${ip} OR dst_ip:${ip}`).join(' OR '));
+  }
+
+  // NRE: extract service + host
+  if (ev.service) parts.push(`app_name:*${ev.service}*`);
+  if (ev.host) {
+    const isIp = /^\d+\.\d+\.\d+\.\d+$/.test(ev.host);
+    parts.push(isIp ? `log_source_ip:${ev.host}` : `hostname:*${ev.host}*`);
+  }
+
+  // Extract IPs from raw_log_excerpt or detail if nothing found yet
+  if (!parts.length) {
+    const text = ev.raw_log_excerpt || ev.detail || '';
+    const ipRe = /\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\b/g;
+    const ips = [...text.matchAll(ipRe)].map(m=>m[1]).filter((v,i,a)=>a.indexOf(v)===i).slice(0,3);
+    if (ips.length) parts.push(ips.map(ip=>`src_ip:${ip} OR dst_ip:${ip}`).join(' OR '));
+  }
+
+  const kql = parts.join(' OR ');
+  qbLaunchLogs(kql);
+}
 
 function exportAnalysisRaw() {
   if (!_lastAnalysisRaw) return;
@@ -2113,6 +2367,34 @@ function _renderFindingCard(f, i, recId, existingStatus, existingNote, existingP
           onblur="saveRecNote(${recId||'null'},this.value,${i})"
         >${esc(existingNote||'')}</textarea>
         <span class="finding-note-saved" id="note-saved-${rid}">Saved ✓</span>
+        <div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+          <button class="btn btn-ghost btn-sm" onclick="_goHunt(${i})">&#x1F50E; Go Hunt</button>
+          <button class="btn btn-ghost btn-sm" onclick="_showAddToKb(${i},this)">&#x1F4CB; Add to KB</button>
+        </div>
+        <div class="add-to-kb-form" id="kb-form-${i}" style="display:none;margin-top:10px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px">
+          <div style="font-size:12px;font-weight:600;margin-bottom:8px">Add to Knowledge Base (Allowlist)</div>
+          <div style="margin-bottom:8px">
+            <label style="font-size:11px;color:var(--muted)">Title</label>
+            <input id="kb-ft-title-${i}" style="width:100%;margin-top:2px" value="${esc(f.title||'')}" maxlength="256" />
+          </div>
+          <div style="margin-bottom:8px">
+            <label style="font-size:11px;color:var(--muted)">Category</label>
+            <select id="kb-ft-cat-${i}" style="width:100%;margin-top:2px">
+              <option value="known_exceptions">Known Exceptions</option>
+              <option value="devices">Devices</option>
+              <option value="security_policies">Security Policies</option>
+              <option value="custom">Custom</option>
+            </select>
+          </div>
+          <div style="margin-bottom:10px">
+            <label style="font-size:11px;color:var(--muted)">Description (what to tell the agent)</label>
+            <textarea id="kb-ft-content-${i}" style="width:100%;min-height:60px;background:var(--bg2,var(--bg));border:1px solid var(--border);color:var(--text);padding:6px 8px;border-radius:4px;font-size:12px;font-family:inherit;resize:vertical;margin-top:2px">${esc('This activity is expected and should not be flagged: ' + (f.title||'') + (f.detail ? '\n\nDetail: ' + f.detail.slice(0,300) : ''))}</textarea>
+          </div>
+          <div style="display:flex;gap:6px;justify-content:flex-end">
+            <button class="btn btn-ghost btn-sm" onclick="document.getElementById('kb-form-${i}').style.display='none'">Cancel</button>
+            <button class="btn btn-primary btn-sm" onclick="_submitAddToKb(${i})">&#x2713; Save to KB</button>
+          </div>
+        </div>
       </div>
     </div>`;
 }
@@ -2403,6 +2685,7 @@ function _renderSiemCti(d, out) {
     ${actionsHtml}
   `;
 
+  _currentAnalysisEvents = events;  // raw SIEM-CTI event objects
   _populateFindingCards(findingsForCards, analysisId, 'ai-findings-container');
 }
 
@@ -2614,6 +2897,7 @@ function _renderNre(d, out) {
     ${actionsHtml}
   `;
 
+  _currentAnalysisEvents = events;  // raw NRE service_event objects
   _populateFindingCards(findingsForCards, analysisId, 'ai-findings-container');
 }
 
