@@ -296,47 +296,135 @@ async def _call_local_llm(
 
 def _extract_json(text: str) -> dict:
     """
-    Robustly extract a JSON object from LLM output.
+    Robustly extract a JSON object from LLM output, then normalise field names.
     Handles: valid JSON, markdown code fences, JSON buried in prose,
-    trailing commas, and single-quoted keys.
-    Falls back to {"summary": text, "raw": True} if nothing works.
+    trailing commas. Falls back to {"summary": text, "raw": True}.
     """
     import json as _json
     import re as _re
 
-    # 1. Direct parse
-    try:
-        return _json.loads(text)
-    except _json.JSONDecodeError:
-        pass
-
-    # 2. Strip markdown code fences (```json ... ``` or ``` ... ```)
-    stripped = text.strip()
-    fence = _re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped)
-    if fence:
+    def _try_parse(s: str):
         try:
-            return _json.loads(fence.group(1).strip())
+            return _json.loads(s)
         except _json.JSONDecodeError:
-            pass
-
-    # 3. Find the outermost { ... } block anywhere in the text
-    start = text.find("{")
-    end   = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = text[start: end + 1]
-        try:
-            return _json.loads(candidate)
-        except _json.JSONDecodeError:
-            # 4. Fix trailing commas before ] or } (common local LLM mistake)
-            fixed = _re.sub(r",\s*([}\]])", r"\1", candidate)
+            # Fix trailing commas before ] or }
+            fixed = _re.sub(r",\s*([}\]])", r"\1", s)
             try:
                 return _json.loads(fixed)
             except _json.JSONDecodeError:
-                pass
+                return None
 
-    # 5. Nothing worked — return raw so the UI shows the plain-text fallback
-    logger.warning("Could not extract JSON from LLM response (%d chars). Returning raw.", len(text))
-    return {"summary": text, "raw": True}
+    # 1. Direct parse
+    obj = _try_parse(text)
+    if obj is None:
+        # 2. Strip markdown code fences
+        fence = _re.search(r"```(?:json)?\s*([\s\S]*?)```", text.strip())
+        if fence:
+            obj = _try_parse(fence.group(1).strip())
+
+    if obj is None:
+        # 3. Find outermost { ... } block
+        start, end = text.find("{"), text.rfind("}")
+        if start != -1 and end > start:
+            obj = _try_parse(text[start: end + 1])
+
+    if not isinstance(obj, dict):
+        logger.warning("Could not extract JSON from LLM response (%d chars). Returning raw.", len(text))
+        return {"summary": text, "raw": True}
+
+    logger.debug("LLM JSON keys returned: %s", list(obj.keys()))
+    return _normalise(obj)
+
+
+def _normalise(obj: dict) -> dict:
+    """
+    Map common alternative field names used by local LLMs to the canonical schema.
+    Also normalises nested findings fields.
+    """
+    # ── Top-level field aliases ────────────────────────────────────────────────
+    _SUMMARY_KEYS = [
+        "summary", "executive_summary", "overview", "analysis_summary",
+        "description", "analysis", "result", "report", "conclusion",
+    ]
+    _THREAT_KEYS = [
+        "threat_level", "risk_level", "severity", "threat_assessment",
+        "overall_threat", "risk", "overall_risk", "threat", "level",
+        "overall_severity", "threat_rating", "risk_rating",
+    ]
+    _FINDINGS_KEYS = [
+        "findings", "security_findings", "issues", "vulnerabilities",
+        "alerts", "observations", "security_issues", "threats",
+        "security_alerts", "events", "results",
+    ]
+    _IMMEDIATE_KEYS = [
+        "immediate_actions", "immediate_recommendations", "urgent_actions",
+        "action_items", "actions", "urgent_recommendations", "critical_actions",
+        "priority_actions", "next_steps",
+    ]
+    _LONGTERM_KEYS = [
+        "long_term_recommendations", "recommendations", "long_term",
+        "strategic_recommendations", "long_term_actions", "future_recommendations",
+        "additional_recommendations", "ongoing_recommendations",
+    ]
+
+    def _pick(keys):
+        for k in keys:
+            if obj.get(k):
+                return obj[k]
+        return None
+
+    # ── Threat level normalisation ─────────────────────────────────────────────
+    raw_tl = _pick(_THREAT_KEYS) or ""
+    tl_map = {
+        "critical": "CRITICAL", "crit": "CRITICAL",
+        "high": "HIGH",
+        "medium": "MEDIUM", "moderate": "MEDIUM", "med": "MEDIUM",
+        "low": "LOW",
+        "info": "LOW", "informational": "LOW", "minimal": "LOW",
+    }
+    threat_level = tl_map.get(str(raw_tl).lower().strip(), str(raw_tl).upper().strip() or "UNKNOWN")
+    if threat_level not in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+        threat_level = "UNKNOWN"
+
+    # ── Findings normalisation ─────────────────────────────────────────────────
+    raw_findings = _pick(_FINDINGS_KEYS) or []
+    if isinstance(raw_findings, dict):
+        raw_findings = list(raw_findings.values())
+    findings = []
+    for f in (raw_findings if isinstance(raw_findings, list) else []):
+        if not isinstance(f, dict):
+            continue
+        # Severity aliases
+        sev_raw = (f.get("severity") or f.get("level") or f.get("risk") or f.get("priority") or "INFO")
+        sev_map = {"critical": "CRITICAL", "high": "HIGH", "medium": "MEDIUM",
+                   "moderate": "MEDIUM", "low": "LOW", "info": "INFO",
+                   "informational": "INFO", "minimal": "LOW"}
+        severity = sev_map.get(str(sev_raw).lower().strip(), str(sev_raw).upper())
+        if severity not in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            severity = "INFO"
+
+        findings.append({
+            "severity":       severity,
+            "title":          (f.get("title") or f.get("name") or f.get("issue") or f.get("finding") or "Finding"),
+            "detail":         (f.get("detail") or f.get("description") or f.get("details") or f.get("explanation") or ""),
+            "recommendation": (f.get("recommendation") or f.get("remediation") or f.get("action") or f.get("fix") or f.get("mitigation") or ""),
+        })
+
+    # ── List fields ────────────────────────────────────────────────────────────
+    def _to_list(v):
+        if isinstance(v, list):
+            return [str(i) for i in v if i]
+        if isinstance(v, str) and v:
+            return [v]
+        return []
+
+    return {
+        "summary":                  (_pick(_SUMMARY_KEYS) or ""),
+        "threat_level":             threat_level,
+        "findings":                 findings,
+        "immediate_actions":        _to_list(_pick(_IMMEDIATE_KEYS)),
+        "long_term_recommendations": _to_list(_pick(_LONGTERM_KEYS)),
+    }
 
 
 async def analyze_logs(
@@ -416,6 +504,7 @@ async def analyze_logs(
             logger.error("Anthropic API error: %s", exc)
             return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}
 
+    logger.debug("Raw LLM response (first 500 chars): %s", raw_text[:500])
     analysis = _extract_json(raw_text)
 
     result = {
