@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from config import settings
 from database import init_db, SessionLocal, purge_old_entries, _resolved_db_path
 from syslog_listener import start_udp_listener, start_tcp_listener
+from netflow_listener import start_netflow_listener
 from api.routes import router
 
 logging.basicConfig(
@@ -38,6 +39,7 @@ logger = logging.getLogger("main")
 
 _udp_transport = None
 _tcp_server = None
+_netflow_transport = None
 _background_tasks: list[asyncio.Task] = []
 
 # ── Login rate limiter ────────────────────────────────────────────────────────
@@ -88,7 +90,7 @@ async def _scheduled_purge():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _udp_transport, _tcp_server
+    global _udp_transport, _tcp_server, _netflow_transport
 
     try:
         init_db()
@@ -121,6 +123,12 @@ async def lifespan(app: FastAPI):
     except OSError as exc:
         logger.warning("TCP listener failed (port %d): %s", settings.syslog_tcp_port, exc)
 
+    if settings.netflow_enabled:
+        try:
+            _netflow_transport = await start_netflow_listener(settings.netflow_host, settings.netflow_port)
+        except OSError as exc:
+            logger.warning("NetFlow listener failed (port %d): %s — set NETFLOW_ENABLED=false to disable", settings.netflow_port, exc)
+
     from alert_engine import run_alert_engine
     _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))
     _background_tasks.append(asyncio.create_task(run_alert_engine(), name="alert_engine"))
@@ -149,6 +157,8 @@ async def lifespan(app: FastAPI):
 
     if _udp_transport:
         _udp_transport.close()
+    if _netflow_transport:
+        _netflow_transport.close()
     if _tcp_server:
         _tcp_server.close()
         try:

@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     # Example: "192.168.1.0/24,10.0.0.0/8"
     allowed_syslog_sources: str = ""
 
+    # NetFlow collector
+    netflow_enabled: bool = True
+    netflow_host: str = "0.0.0.0"
+    netflow_port: int = 2055   # standard NetFlow / IPFIX port
+
     # Web / API server
     api_host: str = "0.0.0.0"
     api_port: int = 8080

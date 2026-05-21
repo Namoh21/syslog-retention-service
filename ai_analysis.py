@@ -130,6 +130,51 @@ def _build_history_context(db) -> str:
     return "\n".join(lines) if len(lines) > 3 else ""
 
 
+def _build_netflow_context(db, hours: float) -> str:
+    """Summarise recent NetFlow data to include in the AI prompt."""
+    try:
+        from database import NetFlowRecord, SessionLocal
+        from sqlalchemy import func as sqlfunc
+        own = db is None
+        if own:
+            db = SessionLocal()
+        since = datetime.now(timezone.utc) - timedelta(hours=hours)
+        try:
+            total = db.query(sqlfunc.count(NetFlowRecord.id)).filter(NetFlowRecord.received_at >= since).scalar() or 0
+            if total == 0:
+                return ""
+            total_bytes = db.query(sqlfunc.sum(NetFlowRecord.bytes)).filter(NetFlowRecord.received_at >= since).scalar() or 0
+            top_talkers = (
+                db.query(NetFlowRecord.src_ip, sqlfunc.sum(NetFlowRecord.bytes).label("b"))
+                .filter(NetFlowRecord.received_at >= since)
+                .group_by(NetFlowRecord.src_ip).order_by(sqlfunc.sum(NetFlowRecord.bytes).desc()).limit(8).all()
+            )
+            top_ports = (
+                db.query(NetFlowRecord.dst_port, NetFlowRecord.proto_name, sqlfunc.count(NetFlowRecord.id).label("c"))
+                .filter(NetFlowRecord.received_at >= since, NetFlowRecord.dst_port.isnot(None))
+                .group_by(NetFlowRecord.dst_port, NetFlowRecord.proto_name)
+                .order_by(sqlfunc.count(NetFlowRecord.id).desc()).limit(8).all()
+            )
+            lines = [f"=== NETFLOW SUMMARY (last {hours}h) ==="]
+            lines.append(f"Total flows: {total:,}  |  Total bytes: {total_bytes:,}")
+            if top_talkers:
+                lines.append("Top bandwidth sources:")
+                for ip, b in top_talkers:
+                    lines.append(f"  {ip}: {b:,} bytes")
+            if top_ports:
+                lines.append("Top destination ports:")
+                for port, proto, c in top_ports:
+                    lines.append(f"  {port}/{proto}: {c:,} flows")
+            lines.append("=== END NETFLOW SUMMARY ===")
+            return "\n".join(lines)
+        finally:
+            if own:
+                db.close()
+    except Exception as exc:
+        logger.debug("NetFlow context build failed: %s", exc)
+        return ""
+
+
 def _save_analysis(db, result: dict, focus: str, hours: int) -> "AIAnalysis | None":
     """Persist an analysis result and its individual findings."""
     import json as _json
@@ -238,6 +283,11 @@ async def analyze_logs(
             db = None
 
     log_text = _format_entries(entries, local_llm=(ai_provider == "local"))
+
+    # Append NetFlow summary if data exists
+    netflow_block = _build_netflow_context(db if not own_session else None, hours)
+    if netflow_block:
+        log_text = netflow_block + "\n\n" + log_text
     focus_safe = focus[:200] if focus else "security threats and anomalies"
     user_message = (
         f"{history_block}"

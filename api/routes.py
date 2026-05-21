@@ -630,6 +630,108 @@ async def delete_context_entry(
     return {"message": "Entry deleted."}
 
 
+# ===================== NetFlow =====================
+
+@router.get("/netflow", tags=["netflow"])
+async def list_netflow(
+    src_ip:    Optional[str] = Query(None),
+    dst_ip:    Optional[str] = Query(None),
+    proto:     Optional[str] = Query(None),
+    dst_port:  Optional[int] = Query(None),
+    since:     Optional[datetime] = Query(None),
+    until:     Optional[datetime] = Query(None),
+    limit:     int = Query(200, ge=1, le=2000),
+    offset:    int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import NetFlowRecord
+    q = db.query(NetFlowRecord)
+    if src_ip:   q = q.filter(NetFlowRecord.src_ip == src_ip)
+    if dst_ip:   q = q.filter(NetFlowRecord.dst_ip == dst_ip)
+    if proto:    q = q.filter(NetFlowRecord.proto_name.ilike(proto))
+    if dst_port: q = q.filter(NetFlowRecord.dst_port == dst_port)
+    if since:    q = q.filter(NetFlowRecord.received_at >= since)
+    if until:    q = q.filter(NetFlowRecord.received_at <= until)
+    total = q.count()
+    rows = q.order_by(NetFlowRecord.received_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total, "offset": offset, "limit": limit,
+        "flows": [
+            {
+                "id":          r.id,
+                "received_at": r.received_at.isoformat() if r.received_at else None,
+                "exporter_ip": r.exporter_ip,
+                "src_ip":      r.src_ip,
+                "dst_ip":      r.dst_ip,
+                "src_port":    r.src_port,
+                "dst_port":    r.dst_port,
+                "protocol":    r.protocol,
+                "proto_name":  r.proto_name,
+                "bytes":       r.bytes,
+                "packets":     r.packets,
+                "tcp_flags":   r.tcp_flags,
+                "flow_start":  r.flow_start.isoformat() if r.flow_start else None,
+                "flow_end":    r.flow_end.isoformat() if r.flow_end else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/netflow/stats", tags=["netflow"])
+async def netflow_stats(
+    hours: int = Query(24, ge=1, le=168),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import NetFlowRecord
+    from sqlalchemy import func as sqlfunc
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(NetFlowRecord).filter(NetFlowRecord.received_at >= since)
+    total_flows   = q.count()
+    total_bytes   = db.query(sqlfunc.sum(NetFlowRecord.bytes)).filter(NetFlowRecord.received_at >= since).scalar() or 0
+    total_packets = db.query(sqlfunc.sum(NetFlowRecord.packets)).filter(NetFlowRecord.received_at >= since).scalar() or 0
+
+    top_src = (
+        db.query(NetFlowRecord.src_ip, sqlfunc.count(NetFlowRecord.id).label("c"))
+        .filter(NetFlowRecord.received_at >= since)
+        .group_by(NetFlowRecord.src_ip).order_by(sqlfunc.count(NetFlowRecord.id).desc()).limit(10).all()
+    )
+    top_dst = (
+        db.query(NetFlowRecord.dst_ip, sqlfunc.count(NetFlowRecord.id).label("c"))
+        .filter(NetFlowRecord.received_at >= since)
+        .group_by(NetFlowRecord.dst_ip).order_by(sqlfunc.count(NetFlowRecord.id).desc()).limit(10).all()
+    )
+    top_ports = (
+        db.query(NetFlowRecord.dst_port, NetFlowRecord.proto_name, sqlfunc.count(NetFlowRecord.id).label("c"))
+        .filter(NetFlowRecord.received_at >= since, NetFlowRecord.dst_port.isnot(None))
+        .group_by(NetFlowRecord.dst_port, NetFlowRecord.proto_name)
+        .order_by(sqlfunc.count(NetFlowRecord.id).desc()).limit(10).all()
+    )
+    top_proto = (
+        db.query(NetFlowRecord.proto_name, sqlfunc.count(NetFlowRecord.id).label("c"))
+        .filter(NetFlowRecord.received_at >= since)
+        .group_by(NetFlowRecord.proto_name).order_by(sqlfunc.count(NetFlowRecord.id).desc()).all()
+    )
+    top_talkers = (
+        db.query(NetFlowRecord.src_ip, sqlfunc.sum(NetFlowRecord.bytes).label("b"))
+        .filter(NetFlowRecord.received_at >= since)
+        .group_by(NetFlowRecord.src_ip).order_by(sqlfunc.sum(NetFlowRecord.bytes).desc()).limit(10).all()
+    )
+    return {
+        "hours": hours,
+        "total_flows":   total_flows,
+        "total_bytes":   total_bytes,
+        "total_packets": total_packets,
+        "top_sources":   [{"ip": r[0], "flows": r[1]} for r in top_src],
+        "top_destinations": [{"ip": r[0], "flows": r[1]} for r in top_dst],
+        "top_ports":     [{"port": r[0], "proto": r[1], "flows": r[2]} for r in top_ports],
+        "top_protocols": [{"proto": r[0], "flows": r[1]} for r in top_proto],
+        "top_talkers":   [{"ip": r[0], "bytes": r[1]} for r in top_talkers],
+    }
+
+
 # ===================== Retention =====================
 
 @router.get("/admin/retention", response_model=RetentionOut, tags=["admin"])
@@ -922,8 +1024,10 @@ async def service_info(_: User = Depends(get_current_user)):
         "version": "1.0.0",
         "syslog_udp_port": settings.syslog_udp_port,
         "syslog_tcp_port": settings.syslog_tcp_port,
-        "claude_model": get_service_setting("claude_model") or settings.claude_model,  # Anthropic model (always)
-        "active_model": active_model,   # effective model for whichever provider is selected
+        "netflow_enabled": settings.netflow_enabled,
+        "netflow_port":    settings.netflow_port,
+        "claude_model": get_service_setting("claude_model") or settings.claude_model,
+        "active_model": active_model,
         "ai_enabled": ai_enabled,
         "ai_provider": ai_provider,
     }

@@ -303,6 +303,29 @@ class AIContextEntry(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class NetFlowRecord(Base):
+    """A single IP flow record received from the NetFlow exporter (UDM Pro)."""
+    __tablename__ = "netflow_records"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    received_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    exporter_ip = Column(String(45), index=True)   # IP of the device sending NetFlow
+    src_ip      = Column(String(45), index=True)
+    dst_ip      = Column(String(45), index=True)
+    src_port    = Column(Integer)
+    dst_port    = Column(Integer, index=True)
+    protocol    = Column(Integer)                  # IP protocol number
+    proto_name  = Column(String(16))               # TCP / UDP / ICMP / etc.
+    bytes       = Column(Integer, default=0)
+    packets     = Column(Integer, default=0)
+    tcp_flags   = Column(Integer)
+    flow_start  = Column(DateTime(timezone=True))
+    flow_end    = Column(DateTime(timezone=True))
+    tos         = Column(Integer)
+    src_as      = Column(Integer)                  # BGP AS number
+    dst_as      = Column(Integer)
+
+
 class IpReputationCache(Base):
     """Cached AbuseIPDB + GeoIP results — avoids re-querying the same IP repeatedly."""
     __tablename__ = "ip_reputation_cache"
@@ -397,6 +420,31 @@ def _migrate_ai_tables():
                     created_at DATETIME,
                     updated_at DATETIME
                 )"""))
+        if "netflow_records" not in existing:
+            conn.execute(text("""
+                CREATE TABLE netflow_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    received_at DATETIME,
+                    exporter_ip VARCHAR(45),
+                    src_ip VARCHAR(45),
+                    dst_ip VARCHAR(45),
+                    src_port INTEGER,
+                    dst_port INTEGER,
+                    protocol INTEGER,
+                    proto_name VARCHAR(16),
+                    bytes INTEGER DEFAULT 0,
+                    packets INTEGER DEFAULT 0,
+                    tcp_flags INTEGER,
+                    flow_start DATETIME,
+                    flow_end DATETIME,
+                    tos INTEGER,
+                    src_as INTEGER,
+                    dst_as INTEGER
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_netflow_received_at ON netflow_records(received_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_netflow_src_ip ON netflow_records(src_ip)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_netflow_dst_ip ON netflow_records(dst_ip)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_netflow_dst_port ON netflow_records(dst_port)"))
         conn.commit()
 
 

@@ -367,6 +367,7 @@
       <li><a onclick="showPage('investigate')" data-page="investigate"><span class="nav-icon">&#x1F50E;</span> Investigate IP</a></li>
       <li><a onclick="showPage('rulehits')" data-page="rulehits"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
       <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
+      <li><a onclick="showPage('netflow')" data-page="netflow"><span class="nav-icon">&#x1F4CA;</span> NetFlow</a></li>
       <li><a onclick="showPage('simulate')" data-page="simulate"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
       <li><a onclick="showPage('policygaps')" data-page="policygaps"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
       <li><a onclick="showPage('alertrules')" data-page="alertrules"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
@@ -580,7 +581,7 @@ function showPage(name) {
     a.classList.toggle('active', a.dataset.page === name));
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
-    investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix',
+    investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
     simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
@@ -591,7 +592,7 @@ function showPage(name) {
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
-    dashboard, logs, ai, investigate, rulehits, trafficmatrix, simulate, policygaps, alertrules,
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
   pages[name]?.();
@@ -801,6 +802,40 @@ async function dashboard() {
         <div style="font-size:10px;color:var(--muted);margin-top:2px">Click any bar to view logs for that hour</div>`;
     }).catch(() => {});
 
+    // Load NetFlow dashboard widget in background
+    apiFetch('/api/netflow/stats?hours=24').then(nf => {
+      const el = document.getElementById('netflow-dash-body');
+      if (!el || !nf) return;
+      if (!nf.total_flows) {
+        el.innerHTML = `<div style="color:var(--muted);font-size:13px">No NetFlow data received yet. Point your UDM to this server on UDP port ${info?.netflow_port||2055}.</div>`;
+        return;
+      }
+      const fmtBytes = b => b >= 1e9 ? (b/1e9).toFixed(1)+'GB' : b >= 1e6 ? (b/1e6).toFixed(1)+'MB' : b >= 1e3 ? (b/1e3).toFixed(1)+'KB' : b+'B';
+      const talkerRows = (nf.top_talkers||[]).map(t =>
+        `<tr class="clickable-row" onclick="showPage('netflow')" title="View NetFlow for ${t.ip}">
+          <td style="font-family:monospace">${t.ip}</td>
+          <td>${fmtBytes(t.bytes)}</td>
+          <td style="display:flex;align-items:center;justify-content:space-between">${(nf.top_talkers[0]?.bytes?Math.round(t.bytes/nf.top_talkers[0].bytes*100):0)}% <span class="row-arrow">&#x2192;</span></td>
+        </tr>`).join('');
+      const portRows = (nf.top_ports||[]).slice(0,5).map(p =>
+        `<tr><td>${p.port}</td><td style="color:var(--muted)">${p.proto}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+      el.innerHTML = `
+        <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nf.total_flows.toLocaleString()}</div><div class="lbl">Flows (24h)</div></div>
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${fmtBytes(nf.total_bytes)}</div><div class="lbl">Total Bytes</div></div>
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nf.total_packets.toLocaleString()}</div><div class="lbl">Packets</div></div>
+        </div>
+        <div class="two-col" style="gap:12px">
+          ${talkerRows ? `<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Talkers (by bytes)</div>
+            <div class="tbl-wrap"><table><thead><tr><th>Source IP</th><th>Bytes</th><th>Share</th></tr></thead><tbody>${talkerRows}</tbody></table></div></div>` : ''}
+          ${portRows ? `<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Ports</div>
+            <div class="tbl-wrap"><table><thead><tr><th>Port</th><th>Proto</th><th>Flows</th></tr></thead><tbody>${portRows}</tbody></table></div></div>` : ''}
+        </div>`;
+    }).catch(() => {
+      const el = document.getElementById('netflow-dash-body');
+      if (el) el.innerHTML = `<div style="color:var(--muted);font-size:12px">NetFlow not available.</div>`;
+    });
+
     render(`
       <div class="page-header"><h1>Dashboard</h1><p>Network logging activity and service status.</p></div>
       ${onboarding}
@@ -852,6 +887,13 @@ async function dashboard() {
             </tr>`).join('')}
           </tbody></table></div>` : `<div class="empty-state" style="padding:24px"><p>No event type data yet</p></div>`}
         </div>
+      </div>
+      <div class="card" id="netflow-dash-card" style="margin-bottom:16px">
+        <div class="card-title"><span class="icon">&#x1F4CA;</span> NetFlow — Last 24 Hours
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Top traffic flows from your network devices</span>
+          <a onclick="showPage('netflow')" style="margin-left:auto;font-size:12px;color:var(--accent);cursor:pointer">View all &#x2192;</a>
+        </div>
+        <div id="netflow-dash-body"><div style="color:var(--muted);font-size:12px"><span class="spinner"></span> Loading...</div></div>
       </div>
       ${hasLogs ? `<div class="checklist" style="margin-top:0">${checkAI}${checkAPI}</div>` : ''}
     `);
@@ -2967,6 +3009,181 @@ async function loadRuleHits() {
       <tbody>${rows}</tbody></table></div></div>`
       : `<div class="empty-state"><div class="empty-icon">&#x1F6E1;</div><h3>No rule hits yet</h3><p>Firewall rules will appear here once your UDM starts sending logs.</p></div>`;
   } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+// ── NetFlow ───────────────────────────────────────────────────────────────────
+
+const _fmtBytes = b => {
+  if (!b) return '0 B';
+  if (b >= 1e9) return (b/1e9).toFixed(2)+' GB';
+  if (b >= 1e6) return (b/1e6).toFixed(2)+' MB';
+  if (b >= 1e3) return (b/1e3).toFixed(1)+' KB';
+  return b+' B';
+};
+
+let _nfHours = 24, _nfPage = {offset:0, limit:200};
+
+async function netflow() {
+  render(`<div class="page-header"><h1>NetFlow</h1><p>IP flow data collected from your network devices (NetFlow v5/v9/IPFIX).</p></div>
+    <div class="card"><div class="spinner"></div> Loading...</div>`);
+
+  const info = serviceInfo;
+  const port = info?.netflow_port || 2055;
+
+  render(`
+    <div class="page-header">
+      <h1>&#x1F4CA; NetFlow</h1>
+      <p>IP flow records from your UDM Pro or other NetFlow exporters. Shows per-flow source/destination, bytes, packets, and protocol.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title"><span class="icon">&#x1F4F6;</span> NetFlow Setup</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
+        Configure your UDM Pro to export NetFlow to this server. In the UniFi controller:
+        <strong>Settings → Routing → NetFlow</strong> (or <strong>Settings → System → NetFlow</strong> on older firmware).
+      </p>
+      <div class="conn-box">
+        <div class="conn-item"><div class="conn-label">Collector IP</div><div class="conn-val">${location.hostname}</div><div class="conn-note">This server's IP</div></div>
+        <div class="conn-item"><div class="conn-label">Collector Port</div><div class="conn-val">${port}</div><div class="conn-note">UDP — NetFlow v5/v9/IPFIX</div></div>
+        <div class="conn-item"><div class="conn-label">Status</div><div class="conn-val" style="color:var(--accent2)">${info?.netflow_enabled ? 'Listening' : 'Disabled'}</div><div class="conn-note">${info?.netflow_enabled ? 'Ready to receive flows' : 'Set NETFLOW_ENABLED=true'}</div></div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
+        <div class="card-title" style="margin:0">&#x1F4C8; Summary</div>
+        <select id="nf-hours" onchange="_nfHours=parseInt(this.value);nfLoadStats()" style="font-size:12px">
+          <option value="1">Last 1 hour</option>
+          <option value="6">Last 6 hours</option>
+          <option value="24" selected>Last 24 hours</option>
+          <option value="72">Last 3 days</option>
+          <option value="168">Last 7 days</option>
+        </select>
+      </div>
+      <div id="nf-stats"><div class="spinner"></div></div>
+    </div>
+
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="padding:14px 16px 10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div class="card-title" style="margin:0">&#x1F50D; Flow Records</div>
+        <input id="nf-filter-src" placeholder="Filter src IP..." style="width:140px;font-size:12px" oninput="nfLoadFlows()" />
+        <input id="nf-filter-dst" placeholder="Filter dst IP..." style="width:140px;font-size:12px" oninput="nfLoadFlows()" />
+        <select id="nf-filter-proto" style="font-size:12px" onchange="nfLoadFlows()">
+          <option value="">All protocols</option>
+          <option value="TCP">TCP</option>
+          <option value="UDP">UDP</option>
+          <option value="ICMP">ICMP</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" onclick="_nfPage.offset=0;nfLoadFlows()">&#x1F504; Refresh</button>
+      </div>
+      <div id="nf-flows"><div style="padding:20px;color:var(--muted)"><span class="spinner"></span> Loading flows...</div></div>
+    </div>
+  `);
+
+  nfLoadStats();
+  nfLoadFlows();
+}
+
+async function nfLoadStats() {
+  const el = document.getElementById('nf-stats');
+  if (!el) return;
+  const h = _nfHours || 24;
+  try {
+    const d = await apiFetch(`/api/netflow/stats?hours=${h}`);
+    if (!d) return;
+    if (!d.total_flows) {
+      el.innerHTML = `<p style="color:var(--muted);font-size:13px">No NetFlow data for this window. Check your UDM Pro NetFlow export settings.</p>`;
+      return;
+    }
+    const talkers = (d.top_talkers||[]).map(t =>
+      `<tr class="clickable-row" onclick="document.getElementById('nf-filter-src').value='${t.ip}';nfLoadFlows()" title="Filter flows from ${t.ip}">
+        <td style="font-family:monospace">${t.ip}</td>
+        <td>${_fmtBytes(t.bytes)}</td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${t.flows.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+      </tr>`).join('');
+    const dests = (d.top_destinations||[]).map(t =>
+      `<tr class="clickable-row" onclick="document.getElementById('nf-filter-dst').value='${t.ip}';nfLoadFlows()" title="Filter flows to ${t.ip}">
+        <td style="font-family:monospace">${t.ip}</td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${t.flows.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+      </tr>`).join('');
+    const ports = (d.top_ports||[]).map(p =>
+      `<tr><td><strong>${p.port}</strong></td><td style="color:var(--muted)">${p.proto}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+    const protos = (d.top_protocols||[]).map(p =>
+      `<tr><td>${p.proto||'?'}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+    el.innerHTML = `
+      <div class="stat-grid" style="margin-bottom:16px">
+        <div class="stat"><div class="val">${d.total_flows.toLocaleString()}</div><div class="lbl">Total Flows</div></div>
+        <div class="stat"><div class="val">${_fmtBytes(d.total_bytes)}</div><div class="lbl">Total Bytes</div></div>
+        <div class="stat"><div class="val">${d.total_packets.toLocaleString()}</div><div class="lbl">Total Packets</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+        ${talkers?`<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Talkers (bytes)</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Source</th><th>Bytes</th><th>Flows</th></tr></thead><tbody>${talkers}</tbody></table></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">Click a row to filter flows</div></div>`:''}
+        ${dests?`<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Destinations</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Destination</th><th>Flows</th></tr></thead><tbody>${dests}</tbody></table></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px">Click a row to filter flows</div></div>`:''}
+        ${ports?`<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Ports</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Port</th><th>Proto</th><th>Flows</th></tr></thead><tbody>${ports}</tbody></table></div></div>`:''}
+        ${protos?`<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Protocols</div>
+          <div class="tbl-wrap"><table><thead><tr><th>Protocol</th><th>Flows</th></tr></thead><tbody>${protos}</tbody></table></div></div>`:''}
+      </div>`;
+  } catch(e) { el.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function nfLoadFlows() {
+  const el = document.getElementById('nf-flows');
+  if (!el) return;
+  const src   = document.getElementById('nf-filter-src')?.value.trim() || '';
+  const dst   = document.getElementById('nf-filter-dst')?.value.trim() || '';
+  const proto = document.getElementById('nf-filter-proto')?.value || '';
+  let qs = `?limit=${_nfPage.limit}&offset=${_nfPage.offset}`;
+  if (src)   qs += `&src_ip=${encodeURIComponent(src)}`;
+  if (dst)   qs += `&dst_ip=${encodeURIComponent(dst)}`;
+  if (proto) qs += `&proto=${encodeURIComponent(proto)}`;
+  try {
+    const d = await apiFetch(`/api/netflow${qs}`);
+    if (!d) return;
+    if (!d.flows.length) {
+      el.innerHTML = `<div style="padding:32px;text-align:center;color:var(--muted)">No flows match the current filter.</div>`;
+      return;
+    }
+    const rows = d.flows.map(f => {
+      const dur = (f.flow_start && f.flow_end)
+        ? ((new Date(f.flow_end) - new Date(f.flow_start)) / 1000).toFixed(1) + 's'
+        : '—';
+      return `<tr>
+        <td style="font-size:11px;color:var(--muted);white-space:nowrap">${fmtDate(f.received_at)}</td>
+        <td style="font-family:monospace;font-size:12px">
+          <span class="clickable-row" onclick="document.getElementById('nf-filter-src').value='${f.src_ip}';nfLoadFlows()" title="Filter src">${f.src_ip}</span>:${f.src_port||'—'}
+        </td>
+        <td style="font-family:monospace;font-size:12px">
+          <span class="clickable-row" onclick="document.getElementById('nf-filter-dst').value='${f.dst_ip}';nfLoadFlows()" title="Filter dst">${f.dst_ip}</span>:${f.dst_port||'—'}
+        </td>
+        <td><span style="padding:2px 7px;border-radius:10px;font-size:11px;background:var(--surface);border:1px solid var(--border)">${f.proto_name||f.protocol||'?'}</span></td>
+        <td style="text-align:right">${_fmtBytes(f.bytes)}</td>
+        <td style="text-align:right;color:var(--muted)">${(f.packets||0).toLocaleString()}</td>
+        <td style="color:var(--muted);font-size:12px">${dur}</td>
+      </tr>`;
+    }).join('');
+    const start = d.offset + 1, end = d.offset + d.flows.length;
+    el.innerHTML = `
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>Time <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th>
+            <th>Source IP:Port</th><th>Destination IP:Port</th>
+            <th>Proto</th><th>Bytes</th><th>Packets</th><th>Duration</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--border);font-size:13px">
+        <button class="btn btn-ghost btn-sm" onclick="_nfPage.offset=Math.max(0,_nfPage.offset-_nfPage.limit);nfLoadFlows()" ${_nfPage.offset===0?'disabled':''}>&#x2190; Prev</button>
+        <span style="color:var(--muted)">${start}–${end} of ${d.total.toLocaleString()} flows</span>
+        <button class="btn btn-ghost btn-sm" onclick="_nfPage.offset+=_nfPage.limit;nfLoadFlows()" ${end>=d.total?'disabled':''}>Next &#x2192;</button>
+      </div>`;
+  } catch(e) { el.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 // ── Traffic Matrix ────────────────────────────────────────────────────────────
