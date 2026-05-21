@@ -768,17 +768,35 @@ async function dashboard() {
       const buckets = tl.buckets || [];
       const maxVal = Math.max(1, ...buckets.map(b => b.total));
       const bars = buckets.map(b => {
-        const h = Math.round((b.total / maxVal) * 40);
-        const col = b.blocks > b.allows ? 'var(--danger)' : b.total > 0 ? 'var(--accent)' : 'var(--border)';
+        const totalH = Math.max(b.total > 0 ? 3 : 2, Math.round((b.total / maxVal) * 44));
         const nextHour = b.hour.replace(/T(\d{2}):00/, (_, hh) => `T${String(Number(hh)+1).padStart(2,'0')}:00`);
-        const clickable = b.total > 0 ? `cursor:pointer;` : '';
         const onclick = b.total > 0 ? `onclick="qbLaunchLogs('received_at:>=${b.hour} AND received_at:<${nextHour}')"` : '';
-        const label = b.hour.replace('T', ' ') + ` — ${b.total} events (${b.blocks} blocks, ${b.allows} allows)`;
-        return `<div title="${label}" ${onclick} style="${clickable}flex:1;height:${Math.max(2,h)}px;background:${col};border-radius:2px;min-width:2px;transition:opacity .15s" onmouseenter="if(this.style.cursor)this.style.opacity='.7'" onmouseleave="this.style.opacity='1'"></div>`;
+        const label = b.hour.replace('T', ' ') + ` — ${b.total} events (${b.blocks} blocks, ${b.allows} allows, ${b.total-b.blocks-b.allows} other)`;
+        if (b.total === 0) {
+          return `<div style="flex:1;height:2px;background:var(--border);border-radius:2px;min-width:2px;align-self:flex-end"></div>`;
+        }
+        // Stacked segments: blocks (red) on top, allows (blue) middle, other (grey) bottom
+        const blockH  = Math.round((b.blocks  / b.total) * totalH);
+        const allowH  = Math.round((b.allows  / b.total) * totalH);
+        const otherH  = Math.max(0, totalH - blockH - allowH);
+        const segs = [
+          blockH ? `<div style="height:${blockH}px;background:var(--danger);width:100%"></div>` : '',
+          otherH ? `<div style="height:${otherH}px;background:var(--muted);opacity:.5;width:100%"></div>` : '',
+          allowH ? `<div style="height:${allowH}px;background:var(--accent);width:100%"></div>` : '',
+        ].join('');
+        return `<div title="${label}" ${onclick} style="flex:1;display:flex;flex-direction:column;justify-content:flex-end;min-width:2px;height:44px;${b.total>0?'cursor:pointer;':''}border-radius:2px;overflow:hidden;transition:opacity .15s" onmouseenter="this.style.opacity='.7'" onmouseleave="this.style.opacity='1'">
+          ${segs}
+        </div>`;
       }).join('');
-      el.innerHTML = `<div style="display:flex;align-items:flex-end;gap:1px;height:40px">${bars}</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:4px;display:flex;justify-content:space-between">
-          <span>24h ago</span><span style="color:var(--danger)">&#x25A0; blocks</span><span style="color:var(--accent)">&#x25A0; allows</span><span>now</span>
+      el.innerHTML = `<div style="display:flex;align-items:flex-end;gap:1px;height:44px">${bars}</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:5px;display:flex;justify-content:space-between;align-items:center">
+          <span>24h ago</span>
+          <span style="display:flex;gap:10px">
+            <span><span style="color:var(--danger)">&#x25A0;</span> blocks</span>
+            <span><span style="color:var(--muted)">&#x25A0;</span> other</span>
+            <span><span style="color:var(--accent)">&#x25A0;</span> allows</span>
+          </span>
+          <span>now</span>
         </div>
         <div style="font-size:10px;color:var(--muted);margin-top:2px">Click any bar to view logs for that hour</div>`;
     }).catch(() => {});
