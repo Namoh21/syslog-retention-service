@@ -1307,9 +1307,12 @@ async function ai() {
           <div class="form-group">
             <label>Time Window</label>
             <select id="ai-hours">
-              <option value="1">Last 1 hour</option>
+              <option value="0.25">Last 15 minutes</option>
+              <option value="0.5">Last 30 minutes</option>
+              <option value="1" ${serviceInfo?.ai_provider==='local'?'selected':''}>Last 1 hour</option>
+              <option value="2">Last 2 hours</option>
               <option value="6">Last 6 hours</option>
-              <option value="24" selected>Last 24 hours</option>
+              <option value="24" ${serviceInfo?.ai_provider!=='local'?'selected':''}>Last 24 hours</option>
               <option value="72">Last 3 days</option>
               <option value="168">Last 7 days</option>
             </select>
@@ -1329,7 +1332,7 @@ async function ai() {
             </button>
           </div>
         </div>
-        <p class="help-tip" id="ai-timing-tip">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review recent log entries. CPU inference on a Pi typically takes 1–5 minutes.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
+        <p class="help-tip" id="ai-timing-tip">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review all log entries in the selected window (no entry cap). Defaults to 1 hour — use a shorter window for faster results on a Pi.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
         <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; ${serviceInfo?.ai_provider==='local' ? 'Log data is sent to your local LLM — it stays on your network.' : "Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis."}</p>
       </div>
       <div id="ai-progress" style="display:none" class="alert alert-info">
@@ -1731,7 +1734,7 @@ async function runAnalysis() {
 
   const focus = document.getElementById('ai-focus').value.trim();
   localStorage.setItem('ai_last_focus', focus);
-  const hours = parseInt(document.getElementById('ai-hours').value);
+  const hours = parseFloat(document.getElementById('ai-hours').value);
 
   let startResp;
   try {

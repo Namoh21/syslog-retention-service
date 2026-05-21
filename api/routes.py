@@ -154,7 +154,7 @@ class ResetPassword(BaseModel):
 
 
 class AiAnalyzeBody(BaseModel):
-    hours: int = 24
+    hours: float = 1.0
     focus: str = "security threats and anomalies"
 
     @field_validator("focus")
@@ -164,8 +164,8 @@ class AiAnalyzeBody(BaseModel):
 
     @field_validator("hours")
     @classmethod
-    def cap_hours(cls, v: int) -> int:
-        if v < 1: return 1
+    def cap_hours(cls, v: float) -> float:
+        if v < 0.1: return 0.1
         if v > 720: return 720
         return v
 
