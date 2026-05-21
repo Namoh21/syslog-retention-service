@@ -859,20 +859,21 @@ async function dashboard() {
         el.innerHTML = `<div style="color:var(--muted);font-size:13px">No NetFlow data received yet. Point your UDM to this server on UDP port ${info?.netflow_port||2055}.</div>`;
         return;
       }
-      const fmtBytes = b => b >= 1e9 ? (b/1e9).toFixed(1)+'GB' : b >= 1e6 ? (b/1e6).toFixed(1)+'MB' : b >= 1e3 ? (b/1e3).toFixed(1)+'KB' : b+'B';
+      const fmtBytes = b => !b ? '0 B' : b >= 1e9 ? (b/1e9).toFixed(1)+'GB' : b >= 1e6 ? (b/1e6).toFixed(1)+'MB' : b >= 1e3 ? (b/1e3).toFixed(1)+'KB' : b+'B';
+      const nn = v => (v ?? 0).toLocaleString();
       const talkerRows = (nf.top_talkers||[]).map(t =>
         `<tr class="clickable-row" onclick="showPage('netflow')" title="View NetFlow for ${t.ip}">
           <td style="font-family:monospace">${t.ip}</td>
-          <td>${fmtBytes(t.bytes)}</td>
-          <td style="display:flex;align-items:center;justify-content:space-between">${(nf.top_talkers[0]?.bytes?Math.round(t.bytes/nf.top_talkers[0].bytes*100):0)}% <span class="row-arrow">&#x2192;</span></td>
+          <td>${fmtBytes(t.bytes||0)}</td>
+          <td style="display:flex;align-items:center;justify-content:space-between">${(nf.top_talkers[0]?.bytes?Math.round((t.bytes||0)/nf.top_talkers[0].bytes*100):0)}% <span class="row-arrow">&#x2192;</span></td>
         </tr>`).join('');
       const portRows = (nf.top_ports||[]).slice(0,5).map(p =>
-        `<tr><td>${p.port}</td><td style="color:var(--muted)">${p.proto}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+        `<tr><td>${p.port??'?'}</td><td style="color:var(--muted)">${p.proto||'?'}</td><td>${nn(p.flows)}</td></tr>`).join('');
       el.innerHTML = `
         <div style="display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap">
-          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nf.total_flows.toLocaleString()}</div><div class="lbl">Flows (24h)</div></div>
-          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${fmtBytes(nf.total_bytes)}</div><div class="lbl">Total Bytes</div></div>
-          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nf.total_packets.toLocaleString()}</div><div class="lbl">Packets</div></div>
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nn(nf.total_flows)}</div><div class="lbl">Flows (24h)</div></div>
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${fmtBytes(nf.total_bytes||0)}</div><div class="lbl">Total Bytes</div></div>
+          <div class="stat" style="flex:1;min-width:120px;padding:10px 14px"><div class="val" style="font-size:18px">${nn(nf.total_packets)}</div><div class="lbl">Packets</div></div>
         </div>
         <div class="two-col" style="gap:12px">
           ${talkerRows ? `<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Talkers (by bytes)</div>
@@ -2026,13 +2027,58 @@ function renderAnalysis(d, out) {
   if (d.error) { out.innerHTML=`<div class="alert alert-warn"><strong>Analysis failed:</strong> ${esc(d.error)}</div>`; return; }
   const a = d.analysis;
 
-  // Raw fallback — LLM didn't return valid JSON
+  // Raw fallback — LLM returned free-form text instead of JSON
   if (!a || a.raw) {
     const txt = typeof a === 'string' ? a : (a?.summary || JSON.stringify(d, null, 2));
+    const modelStr = d.provider === 'local' ? 'Local LLM' : (d.model || '');
+    const metaStr = [d.log_count ? `${d.log_count.toLocaleString()} entries` : '',
+                     d.hours_covered ? `${d.hours_covered}h window` : '', modelStr]
+                    .filter(Boolean).join(' · ');
+
+    // Try to split the text into sections by common headers the LLM might use
+    const sectionRe = /^(#{1,3}\s+.+|[A-Z][A-Z\s\-:]{3,}:?)\s*$/gm;
+    const parts = txt.split(sectionRe).filter(s => s.trim());
+    let sectionsHtml = '';
+    if (parts.length > 1) {
+      let i = 0;
+      while (i < parts.length) {
+        const heading = parts[i].replace(/^#+\s*/, '').replace(/:$/, '').trim();
+        const body = parts[i + 1] ? parts[i + 1].trim() : '';
+        if (body) {
+          sectionsHtml += `
+            <div style="margin-bottom:16px">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">${esc(heading)}</div>
+              <div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(body)}</div>
+            </div>`;
+          i += 2;
+        } else {
+          sectionsHtml += `<div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap;margin-bottom:12px">${esc(heading)}</div>`;
+          i++;
+        }
+      }
+    } else {
+      sectionsHtml = `<div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(txt)}</div>`;
+    }
+
     out.innerHTML = `
+      <div class="ai-banner ai-banner-UNKNOWN" style="margin-bottom:16px">
+        <div class="ai-banner-icon">&#x1F916;</div>
+        <div class="ai-banner-body">
+          <div class="ai-banner-level">AI Analysis Result</div>
+          <div class="ai-banner-title" style="font-size:16px">Free-form response from your local LLM</div>
+          <div class="ai-banner-meta">${metaStr}</div>
+        </div>
+      </div>
       <div class="card">
-        <div class="card-title">&#x1F916; Analysis Result</div>
-        <div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(txt)}</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
+          <div class="card-title" style="margin:0">&#x1F4DD; Analysis</div>
+          <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard?.writeText(${JSON.stringify(txt)}).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='&#x1F4CB; Copy',1500)})">&#x1F4CB; Copy</button>
+        </div>
+        <div class="alert alert-info" style="margin-bottom:14px;font-size:12px">
+          Your local LLM returned plain text instead of structured JSON. For better formatted results, add this to your system prompt or model settings:
+          <em>"Always respond with valid JSON only."</em>
+        </div>
+        ${sectionsHtml}
       </div>`;
     return;
   }
@@ -3342,26 +3388,27 @@ async function nfLoadStats() {
       el.innerHTML = `<p style="color:var(--muted);font-size:13px">No NetFlow data for this window. Check your UDM Pro NetFlow export settings.</p>`;
       return;
     }
+    const n = v => (v ?? 0).toLocaleString();
     const talkers = (d.top_talkers||[]).map(t =>
       `<tr class="clickable-row" onclick="document.getElementById('nf-filter-src').value='${t.ip}';nfLoadFlows()" title="Filter flows from ${t.ip}">
         <td style="font-family:monospace">${t.ip}</td>
-        <td>${_fmtBytes(t.bytes)}</td>
-        <td style="display:flex;align-items:center;justify-content:space-between">${t.flows.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+        <td>${_fmtBytes(t.bytes||0)}</td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${n(t.flows)} <span class="row-arrow">&#x2192;</span></td>
       </tr>`).join('');
     const dests = (d.top_destinations||[]).map(t =>
       `<tr class="clickable-row" onclick="document.getElementById('nf-filter-dst').value='${t.ip}';nfLoadFlows()" title="Filter flows to ${t.ip}">
         <td style="font-family:monospace">${t.ip}</td>
-        <td style="display:flex;align-items:center;justify-content:space-between">${t.flows.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
+        <td style="display:flex;align-items:center;justify-content:space-between">${n(t.flows)} <span class="row-arrow">&#x2192;</span></td>
       </tr>`).join('');
     const ports = (d.top_ports||[]).map(p =>
-      `<tr><td><strong>${p.port}</strong></td><td style="color:var(--muted)">${p.proto}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+      `<tr><td><strong>${p.port??'?'}</strong></td><td style="color:var(--muted)">${p.proto||'?'}</td><td>${n(p.flows)}</td></tr>`).join('');
     const protos = (d.top_protocols||[]).map(p =>
-      `<tr><td>${p.proto||'?'}</td><td>${p.flows.toLocaleString()}</td></tr>`).join('');
+      `<tr><td>${p.proto||'?'}</td><td>${n(p.flows)}</td></tr>`).join('');
     el.innerHTML = `
       <div class="stat-grid" style="margin-bottom:16px">
-        <div class="stat"><div class="val">${d.total_flows.toLocaleString()}</div><div class="lbl">Total Flows</div></div>
-        <div class="stat"><div class="val">${_fmtBytes(d.total_bytes)}</div><div class="lbl">Total Bytes</div></div>
-        <div class="stat"><div class="val">${d.total_packets.toLocaleString()}</div><div class="lbl">Total Packets</div></div>
+        <div class="stat"><div class="val">${n(d.total_flows)}</div><div class="lbl">Total Flows</div></div>
+        <div class="stat"><div class="val">${_fmtBytes(d.total_bytes||0)}</div><div class="lbl">Total Bytes</div></div>
+        <div class="stat"><div class="val">${n(d.total_packets)}</div><div class="lbl">Total Packets</div></div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
         ${talkers?`<div><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:6px">Top Talkers (bytes)</div>
