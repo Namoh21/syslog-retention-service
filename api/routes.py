@@ -385,8 +385,13 @@ async def ai_analyze(
     _cleanup_jobs()
 
     since = datetime.now(timezone.utc) - timedelta(hours=body.hours)
-    max_logs = int(get_service_setting("ai_analysis_max_logs", db=db) or settings.ai_analysis_max_logs)
-    entries, _ = query_logs(db, since=since, limit=max_logs)
+    ai_provider = get_service_setting("ai_provider") or "anthropic"
+    if ai_provider == "local":
+        # No entry cap for local LLM — the char limit in _format_entries still applies
+        entries, _ = query_logs(db, since=since, limit=100_000)
+    else:
+        max_logs = int(get_service_setting("ai_analysis_max_logs", db=db) or settings.ai_analysis_max_logs)
+        entries, _ = query_logs(db, since=since, limit=max_logs)
     if not entries:
         return {
             "job_id": None,

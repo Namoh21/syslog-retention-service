@@ -40,22 +40,23 @@ Be specific and reference actual log entries where relevant.
 """
 
 
-_MAX_MSG_CHARS = 160   # keep each log line short to stay under token limits
-_MAX_TOTAL_CHARS = 80_000  # hard cap on total log text (~20k tokens)
+_MAX_MSG_CHARS = 160        # keep each log line short to stay under token limits
+_MAX_TOTAL_CHARS = 80_000   # Anthropic: hard cap (~20k tokens)
+_MAX_TOTAL_CHARS_LOCAL = 400_000  # Local LLM: much higher — no token billing concern
 
 
-def _format_entries(entries: list[SyslogEntry]) -> str:
+def _format_entries(entries: list[SyslogEntry], *, local_llm: bool = False) -> str:
+    max_chars = _MAX_TOTAL_CHARS_LOCAL if local_llm else _MAX_TOTAL_CHARS
     lines = []
     total = 0
     for e in entries:
         sev = SEVERITY_NAMES[e.severity] if e.severity is not None and e.severity < 8 else str(e.severity)
-        fac = FACILITY_NAMES[e.facility] if e.facility is not None and e.facility < len(FACILITY_NAMES) else str(e.facility)
         ts = e.received_at.strftime("%Y-%m-%d %H:%M:%S") if e.received_at else "?"
         msg = (e.message or "")[:_MAX_MSG_CHARS]
         line = (f"[{ts}][{sev}][{e.source_ip or '?'}] {e.app_name or ''}: {msg}")
         total += len(line)
-        if total > _MAX_TOTAL_CHARS:
-            lines.append(f"... truncated at {len(lines)} entries to stay within token limits")
+        if total > max_chars:
+            lines.append(f"... truncated at {len(lines)} entries (char limit reached)")
             break
         lines.append(line)
     return "\n".join(lines)
@@ -236,7 +237,7 @@ async def analyze_logs(
             db.close()
             db = None
 
-    log_text = _format_entries(entries)
+    log_text = _format_entries(entries, local_llm=(ai_provider == "local"))
     focus_safe = focus[:200] if focus else "security threats and anomalies"
     user_message = (
         f"{history_block}"
