@@ -215,6 +215,15 @@
   .rec-status-working{background:rgba(63,185,80,.35);color:#3fb950;}
   .rec-status-investigating{background:rgba(210,153,34,.2);color:#d29922;}
   .rec-status-dismissed{background:rgba(139,148,158,.15);color:#8b949e;}
+  /* ── SIEM-CTI report components ── */
+  .cti-stat{background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;}
+  .cti-stat-val{font-size:22px;font-weight:700;color:var(--text);}
+  .cti-stat-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-top:2px;}
+  .cti-stat-warn .cti-stat-val{color:#e67e22;}
+  .cti-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600;}
+  .cti-badge-type{background:rgba(139,148,158,.15);color:#8b949e;}
+  .cti-badge-ext{background:rgba(248,81,73,.15);color:#f85149;}
+  .cti-badge-int{background:rgba(63,185,80,.15);color:#3fb950;}
   .ai-history-item{border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:10px;background:var(--surface2);}
   .ai-history-item .hist-header{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;}
   .ai-history-item .hist-recs{margin-top:8px;display:flex;flex-direction:column;gap:4px;}
@@ -2036,10 +2045,371 @@ function exportAnalysisRaw() {
   URL.revokeObjectURL(a.href);
 }
 
+// ── Shared finding-card renderer (used by both schema renderers) ──────────────
+const _PRIORITY_META_GLOBAL = {
+  critical: {label:'Critical', cls:'pri-critical', icon:'&#x1F6A8;'},
+  high:     {label:'High',     cls:'pri-high',     icon:'&#x1F525;'},
+  medium:   {label:'Medium',   cls:'pri-medium',   icon:'&#x26A1;'},
+  low:      {label:'Low',      cls:'pri-low',      icon:'&#x1F4CC;'},
+};
+
+function _renderFindingCard(f, i, recId, existingStatus, existingNote, existingPriority) {
+  const sev = f.severity || 'INFO';
+  const sevIcon = {CRITICAL:'&#x1F534;',HIGH:'&#x26A0;&#xFE0F;',MEDIUM:'&#x1F7E1;',LOW:'&#x1F7E2;',INFO:'&#x2139;&#xFE0F;'}[sev] || '&#x26AA;';
+  const curStatus   = existingStatus   || 'open';
+  const curPriority = existingPriority || '';
+  const isDismissed = curStatus === 'dismissed';
+  const rid = recId || 'x'+i;
+
+  const statusPills = ['open','implemented','working','investigating','dismissed'].map(s =>
+    `<button class="status-pill sp-${s}${curStatus===s?' active':''}" onclick="updateRecStatus(${recId||'null'},'${s}',this,${i})" title="Mark as ${s}">${s}</button>`
+  ).join('');
+
+  const priorityPills = ['critical','high','medium','low'].map(p => {
+    const m = _PRIORITY_META_GLOBAL[p];
+    return `<button class="priority-pill pp-${p}${curPriority===p?' active':''}" onclick="updateRecPriority(${recId||'null'},'${p}',this,${i})" title="Set priority: ${m.label}">${m.icon} ${m.label}</button>`;
+  }).join('');
+
+  const statusBadgeClass = {open:'sp-open',implemented:'sp-implemented',working:'sp-working',investigating:'sp-investigating',dismissed:'sp-dismissed'}[curStatus]||'sp-open';
+  const priMeta = _PRIORITY_META_GLOBAL[curPriority];
+  const priBadge = priMeta
+    ? `<span class="priority-badge ${priMeta.cls}" id="pri-badge-${rid}">${priMeta.icon} ${priMeta.label}</span>`
+    : `<span class="priority-badge pri-unset" id="pri-badge-${rid}">&#x1F4CC; Set priority</span>`;
+
+  return `
+    <div class="finding finding-stripe-${sev}${isDismissed?' finding-dismissed':''}" id="finding-card-${i}">
+      <div class="finding-top">
+        <span class="finding-sev-badge fsb-${sev}">${sevIcon} ${sev}</span>
+        <span class="finding-title">${esc(f.title||'Untitled Finding')}</span>
+        <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+          ${priBadge}
+          <span class="finding-status-badge ${statusBadgeClass}" id="rec-badge-${rid}">${curStatus}</span>
+        </div>
+      </div>
+      ${f.detail ? `<div class="finding-section">
+        <div class="finding-label">&#x1F50D; Issue</div>
+        <div class="finding-text">${esc(f.detail)}</div>
+      </div>` : ''}
+      ${f.recommendation ? `<div class="finding-section">
+        <div class="finding-label">&#x2192; Recommendation</div>
+        <div class="finding-rec-box">${esc(f.recommendation)}</div>
+      </div>` : ''}
+      ${f._extra_html || ''}
+      <div class="finding-section">
+        <div class="finding-label">&#x1F3AF; Your Priority <span style="font-weight:400;color:var(--muted);font-size:10px">(your assessment, independent of AI severity)</span></div>
+        <div class="priority-pills">${priorityPills}</div>
+      </div>
+      <div class="finding-section">
+        <div class="finding-label">&#x1F4CC; Status &amp; Notes</div>
+        <div class="status-pills">${statusPills}</div>
+        <textarea class="finding-note" id="rec-note-${rid}"
+          placeholder="Add your notes — steps taken, who's working on it, links to tickets, target date..."
+          onblur="saveRecNote(${recId||'null'},this.value,${i})"
+        >${esc(existingNote||'')}</textarea>
+        <span class="finding-note-saved" id="note-saved-${rid}">Saved ✓</span>
+      </div>
+    </div>`;
+}
+
+function _populateFindingCards(findings, analysisId, containerId) {
+  const fc = document.getElementById(containerId);
+  if (!fc || !findings.length) return;
+  const populate = (recMap, statusMap, noteMap, priMap) => {
+    fc.innerHTML = findings.map((f,i) => {
+      const recId = recMap ? recMap[i] : null;
+      return _renderFindingCard(f, i, recId, statusMap?.[recId], noteMap?.[recId], priMap?.[recId]);
+    }).join('');
+  };
+  if (analysisId) {
+    apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
+      const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
+      const recMap    = recs.reduce((m,r,i) => { m[i]=r.id;                return m; }, {});
+      const statusMap = recs.reduce((m,r)   => { m[r.id]=r.status;         return m; }, {});
+      const noteMap   = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
+      const priMap    = recs.reduce((m,r)   => { m[r.id]=r.priority||'';   return m; }, {});
+      populate(recMap, statusMap, noteMap, priMap);
+    }).catch(() => populate(null, null, null, null));
+  } else {
+    populate(null, null, null, null);
+  }
+}
+
+// ── SIEM-CTI schema renderer ──────────────────────────────────────────────────
+function _renderSiemCti(d, out) {
+  const a = d.analysis;
+  const meta   = a.report_metadata || {};
+  const events = a.events || [];
+  const summ   = a.summary || {};
+  const ra     = summ.response_actions || {};
+  const tl     = a.threat_level || 'UNKNOWN';
+  const analysisId = d.analysis_id;
+
+  const tlIcon  = {LOW:'&#x2705;',MEDIUM:'&#x26A0;&#xFE0F;',HIGH:'&#x1F534;',CRITICAL:'&#x1F6A8;',UNKNOWN:'&#x2753;'}[tl] || '&#x2753;';
+  const tlLabel = {LOW:'Low — network looks healthy',MEDIUM:'Medium — some items need attention',HIGH:'High — action recommended',CRITICAL:'Critical — immediate action required',UNKNOWN:'Unknown'}[tl] || tl;
+
+  const sevCount = events.reduce((m,e) => { const r=(e.threat_severity||{}).rating||'LOW'; m[r]=(m[r]||0)+1; return m; }, {});
+  const pillHtml = [
+    sevCount.CRITICAL ? `<span class="ai-pill ai-pill-crit">&#x1F534; ${sevCount.CRITICAL} Critical</span>` : '',
+    sevCount.HIGH     ? `<span class="ai-pill ai-pill-high">&#x26A0;&#xFE0F; ${sevCount.HIGH} High</span>` : '',
+    sevCount.MEDIUM   ? `<span class="ai-pill ai-pill-med">&#x1F7E1; ${sevCount.MEDIUM} Medium</span>` : '',
+    sevCount.LOW      ? `<span class="ai-pill ai-pill-low">&#x1F7E2; ${sevCount.LOW} Low</span>` : '',
+  ].filter(Boolean).join('');
+
+  const modelStr = d.provider === 'local' ? 'Local LLM' : (d.model || '');
+  const metaStr  = [
+    d.log_count   ? `${d.log_count.toLocaleString()} log entries` : '',
+    d.hours_covered ? `${d.hours_covered}h window` : '',
+    modelStr,
+    d.analyzed_at ? `analyzed ${fmtDate(d.analyzed_at)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  // Report metadata stats row
+  const statsHtml = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      ${meta.total_events_analyzed != null ? `<div class="cti-stat"><div class="cti-stat-val">${meta.total_events_analyzed}</div><div class="cti-stat-lbl">Events Analyzed</div></div>` : ''}
+      ${meta.total_iocs_extracted != null ? `<div class="cti-stat"><div class="cti-stat-val">${meta.total_iocs_extracted}</div><div class="cti-stat-lbl">IOCs Extracted</div></div>` : ''}
+      ${meta.low_confidence_findings != null ? `<div class="cti-stat${meta.low_confidence_findings>0?' cti-stat-warn':''}"><div class="cti-stat-val">${meta.low_confidence_findings}</div><div class="cti-stat-lbl">Low Confidence</div></div>` : ''}
+      ${events.length ? `<div class="cti-stat"><div class="cti-stat-val">${events.length}</div><div class="cti-stat-lbl">Threat Events</div></div>` : ''}
+      ${(summ.top_mitre_techniques||[]).length ? `<div class="cti-stat"><div class="cti-stat-val">${summ.top_mitre_techniques.length}</div><div class="cti-stat-lbl">MITRE Techniques</div></div>` : ''}
+      ${(summ.aggregate_iocs||[]).length ? `<div class="cti-stat"><div class="cti-stat-val">${summ.aggregate_iocs.length}</div><div class="cti-stat-lbl">Unique IOCs</div></div>` : ''}
+    </div>`;
+
+  // Escalation alert
+  const escalationHtml = meta.escalation_required ? `
+    <div class="alert" style="background:#2d1515;border:1px solid #c0392b;color:#e74c3c;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start">
+      <span style="font-size:18px">&#x1F6A8;</span>
+      <div><strong>ESCALATION REQUIRED</strong><br><span style="font-size:13px">${esc(meta.escalation_reason||'Critical severity or majority of low-confidence findings.')}</span></div>
+    </div>` : '';
+
+  // Log timespan
+  const spanHtml = meta.log_timespan ? `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:16px">
+      &#x1F4C5; Log window: ${esc(meta.log_timespan.earliest||'')} → ${esc(meta.log_timespan.latest||'')}
+      &nbsp;|&nbsp; Format: <strong>${esc(meta.log_source_format||'unknown')}</strong>
+    </div>` : '';
+
+  // Build event finding cards — each event becomes a rich finding bubble
+  const findingsForCards = events.map((ev,i) => {
+    const ts  = ev.timestamp || '';
+    const sev = (ev.threat_severity||{}).rating || 'LOW';
+    const iocs = ev.iocs || [];
+    const mitre = ev.mitre_mappings || [];
+    const dm = ev.diamond_model || {};
+    const evId = ev.event_id || `EVT-${i+1}`;
+
+    // Title: first MITRE technique, or first IOC, or event_id
+    const title = (mitre[0]?.technique_name)
+      || (iocs[0] ? `${iocs[0].type?.toUpperCase()||'IOC'}: ${iocs[0].value}` : null)
+      || evId;
+
+    // Detail: raw log excerpt + scope
+    const detail = [
+      ev.raw_log_excerpt || '',
+      (ev.threat_severity||{}).impact_potential ? `Impact: ${ev.threat_severity.impact_potential}` : '',
+      (ev.threat_severity||{}).scope ? `Scope: ${ev.threat_severity.scope}` : '',
+    ].filter(Boolean).join('\n');
+
+    // Extra HTML sections for IOCs, MITRE, Diamond
+    const iocRows = iocs.map(ioc => `
+      <tr>
+        <td style="font-family:monospace;font-size:12px;padding:3px 6px">${esc(ioc.value||'')}</td>
+        <td style="padding:3px 6px"><span class="cti-badge cti-badge-type">${esc(ioc.type||'')}</span></td>
+        <td style="padding:3px 6px"><span class="cti-badge ${ioc.classification==='external'?'cti-badge-ext':'cti-badge-int'}">${esc(ioc.classification||'')}</span></td>
+        <td style="padding:3px 6px;text-align:center">${ioc.malicious_pattern_flagged?'<span style="color:#e74c3c">&#x26A0; Yes</span>':'<span style="color:var(--muted)">No</span>'}</td>
+        <td style="padding:3px 6px;text-align:right;font-size:11px;color:${ioc.low_confidence?'#e67e22':'var(--muted)'}">${typeof ioc.confidence==='number'?(ioc.confidence*100).toFixed(0)+'%':''}</td>
+      </tr>`).join('');
+
+    const iocSection = iocs.length ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F9E9; IOCs (${iocs.length})</div>
+        <div style="overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase">
+            <th style="padding:3px 6px;text-align:left">Value</th><th style="padding:3px 6px;text-align:left">Type</th>
+            <th style="padding:3px 6px;text-align:left">Class</th><th style="padding:3px 6px;text-align:center">Malicious</th>
+            <th style="padding:3px 6px;text-align:right">Confidence</th>
+          </tr></thead>
+          <tbody>${iocRows}</tbody>
+        </table></div>
+      </div>` : '';
+
+    const mitreRows = mitre.map(m => `
+      <div style="margin-bottom:8px;padding:8px;background:var(--bg);border-radius:6px;border-left:3px solid #3498db">
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:4px">
+          <span class="cti-badge" style="background:#1a3a5c;color:#3498db;font-family:monospace">${esc(m.technique_id||'')}</span>
+          <strong style="font-size:13px">${esc(m.technique_name||'')}</strong>
+          <span style="color:var(--muted);font-size:11px">${esc(m.tactic||'')}</span>
+          <span style="margin-left:auto;font-size:11px;color:${m.low_confidence?'#e67e22':'var(--muted)'}">${typeof m.confidence==='number'?(m.confidence*100).toFixed(0)+'%':''}</span>
+        </div>
+        ${m.evidence ? `<div style="font-size:11px;font-family:monospace;color:var(--muted);background:var(--bg2,#0d1117);padding:4px 8px;border-radius:4px;white-space:pre-wrap">${esc(m.evidence)}</div>` : ''}
+      </div>`).join('');
+
+    const mitreSection = mitre.length ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F3AF; MITRE ATT&amp;CK</div>
+        ${mitreRows}
+      </div>` : '';
+
+    const dmSection = (dm.adversary || dm.capability || dm.infrastructure || dm.victim) ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F48E; Diamond Model
+          <span style="font-size:11px;font-weight:400;color:${dm.low_confidence?'#e67e22':'var(--muted)'};margin-left:8px">${typeof dm.confidence==='number'?'Confidence: '+(dm.confidence*100).toFixed(0)+'%':''}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
+          <div><span style="color:var(--muted);font-size:10px;text-transform:uppercase">Adversary</span><div>${esc(dm.adversary||'unknown')}</div></div>
+          <div><span style="color:var(--muted);font-size:10px;text-transform:uppercase">Capability</span><div>${esc(dm.capability||'')}</div></div>
+          <div><span style="color:var(--muted);font-size:10px;text-transform:uppercase">Infrastructure</span><div>${esc(dm.infrastructure||'')}</div></div>
+          <div><span style="color:var(--muted);font-size:10px;text-transform:uppercase">Victim</span><div>${esc(dm.victim||'')}</div></div>
+        </div>
+      </div>` : '';
+
+    const logIdSection = (ev.log_identification) ? `
+      <div class="finding-section" style="padding-top:0">
+        <span style="font-size:11px;color:var(--muted)">
+          ${esc(ev.log_identification.format||'')} &middot; ${esc(ev.log_identification.generating_device||'')}
+          ${ts ? `&middot; <time>${esc(ts)}</time>` : ''}
+          &middot; Event ID: <code style="font-size:11px">${esc(evId)}</code>
+        </span>
+      </div>` : '';
+
+    return {
+      severity: sev,
+      title,
+      detail,
+      recommendation: '',
+      _extra_html: logIdSection + iocSection + mitreSection + dmSection,
+    };
+  });
+
+  // Top MITRE techniques table
+  const topTechs = summ.top_mitre_techniques || [];
+  const mitreTableHtml = topTechs.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F3AF; Top MITRE ATT&amp;CK Techniques</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px;text-align:left">Technique</th>
+          <th style="padding:4px 8px;text-align:left">Tactic</th>
+          <th style="padding:4px 8px;text-align:right">Events</th>
+        </tr></thead>
+        <tbody>${topTechs.map(t => `<tr style="border-bottom:1px solid var(--border,#222)">
+          <td style="padding:5px 8px">
+            <span class="cti-badge" style="background:#1a3a5c;color:#3498db;font-family:monospace;margin-right:6px">${esc(t.technique_id||'')}</span>
+            ${esc(t.technique_name||'')}
+          </td>
+          <td style="padding:5px 8px;color:var(--muted)">${esc(t.tactic||'')}</td>
+          <td style="padding:5px 8px;text-align:right;font-weight:700">${t.event_count||0}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // Aggregate IOC table
+  const aggIocs = summ.aggregate_iocs || [];
+  const iocTableHtml = aggIocs.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F9E9; Aggregate IOCs (${aggIocs.length})</div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px;text-align:left">Value</th>
+          <th style="padding:4px 8px;text-align:left">Type</th>
+          <th style="padding:4px 8px;text-align:left">Class</th>
+          <th style="padding:4px 8px;text-align:center">Malicious</th>
+          <th style="padding:4px 8px;text-align:left">Seen In</th>
+        </tr></thead>
+        <tbody>${aggIocs.map(ioc => `<tr style="border-bottom:1px solid var(--border,#222)">
+          <td style="padding:5px 8px;font-family:monospace">${esc(ioc.value||'')}</td>
+          <td style="padding:5px 8px"><span class="cti-badge cti-badge-type">${esc(ioc.type||'')}</span></td>
+          <td style="padding:5px 8px"><span class="cti-badge ${ioc.classification==='external'?'cti-badge-ext':'cti-badge-int'}">${esc(ioc.classification||'')}</span></td>
+          <td style="padding:5px 8px;text-align:center">${ioc.malicious_pattern_flagged?'<span style="color:#e74c3c">&#x26A0; Yes</span>':'<span style="color:var(--muted)">—</span>'}</td>
+          <td style="padding:5px 8px;font-size:11px;color:var(--muted)">${(ioc.seen_in_events||[]).join(', ')}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // Timeline
+  const timeline = summ.timeline || [];
+  const timelineHtml = timeline.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4C5; Event Timeline</div>
+      <div style="position:relative;padding-left:20px">
+        <div style="position:absolute;left:7px;top:0;bottom:0;width:2px;background:var(--border,#333)"></div>
+        ${timeline.map(t => `
+        <div style="position:relative;margin-bottom:14px">
+          <div style="position:absolute;left:-16px;top:4px;width:10px;height:10px;border-radius:50%;background:#3498db;border:2px solid var(--bg,#0d1117)"></div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:2px"><time>${esc(t.timestamp||'')}</time> &middot; <code style="font-size:11px">${esc(t.event_id||'')}</code></div>
+          <div style="font-size:13px;font-weight:600">${esc(t.event||'')}</div>
+          <div style="font-size:12px;color:var(--muted)">${esc(t.significance||'')}</div>
+        </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Response actions
+  const immArr  = ra.immediate_containment || [];
+  const invArr  = ra.investigation_next_steps || [];
+  const ltArr   = ra.long_term_remediation || [];
+  const logsArr = (ra.additional_logs_needed || []).filter(Boolean);
+
+  const actionsHtml = (immArr.length || invArr.length || ltArr.length || logsArr.length) ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x26A1; Response Actions</div>
+      ${immArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#e74c3c;letter-spacing:.06em;margin-bottom:8px">&#x1F6A8; Immediate Containment</div>
+        <ul class="ai-action-list" style="margin-bottom:16px">${immArr.map((x,i) =>
+          `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${invArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#e67e22;letter-spacing:.06em;margin-bottom:8px">&#x1F50D; Investigation Next Steps</div>
+        <ul class="ai-action-list" style="margin-bottom:16px">${invArr.map((x,i) =>
+          `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${ltArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">&#x1F4C5; Long-term Remediation</div>
+        <ul class="ai-longterm-list" style="margin-bottom:16px">${ltArr.map((x,i) =>
+          `<li class="ai-longterm-item"><span class="ai-longterm-num">${i+1}</span><span class="ai-longterm-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${logsArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">&#x1F4C2; Additional Logs Needed</div>
+        <ul style="margin:0;padding-left:20px">${logsArr.map(x=>`<li style="font-size:13px;color:var(--text);margin-bottom:4px">${esc(x)}</li>`).join('')}</ul>` : ''}
+    </div>` : '';
+
+  out.innerHTML = `
+    <div class="ai-banner ai-banner-${tl}">
+      <div class="ai-banner-icon">${tlIcon}</div>
+      <div class="ai-banner-body">
+        <div class="ai-banner-level">SIEM-CTI · Threat Level</div>
+        <div class="ai-banner-title">${tlLabel}</div>
+        <div class="ai-banner-meta">${metaStr}</div>
+      </div>
+      ${pillHtml ? `<div class="ai-banner-pills">${pillHtml}</div>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()" title="Download raw JSON" style="flex-shrink:0;align-self:flex-start">&#x2B07; Export JSON</button>
+    </div>
+    ${escalationHtml}
+    ${statsHtml}
+    ${spanHtml}
+    ${mitreTableHtml}
+    ${iocTableHtml}
+    ${findingsForCards.length ? `
+      <div style="margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px">
+          &#x1F50D; Threat Events
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Set status and notes per event to track remediation</span>
+        </div>
+        <div id="ai-findings-container"></div>
+      </div>` : ''}
+    ${timelineHtml}
+    ${actionsHtml}
+  `;
+
+  _populateFindingCards(findingsForCards, analysisId, 'ai-findings-container');
+}
+
+// ── Main analysis renderer (dispatches by schema) ─────────────────────────────
 function renderAnalysis(d, out) {
   _lastAnalysisRaw = d;
   if (d.error) { out.innerHTML=`<div class="alert alert-warn"><strong>Analysis failed:</strong> ${esc(d.error)}</div>`; return; }
   const a = d.analysis;
+
+  // SIEM-CTI schema — rich structured renderer
+  if (a && a._schema === 'siem_cti') {
+    return _renderSiemCti(d, out);
+  }
 
   // Raw fallback — LLM returned free-form text instead of JSON
   if (!a || a.raw) {
@@ -2048,8 +2418,6 @@ function renderAnalysis(d, out) {
     const metaStr = [d.log_count ? `${d.log_count.toLocaleString()} entries` : '',
                      d.hours_covered ? `${d.hours_covered}h window` : '', modelStr]
                     .filter(Boolean).join(' · ');
-
-    // Try to split the text into sections by common headers the LLM might use
     const sectionRe = /^(#{1,3}\s+.+|[A-Z][A-Z\s\-:]{3,}:?)\s*$/gm;
     const parts = txt.split(sectionRe).filter(s => s.trim());
     let sectionsHtml = '';
@@ -2059,11 +2427,7 @@ function renderAnalysis(d, out) {
         const heading = parts[i].replace(/^#+\s*/, '').replace(/:$/, '').trim();
         const body = parts[i + 1] ? parts[i + 1].trim() : '';
         if (body) {
-          sectionsHtml += `
-            <div style="margin-bottom:16px">
-              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">${esc(heading)}</div>
-              <div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(body)}</div>
-            </div>`;
+          sectionsHtml += `<div style="margin-bottom:16px"><div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:6px">${esc(heading)}</div><div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(body)}</div></div>`;
           i += 2;
         } else {
           sectionsHtml += `<div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap;margin-bottom:12px">${esc(heading)}</div>`;
@@ -2073,38 +2437,35 @@ function renderAnalysis(d, out) {
     } else {
       sectionsHtml = `<div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(txt)}</div>`;
     }
-
     out.innerHTML = `
       <div class="ai-banner ai-banner-UNKNOWN" style="margin-bottom:16px">
         <div class="ai-banner-icon">&#x1F916;</div>
         <div class="ai-banner-body">
           <div class="ai-banner-level">AI Analysis Result</div>
-          <div class="ai-banner-title" style="font-size:16px">Free-form response from your local LLM</div>
+          <div class="ai-banner-title" style="font-size:16px">Free-form response — could not parse to structured cards</div>
           <div class="ai-banner-meta">${metaStr}</div>
         </div>
       </div>
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
           <div class="card-title" style="margin:0">&#x1F4DD; Analysis</div>
-          <div style="display:flex;gap:8px">
-            <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()">&#x2B07; Export JSON</button>
-          </div>
+          <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()">&#x2B07; Export JSON</button>
         </div>
         <div class="alert alert-info" style="margin-bottom:14px;font-size:12px">
-          The LLM response could not be parsed into structured cards. Use <strong>Export JSON</strong> to download the raw response and share it for debugging.
+          Use <strong>Export JSON</strong> to download the raw response for debugging.
         </div>
         ${sectionsHtml}
       </div>`;
     return;
   }
 
+  // ── Legacy schema renderer ────────────────────────────────────────────────
   const tl = a.threat_level || 'UNKNOWN';
   const analysisId = d.analysis_id;
 
   const tlIcon = {LOW:'&#x2705;', MEDIUM:'&#x26A0;&#xFE0F;', HIGH:'&#x1F534;', CRITICAL:'&#x1F6A8;', UNKNOWN:'&#x2753;'}[tl] || '&#x2753;';
   const tlLabel = {LOW:'Low — network looks healthy', MEDIUM:'Medium — some items need attention', HIGH:'High — action recommended', CRITICAL:'Critical — immediate action required', UNKNOWN:'Unknown'}[tl] || tl;
 
-  // Count findings by severity
   const findings = a.findings || [];
   const sevCount = findings.reduce((m,f) => { m[f.severity]=(m[f.severity]||0)+1; return m; }, {});
   const pillHtml = [
@@ -2123,87 +2484,9 @@ function renderAnalysis(d, out) {
     d.analyzed_at ? `analyzed ${fmtDate(d.analyzed_at)}` : '',
   ].filter(Boolean).join(' · ');
 
-  // Render a finding as an always-visible rich bubble
-  const _PRIORITY_META = {
-    critical: {label:'Critical', cls:'pri-critical', icon:'&#x1F6A8;'},
-    high:     {label:'High',     cls:'pri-high',     icon:'&#x1F525;'},
-    medium:   {label:'Medium',   cls:'pri-medium',   icon:'&#x26A1;'},
-    low:      {label:'Low',      cls:'pri-low',      icon:'&#x1F4CC;'},
-  };
-
-  const _renderFinding = (f, i, recId, existingStatus, existingNote, existingPriority) => {
-    const sev = f.severity || 'INFO';
-    const sevIcon = {CRITICAL:'&#x1F534;',HIGH:'&#x26A0;&#xFE0F;',MEDIUM:'&#x1F7E1;',LOW:'&#x1F7E2;',INFO:'&#x2139;&#xFE0F;'}[sev] || '&#x26AA;';
-    const curStatus   = existingStatus   || 'open';
-    const curPriority = existingPriority || '';
-    const isDismissed = curStatus === 'dismissed';
-    const rid = recId || 'x'+i;
-
-    const statusPills = ['open','implemented','working','investigating','dismissed'].map(s =>
-      `<button class="status-pill sp-${s}${curStatus===s?' active':''}" onclick="updateRecStatus(${recId||'null'},'${s}',this,${i})" title="Mark as ${s}">${s}</button>`
-    ).join('');
-
-    const priorityPills = ['critical','high','medium','low'].map(p => {
-      const m = _PRIORITY_META[p];
-      return `<button class="priority-pill pp-${p}${curPriority===p?' active':''}" onclick="updateRecPriority(${recId||'null'},'${p}',this,${i})" title="Set priority: ${m.label}">${m.icon} ${m.label}</button>`;
-    }).join('');
-
-    const statusBadgeClass = {open:'sp-open',implemented:'sp-implemented',working:'sp-working',investigating:'sp-investigating',dismissed:'sp-dismissed'}[curStatus]||'sp-open';
-    const priMeta = _PRIORITY_META[curPriority];
-    const priBadge = priMeta
-      ? `<span class="priority-badge ${priMeta.cls}" id="pri-badge-${rid}">${priMeta.icon} ${priMeta.label}</span>`
-      : `<span class="priority-badge pri-unset" id="pri-badge-${rid}">&#x1F4CC; Set priority</span>`;
-
-    return `
-      <div class="finding finding-stripe-${sev}${isDismissed?' finding-dismissed':''}" id="finding-card-${i}">
-
-        <!-- Header row -->
-        <div class="finding-top">
-          <span class="finding-sev-badge fsb-${sev}">${sevIcon} ${sev}</span>
-          <span class="finding-title">${esc(f.title||'Untitled Finding')}</span>
-          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
-            ${priBadge}
-            <span class="finding-status-badge ${statusBadgeClass}" id="rec-badge-${rid}">${curStatus}</span>
-          </div>
-        </div>
-
-        <!-- Issue detail -->
-        <div class="finding-section">
-          <div class="finding-label">&#x1F50D; Issue</div>
-          <div class="finding-text">${esc(f.detail||'')}</div>
-        </div>
-
-        <!-- Recommendation -->
-        ${f.recommendation ? `
-        <div class="finding-section">
-          <div class="finding-label">&#x2192; Recommendation</div>
-          <div class="finding-rec-box">${esc(f.recommendation)}</div>
-        </div>` : ''}
-
-        <!-- Priority -->
-        <div class="finding-section">
-          <div class="finding-label">&#x1F3AF; Your Priority <span style="font-weight:400;color:var(--muted);font-size:10px">(your assessment, independent of AI severity)</span></div>
-          <div class="priority-pills">${priorityPills}</div>
-        </div>
-
-        <!-- Status & Notes -->
-        <div class="finding-section">
-          <div class="finding-label">&#x1F4CC; Status &amp; Notes</div>
-          <div class="status-pills">${statusPills}</div>
-          <textarea class="finding-note" id="rec-note-${rid}"
-            placeholder="Add your notes — steps taken, who's working on it, links to tickets, target date..."
-            onblur="saveRecNote(${recId||'null'},this.value,${i})"
-          >${esc(existingNote||'')}</textarea>
-          <span class="finding-note-saved" id="note-saved-${rid}">Saved ✓</span>
-        </div>
-
-      </div>`;
-  };
-
   const imm = (a.immediate_actions||[]).map((x,i) =>
     `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`
   ).join('');
-
   const lng = (a.long_term_recommendations||[]).map((x,i) =>
     `<li class="ai-longterm-item"><span class="ai-longterm-num">${i+1}</span><span class="ai-longterm-text">${esc(x)}</span></li>`
   ).join('');
@@ -2217,14 +2500,12 @@ function renderAnalysis(d, out) {
         <div class="ai-banner-meta">${metaStr}</div>
       </div>
       ${pillHtml ? `<div class="ai-banner-pills">${pillHtml}</div>` : ''}
-      <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()" title="Download raw JSON response for sharing / debugging" style="flex-shrink:0;align-self:flex-start">&#x2B07; Export JSON</button>
+      <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()" title="Download raw JSON" style="flex-shrink:0;align-self:flex-start">&#x2B07; Export JSON</button>
     </div>
-
     <div class="card" style="margin-bottom:16px">
       <div class="card-title">&#x1F4CB; Executive Summary</div>
       <p style="font-size:14px;line-height:1.7;color:var(--text);margin:0">${esc(a.summary||'No summary provided.')}</p>
     </div>
-
     ${findings.length ? `<div style="margin-bottom:16px">
       <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px">
         &#x1F50D; Findings
@@ -2232,41 +2513,17 @@ function renderAnalysis(d, out) {
       </div>
       <div id="ai-findings-container"></div>
     </div>` : ''}
-
     ${imm ? `<div class="card" style="margin-bottom:16px">
       <div class="card-title">&#x26A1; Immediate Actions</div>
       <ul class="ai-action-list">${imm}</ul>
     </div>` : ''}
-
     ${lng ? `<div class="card" style="margin-bottom:16px">
       <div class="card-title">&#x1F4C5; Long-term Recommendations</div>
       <ul class="ai-longterm-list">${lng}</ul>
     </div>` : ''}
   `;
 
-  // Populate findings — fetch saved rec IDs + status/notes if analysis was persisted
-  const fc = document.getElementById('ai-findings-container');
-  if (fc && findings.length) {
-    const populate = (recMap, statusMap, noteMap, priMap) => {
-      fc.innerHTML = findings.map((f,i) => {
-        const recId = recMap ? recMap[i] : null;
-        return _renderFinding(f, i, recId, statusMap?.[recId], noteMap?.[recId], priMap?.[recId]);
-      }).join('');
-    };
-
-    if (analysisId) {
-      apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
-        const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
-        const recMap    = recs.reduce((m,r,i) => { m[i]=r.id;                return m; }, {});
-        const statusMap = recs.reduce((m,r)   => { m[r.id]=r.status;         return m; }, {});
-        const noteMap   = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
-        const priMap    = recs.reduce((m,r)   => { m[r.id]=r.priority||'';   return m; }, {});
-        populate(recMap, statusMap, noteMap, priMap);
-      }).catch(() => populate(null, null, null, null));
-    } else {
-      populate(null, null, null, null);
-    }
-  }
+  _populateFindingCards(findings, analysisId, 'ai-findings-container');
 }
 
 async function updateRecPriority(recId, priority, pillEl, findingIdx) {
