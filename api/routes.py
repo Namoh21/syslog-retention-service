@@ -763,7 +763,7 @@ async def netflow_status(
     from netflow_listener import _stats as nf_stats, _v9_templates, _ipfix_templates
 
     nf_enabled_raw = get_service_setting("netflow_enabled", db=db)
-    nf_enabled = settings.netflow_enabled if nf_enabled_raw is None else (nf_enabled_raw.lower() == "true")
+    nf_enabled = settings.netflow_enabled if not nf_enabled_raw else (nf_enabled_raw.lower() == "true")
     nf_port = int(get_service_setting("netflow_port", db=db) or settings.netflow_port)
     total_stored = db.query(sqlfunc.count(NetFlowRecord.id)).scalar() or 0
     return {
@@ -1530,7 +1530,7 @@ class ServiceConfigUpdate(BaseModel):
 async def get_service_config(_: User = Depends(require_admin)):
     from database import get_service_setting
     nf_enabled_raw = get_service_setting("netflow_enabled")
-    nf_enabled = settings.netflow_enabled if nf_enabled_raw is None else (nf_enabled_raw.lower() == "true")
+    nf_enabled = settings.netflow_enabled if not nf_enabled_raw else (nf_enabled_raw.lower() == "true")
     return {
         "allowed_syslog_sources": get_service_setting("allowed_syslog_sources"),
         "login_max_attempts": int(get_service_setting("login_max_attempts") or settings.login_max_attempts),

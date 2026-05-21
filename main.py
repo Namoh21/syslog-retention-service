@@ -125,7 +125,7 @@ async def lifespan(app: FastAPI):
 
     from database import get_service_setting
     _nf_enabled_raw = get_service_setting("netflow_enabled")
-    _nf_enabled = settings.netflow_enabled if _nf_enabled_raw is None else (_nf_enabled_raw.lower() == "true")
+    _nf_enabled = settings.netflow_enabled if not _nf_enabled_raw else (_nf_enabled_raw.lower() == "true")
     _nf_port = int(get_service_setting("netflow_port") or settings.netflow_port)
     if _nf_enabled:
         try:
