@@ -2622,10 +2622,29 @@ async function loadSvcConfig() {
           <div class="help-tip">Applies to new logins.</div>
         </div>
         <div class="form-group">
-          <label>Max logs per AI analysis</label>
+          <label>Max logs per AI analysis <span style="color:var(--muted)">(Anthropic only)</span></label>
           <input type="number" id="sc-ai-logs" value="${c.ai_analysis_max_logs}" min="50" max="2000" />
         </div>
       </div>
+
+      <hr class="divider" style="margin:16px 0" />
+      <div style="font-size:13px;font-weight:600;margin-bottom:12px">&#x1F4CA; NetFlow Collector</div>
+      <div style="display:grid;grid-template-columns:auto 1fr;gap:12px 20px;align-items:start;margin-bottom:12px">
+        <div class="form-group" style="margin-bottom:0">
+          <label>Enable NetFlow collection</label>
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px">
+            <input type="checkbox" id="sc-nf-enabled" ${c.netflow_enabled?'checked':''} />
+            <span style="font-size:13px">${c.netflow_enabled?'<span style="color:var(--accent2)">Listening</span>':'<span style="color:var(--muted)">Disabled</span>'}</span>
+          </label>
+          <div class="help-tip">Receives NetFlow v5/v9/IPFIX from your UDM Pro. Takes effect immediately — no restart needed.</div>
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>NetFlow UDP port</label>
+          <input type="number" id="sc-nf-port" value="${c.netflow_port}" min="1024" max="65535" style="width:140px" />
+          <div class="help-tip">Standard port is 2055. Port change takes effect after service restart.</div>
+        </div>
+      </div>
+
       <button class="btn btn-primary" onclick="saveSvcConfig()">Save Configuration</button>
       <div id="svc-config-msg" style="margin-top:12px"></div>
     `;
@@ -2640,10 +2659,13 @@ async function saveSvcConfig() {
     login_lockout_seconds: parseInt(document.getElementById('sc-lockout-secs').value),
     access_token_expire_minutes: parseInt(document.getElementById('sc-token-exp').value),
     ai_analysis_max_logs: parseInt(document.getElementById('sc-ai-logs').value),
+    netflow_enabled: document.getElementById('sc-nf-enabled').checked,
+    netflow_port: parseInt(document.getElementById('sc-nf-port').value),
   };
   try {
     await apiFetch('/api/admin/settings/service', { method:'PUT', body:JSON.stringify(body) });
-    msg.innerHTML = '<div class="alert alert-ok">Configuration saved and encrypted in database.</div>';
+    msg.innerHTML = '<div class="alert alert-ok">Configuration saved. NetFlow enable/disable takes effect immediately. Port changes require a service restart.</div>';
+    setTimeout(loadSvcConfig, 1500);
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 

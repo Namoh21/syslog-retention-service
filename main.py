@@ -123,11 +123,15 @@ async def lifespan(app: FastAPI):
     except OSError as exc:
         logger.warning("TCP listener failed (port %d): %s", settings.syslog_tcp_port, exc)
 
-    if settings.netflow_enabled:
+    from database import get_service_setting
+    _nf_enabled_raw = get_service_setting("netflow_enabled")
+    _nf_enabled = settings.netflow_enabled if _nf_enabled_raw is None else (_nf_enabled_raw.lower() == "true")
+    _nf_port = int(get_service_setting("netflow_port") or settings.netflow_port)
+    if _nf_enabled:
         try:
-            _netflow_transport = await start_netflow_listener(settings.netflow_host, settings.netflow_port)
+            _netflow_transport = await start_netflow_listener(settings.netflow_host, _nf_port)
         except OSError as exc:
-            logger.warning("NetFlow listener failed (port %d): %s — set NETFLOW_ENABLED=false to disable", settings.netflow_port, exc)
+            logger.warning("NetFlow listener failed (port %d): %s", _nf_port, exc)
 
     from alert_engine import run_alert_engine
     _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))

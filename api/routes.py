@@ -1449,23 +1449,49 @@ async def export_logs_csv(
 
 # ===================== Service Configuration =====================
 
+async def _apply_netflow_toggle(enable: bool):
+    """Start or stop the NetFlow UDP listener without a full service restart."""
+    import main as _main
+    from config import settings as _settings
+    from database import get_service_setting as _gss
+    if enable:
+        if _main._netflow_transport and not _main._netflow_transport.is_closing():
+            return  # already running
+        try:
+            from netflow_listener import start_netflow_listener
+            port = int(_gss("netflow_port") or _settings.netflow_port)
+            _main._netflow_transport = await start_netflow_listener(_settings.netflow_host, port)
+        except Exception as exc:
+            import logging
+            logging.getLogger("routes").warning("NetFlow start failed: %s", exc)
+    else:
+        if _main._netflow_transport:
+            _main._netflow_transport.close()
+            _main._netflow_transport = None
+
 class ServiceConfigUpdate(BaseModel):
     allowed_syslog_sources: Optional[str] = None
     login_max_attempts: Optional[int] = None
     login_lockout_seconds: Optional[int] = None
     access_token_expire_minutes: Optional[int] = None
     ai_analysis_max_logs: Optional[int] = None
+    netflow_enabled: Optional[bool] = None
+    netflow_port: Optional[int] = None
 
 
 @router.get("/admin/settings/service", tags=["admin"])
 async def get_service_config(_: User = Depends(require_admin)):
     from database import get_service_setting
+    nf_enabled_raw = get_service_setting("netflow_enabled")
+    nf_enabled = settings.netflow_enabled if nf_enabled_raw is None else (nf_enabled_raw.lower() == "true")
     return {
         "allowed_syslog_sources": get_service_setting("allowed_syslog_sources"),
         "login_max_attempts": int(get_service_setting("login_max_attempts") or settings.login_max_attempts),
         "login_lockout_seconds": int(get_service_setting("login_lockout_seconds") or settings.login_lockout_seconds),
         "access_token_expire_minutes": int(get_service_setting("access_token_expire_minutes") or settings.access_token_expire_minutes),
         "ai_analysis_max_logs": int(get_service_setting("ai_analysis_max_logs") or settings.ai_analysis_max_logs),
+        "netflow_enabled": nf_enabled,
+        "netflow_port": int(get_service_setting("netflow_port") or settings.netflow_port),
     }
 
 
@@ -1493,6 +1519,15 @@ async def update_service_config(
     if body.ai_analysis_max_logs is not None:
         set_service_setting("ai_analysis_max_logs", str(body.ai_analysis_max_logs), db)
         changed.append("ai_analysis_max_logs")
+    if body.netflow_enabled is not None:
+        set_service_setting("netflow_enabled", str(body.netflow_enabled).lower(), db)
+        changed.append("netflow_enabled")
+        # Apply immediately — start or stop the listener without a restart
+        import asyncio as _asyncio
+        _asyncio.get_event_loop().create_task(_apply_netflow_toggle(body.netflow_enabled))
+    if body.netflow_port is not None:
+        set_service_setting("netflow_port", str(body.netflow_port), db)
+        changed.append("netflow_port")
     write_audit(db, admin.username, "settings.service",
                 f"Service config updated: {', '.join(changed)}",
                 request.client.host if request.client else "")
