@@ -107,7 +107,8 @@ _SIEM_CTI_SYSTEM = """\
           "impact_potential": "<string>",
           "confidence_level": <float 0.0-1.0>,
           "scope": "<string>"
-        }
+        },
+        "recommendation": "<specific, actionable step the analyst should take for this event — block the IP, isolate the host, rotate credentials, patch the service, etc. Be concrete: name the tool, command, or UI action.>"
       }
     ],
     "summary": {
@@ -336,7 +337,8 @@ _NRE_SYSTEM = """\
           "is_recurring": <bool>,
           "occurrence_count": <int|null>,
           "pattern": "<string|null — e.g. every 60s, after heavy load, etc.>"
-        }
+        },
+        "recommendation": "<specific, actionable remediation step for this service event — restart the service, free disk space, fix the config, check the dependency. Name the exact command, file path, or UI action.>"
       }
     ],
     "summary": {
@@ -478,7 +480,8 @@ STRUCTURAL EXAMPLE — REPLACE ALL VALUES WITH REAL DATA FROM THE LOGS ABOVE.
         "is_recurring": true,
         "occurrence_count": 5,
         "pattern": "<describe the pattern, e.g. every ~60s>"
-      }
+      },
+      "recommendation": "<specific remediation step from the log evidence, e.g. restart service X, free disk on /var, fix config at /etc/...>"
     }
   ],
   "summary": {
@@ -580,7 +583,8 @@ Do not copy IPs, timestamps, event IDs, or any other value from this example.
         "impact_potential": "<what damage this could cause>",
         "confidence_level": 0.82,
         "scope": "<perimeter|internal|lateral|etc>"
-      }
+      },
+      "recommendation": "<specific action to take for this event, e.g. block the IP at the firewall, rotate the credential, isolate the host>"
     }
   ],
   "summary": {
@@ -1065,7 +1069,7 @@ def _normalise_siem_cti(obj: dict) -> dict:
             "severity":       sev,
             "title":          str(title)[:256],
             "detail":         "\n".join(detail_parts),
-            "recommendation": "",
+            "recommendation": ev.get("recommendation", ""),
         })
 
     immediate = response_actions.get("immediate_containment", []) or []
@@ -1128,7 +1132,7 @@ def _normalise_nre(obj: dict) -> dict:
             "severity":       sev,
             "title":          f"{ev.get('service','?')} — {ev.get('health_state','?')} on {ev.get('host','?')}",
             "detail":         "\n".join(detail_parts),
-            "recommendation": "",
+            "recommendation": ev.get("recommendation", ""),
         })
 
     immediate = ra.get("immediate_remediation", []) or []

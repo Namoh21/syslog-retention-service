@@ -2564,7 +2564,7 @@ function _renderSiemCti(d, out) {
       severity: sev,
       title,
       detail,
-      recommendation: '',
+      recommendation: ev.recommendation || '',
       _extra_html: logIdSection + iocSection + mitreSection + dmSection,
     };
   });
@@ -2828,7 +2828,7 @@ function _renderNre(d, out) {
       severity: sev,
       title: `${ev.service||'?'} — ${ev.health_state||'?'} on ${ev.host||'?'}`,
       detail: ev.raw_log_excerpt || '',
-      recommendation: '',
+      recommendation: ev.recommendation || '',
       _extra_html: logIdSection + rcSection + impSection + recSection,
     };
   });
