@@ -229,72 +229,105 @@ Respond with ONLY a valid JSON object matching the schema above. No markdown fen
 no prose, no explanation outside the JSON.\
 """
 
-# Local LLM example — concrete filled instance of the schema (keeps small models on track)
-_LOCAL_EXAMPLE = """{
+# Local LLM example — shows JSON structure only; values are placeholders, NOT real data.
+# WARNING: every value below is fictional. The model MUST replace all of them with
+# data extracted from the actual logs provided by the user. Do not copy these values.
+_LOCAL_EXAMPLE = """\
+STRUCTURAL EXAMPLE — REPLACE ALL VALUES WITH REAL DATA FROM THE LOGS ABOVE.
+Do not copy IPs, timestamps, event IDs, or any other value from this example.
+{
   "report_metadata": {
-    "generated_at": "2026-05-21T04:00:00Z",
-    "log_source_format": "syslog",
-    "log_timespan": {"earliest": "2026-05-21T03:00:00Z", "latest": "2026-05-21T04:00:00Z"},
-    "total_events_analyzed": 150,
-    "total_iocs_extracted": 3,
-    "low_confidence_findings": 0,
+    "generated_at": "<ISO8601 timestamp of right now>",
+    "log_source_format": "<syslog|netflow|mixed — from actual logs>",
+    "log_timespan": {"earliest": "<earliest timestamp in logs>", "latest": "<latest timestamp in logs>"},
+    "total_events_analyzed": "<integer — count of log lines analyzed>",
+    "total_iocs_extracted": "<integer — count of unique IOCs found>",
+    "low_confidence_findings": "<integer — count of findings below 0.70 confidence>",
     "escalation_required": false,
     "escalation_reason": null
   },
   "events": [
     {
       "event_id": "EVT-001",
-      "timestamp": "2026-05-21T03:45:12Z",
-      "raw_log_excerpt": "kernel: [UFW BLOCK] SRC=203.0.113.45 DST=192.168.1.1 PROTO=TCP DPT=22",
-      "log_identification": {"format": "syslog", "generating_device": "UDM-Pro"},
+      "timestamp": "<exact timestamp from the log entry>",
+      "raw_log_excerpt": "<copy the exact log line that triggered this event>",
+      "log_identification": {
+        "format": "syslog",
+        "generating_device": "<hostname or IP of the device that sent the log>"
+      },
       "iocs": [
-        {"value": "203.0.113.45", "type": "ip", "classification": "external",
-         "malicious_pattern_flagged": true, "confidence": 0.85, "low_confidence": false}
+        {
+          "value": "<IP, domain, hash, or account from the actual log>",
+          "type": "ip",
+          "classification": "<internal|external>",
+          "malicious_pattern_flagged": true,
+          "confidence": 0.85,
+          "low_confidence": false
+        }
       ],
       "mitre_mappings": [
-        {"tactic": "Initial Access", "technique_id": "T1190",
-         "technique_name": "Exploit Public-Facing Application",
-         "evidence": "SRC=203.0.113.45 DPT=22 repeated 47 times",
-         "confidence": 0.80, "low_confidence": false}
+        {
+          "tactic": "<ATT&CK tactic name>",
+          "technique_id": "<Txxxx>",
+          "technique_name": "<technique name>",
+          "evidence": "<exact excerpt from the log that supports this mapping>",
+          "confidence": 0.80,
+          "low_confidence": false
+        }
       ],
       "diamond_model": {
-        "adversary": "unknown external actor",
-        "capability": "SSH brute-force scanning",
-        "infrastructure": "203.0.113.45",
-        "victim": "192.168.1.1:22",
-        "confidence": 0.75, "low_confidence": false
+        "adversary": "<inferred adversary or 'unknown'>",
+        "capability": "<what capability the adversary used>",
+        "infrastructure": "<IP or domain used as infrastructure>",
+        "victim": "<target host or service>",
+        "confidence": 0.75,
+        "low_confidence": false
       },
       "threat_severity": {
         "rating": "HIGH",
-        "impact_potential": "Unauthorized gateway access if SSH exposed",
+        "impact_potential": "<what damage this could cause>",
         "confidence_level": 0.82,
-        "scope": "perimeter"
+        "scope": "<perimeter|internal|lateral|etc>"
       }
     }
   ],
   "summary": {
     "timeline": [
-      {"timestamp": "2026-05-21T03:45:12Z", "event_id": "EVT-001",
-       "event": "SSH brute-force blocked from 203.0.113.45",
-       "significance": "Persistent external scanning targeting SSH service"}
+      {
+        "timestamp": "<from actual log>",
+        "event_id": "EVT-001",
+        "event": "<brief description of what happened>",
+        "significance": "<why this matters>"
+      }
     ],
     "aggregate_iocs": [
-      {"value": "203.0.113.45", "type": "ip", "classification": "external",
-       "seen_in_events": ["EVT-001"], "malicious_pattern_flagged": true}
+      {
+        "value": "<actual IOC value from logs>",
+        "type": "ip",
+        "classification": "external",
+        "seen_in_events": ["EVT-001"],
+        "malicious_pattern_flagged": true
+      }
     ],
     "top_mitre_techniques": [
-      {"technique_id": "T1190", "technique_name": "Exploit Public-Facing Application",
-       "tactic": "Initial Access", "event_count": 1}
+      {
+        "technique_id": "<Txxxx>",
+        "technique_name": "<name>",
+        "tactic": "<tactic>",
+        "event_count": 1
+      }
     ],
     "overall_threat_severity": "HIGH",
     "response_actions": {
-      "immediate_containment": ["Block 203.0.113.45 at perimeter firewall immediately"],
-      "investigation_next_steps": ["Review SSH auth logs for successful logins from this IP"],
-      "long_term_remediation": ["Disable direct SSH, enforce VPN + jump host access only"],
-      "additional_logs_needed": ["SSH authentication logs from target host"]
+      "immediate_containment": ["<specific action based on actual finding>"],
+      "investigation_next_steps": ["<what to investigate next>"],
+      "long_term_remediation": ["<strategic fix>"],
+      "additional_logs_needed": ["<what other logs would help>"]
     }
   }
-}"""
+}
+END STRUCTURAL EXAMPLE — output must contain ONLY real data from the logs, not the above.\
+"""
 
 # ── Log formatting ────────────────────────────────────────────────────────────
 
@@ -562,9 +595,10 @@ async def _call_local_llm(base_url: str, model: str, user_message: str) -> str:
     import httpx as _httpx
     user = (
         f"{user_message}\n\n"
-        f"Analyze the log data above and respond with a JSON object matching the SIEM-CTI schema. "
-        f"Use real data from the logs — do NOT copy example values. "
-        f"Example structure (use real content, not these placeholders):\n"
+        f"Produce a SIEM-CTI JSON report for the log data above. "
+        f"Every IP, timestamp, log excerpt, IOC, and event in your output MUST come "
+        f"from the actual log lines provided — never invent or copy from the schema example. "
+        f"Schema structure reference (all values are placeholders — replace with real log data):\n"
         f"{_LOCAL_EXAMPLE}"
     )
     payload = {
