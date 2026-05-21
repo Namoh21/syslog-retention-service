@@ -111,31 +111,82 @@
   .pagination{display:flex;gap:8px;align-items:center;margin-top:12px;}
   .page-info{color:var(--muted);font-size:12px;}
 
-  /* ── AI findings ── */
-  .finding{border-left:3px solid var(--border);padding:10px 14px;margin-bottom:10px;border-radius:0 var(--radius) var(--radius) 0;}
-  .finding-CRITICAL{border-color:#f85149;background:rgba(248,81,73,.06);}
-  .finding-HIGH{border-color:#d29922;background:rgba(210,153,34,.06);}
-  .finding-MEDIUM{border-color:#58a6ff;background:rgba(88,166,255,.06);}
-  .finding-LOW,.finding-INFO{border-color:#3fb950;background:rgba(63,185,80,.04);}
-  .finding h4{font-size:13px;margin-bottom:4px;}
-  .finding p{color:var(--muted);font-size:12px;margin-bottom:4px;}
-  .finding .rec{color:var(--accent2);font-size:12px;}
+  /* ── AI analysis output ── */
+  .ai-banner{border-radius:var(--radius);padding:20px 24px;margin-bottom:16px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;}
+  .ai-banner-LOW{background:rgba(63,185,80,.12);border:1px solid rgba(63,185,80,.3);}
+  .ai-banner-MEDIUM{background:rgba(88,166,255,.1);border:1px solid rgba(88,166,255,.3);}
+  .ai-banner-HIGH{background:rgba(210,153,34,.12);border:1px solid rgba(210,153,34,.35);}
+  .ai-banner-CRITICAL{background:rgba(248,81,73,.12);border:1px solid rgba(248,81,73,.35);}
+  .ai-banner-UNKNOWN{background:var(--surface);border:1px solid var(--border);}
+  .ai-banner-icon{font-size:36px;line-height:1;flex-shrink:0;}
+  .ai-banner-body{flex:1;}
+  .ai-banner-level{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px;}
+  .ai-banner-LOW .ai-banner-level{color:#3fb950;}
+  .ai-banner-MEDIUM .ai-banner-level{color:#58a6ff;}
+  .ai-banner-HIGH .ai-banner-level{color:#d29922;}
+  .ai-banner-CRITICAL .ai-banner-level{color:#f85149;}
+  .ai-banner-title{font-size:22px;font-weight:700;color:var(--text);line-height:1.2;}
+  .ai-banner-meta{font-size:12px;color:var(--muted);margin-top:4px;}
+  .ai-banner-pills{display:flex;gap:8px;flex-wrap:wrap;}
+  .ai-pill{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;}
+  .ai-pill-crit{background:rgba(248,81,73,.2);color:#f85149;}
+  .ai-pill-high{background:rgba(210,153,34,.2);color:#d29922;}
+  .ai-pill-med{background:rgba(88,166,255,.15);color:#58a6ff;}
+  .ai-pill-low{background:rgba(63,185,80,.15);color:#3fb950;}
+  .ai-pill-info{background:rgba(139,148,158,.15);color:#8b949e;}
+  /* Findings */
+  .finding{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px;overflow:hidden;background:var(--surface2);}
+  .finding-header{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;cursor:pointer;user-select:none;}
+  .finding-header:hover{background:rgba(88,166,255,.04);}
+  .finding-sev-icon{font-size:18px;flex-shrink:0;margin-top:1px;}
+  .finding-hbody{flex:1;}
+  .finding-htitle{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px;}
+  .finding-hrec{font-size:12px;color:var(--accent2);}
+  .finding-chevron{font-size:10px;color:var(--muted);transition:transform .2s;flex-shrink:0;margin-top:4px;}
+  .finding.open .finding-chevron{transform:rotate(90deg);}
+  .finding-body{display:none;padding:0 16px 14px 46px;border-top:1px solid var(--border);}
+  .finding.open .finding-body{display:block;}
+  .finding-detail{font-size:13px;color:var(--muted);line-height:1.6;margin:10px 0 12px;}
+  .finding-border-CRITICAL{border-color:rgba(248,81,73,.4);}
+  .finding-border-HIGH{border-color:rgba(210,153,34,.4);}
+  .finding-border-MEDIUM{border-color:rgba(88,166,255,.3);}
+  .finding-border-LOW,.finding-border-INFO{border-color:rgba(63,185,80,.25);}
+  /* Status pills */
+  .status-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;}
+  .status-pill{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;opacity:.45;}
+  .status-pill:hover{opacity:.75;}
+  .status-pill.active{opacity:1;}
+  .sp-open{background:rgba(88,166,255,.15);color:#58a6ff;border-color:rgba(88,166,255,.3);}
+  .sp-implemented{background:rgba(63,185,80,.2);color:#3fb950;border-color:rgba(63,185,80,.35);}
+  .sp-working{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.25);}
+  .sp-investigating{background:rgba(210,153,34,.2);color:#d29922;border-color:rgba(210,153,34,.35);}
+  .sp-dismissed{background:rgba(139,148,158,.1);color:#8b949e;border-color:rgba(139,148,158,.2);}
+  .finding-note{width:100%;margin-top:6px;padding:5px 8px;font-size:12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);font-family:inherit;}
+  /* Immediate actions */
+  .ai-action-list{list-style:none;padding:0;margin:0;}
+  .ai-action-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(48,54,61,.5);}
+  .ai-action-item:last-child{border-bottom:none;}
+  .ai-action-num{width:24px;height:24px;border-radius:50%;background:rgba(248,81,73,.2);color:#f85149;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
+  .ai-action-text{font-size:13px;color:var(--text);line-height:1.5;}
+  /* Long-term */
+  .ai-longterm-list{list-style:none;padding:0;margin:0;}
+  .ai-longterm-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(48,54,61,.5);}
+  .ai-longterm-item:last-child{border-bottom:none;}
+  .ai-longterm-num{width:24px;height:24px;border-radius:50%;background:rgba(88,166,255,.15);color:#58a6ff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px;}
+  .ai-longterm-text{font-size:13px;color:var(--muted);line-height:1.5;}
+  /* Legacy badge kept for history tab */
   .threat-badge{display:inline-block;padding:3px 10px;border-radius:4px;font-weight:700;font-size:13px;margin-bottom:12px;}
   .threat-LOW{background:rgba(63,185,80,.2);color:#3fb950;}
   .threat-MEDIUM{background:rgba(88,166,255,.2);color:#58a6ff;}
   .threat-HIGH{background:rgba(210,153,34,.2);color:#d29922;}
   .threat-CRITICAL{background:rgba(248,81,73,.2);color:#f85149;}
-
-  /* ── AI recommendation status ── */
+  /* Status badges in history */
   .rec-status{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;}
   .rec-status-open{background:rgba(88,166,255,.15);color:#58a6ff;}
   .rec-status-implemented{background:rgba(63,185,80,.2);color:#3fb950;}
   .rec-status-working{background:rgba(63,185,80,.35);color:#3fb950;}
   .rec-status-investigating{background:rgba(210,153,34,.2);color:#d29922;}
   .rec-status-dismissed{background:rgba(139,148,158,.15);color:#8b949e;}
-  .finding-controls{margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
-  .finding-controls select{padding:4px 8px;font-size:12px;}
-  .finding-controls input{padding:4px 8px;font-size:12px;flex:1;min-width:160px;}
   .ai-history-item{border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px;margin-bottom:10px;background:var(--surface2);}
   .ai-history-item .hist-header{display:flex;align-items:center;gap:10px;margin-bottom:6px;flex-wrap:wrap;}
   .ai-history-item .hist-recs{margin-top:8px;display:flex;flex-direction:column;gap:4px;}
@@ -1575,25 +1626,22 @@ async function loadAiHistory() {
   }
 }
 
-async function updateRecStatus(recId, status, selectEl) {
+async function updateRecStatus(recId, status, pillEl) {
   try {
     await apiFetch(`/api/ai/recommendations/${recId}`, {
       method: 'PATCH',
       body: JSON.stringify({ status })
     });
-    // Update the status badge next to the select
-    const row = selectEl.closest('[data-rec-id]');
-    if (row) {
-      const badge = row.querySelector('.rec-status');
-      if (badge) {
-        badge.className = `rec-status rec-status-${status}`;
-        badge.textContent = status;
-      }
+    // Update pill active state
+    if (pillEl) {
+      const group = pillEl.closest('.status-pills');
+      if (group) group.querySelectorAll('.status-pill').forEach(p => p.classList.toggle('active', p === pillEl));
     }
+    // Update badge in finding header
+    const badge = document.getElementById(`rec-badge-${recId}`);
+    if (badge) { badge.className = `rec-status rec-status-${status}`; badge.textContent = status; }
   } catch(e) {
     alert('Failed to update status: ' + e.message);
-    // revert select
-    selectEl.value = selectEl.dataset.prev || selectEl.value;
   }
 }
 
@@ -1826,67 +1874,144 @@ function _resumeActiveJob() {
 }
 
 function renderAnalysis(d, out) {
-  if (d.error) { out.innerHTML=`<div class="alert alert-warn">${d.error}</div>`; return; }
+  if (d.error) { out.innerHTML=`<div class="alert alert-warn"><strong>Analysis failed:</strong> ${esc(d.error)}</div>`; return; }
   const a = d.analysis;
+
+  // Raw fallback — LLM didn't return valid JSON
   if (!a || a.raw) {
-    out.innerHTML=`<div class="card"><pre style="white-space:pre-wrap;font-size:13px">${esc(typeof a==='string'?a:a?.summary||JSON.stringify(d))}</pre></div>`;
+    const txt = typeof a === 'string' ? a : (a?.summary || JSON.stringify(d, null, 2));
+    out.innerHTML = `
+      <div class="card">
+        <div class="card-title">&#x1F916; Analysis Result</div>
+        <div style="font-size:13px;line-height:1.7;color:var(--text);white-space:pre-wrap">${esc(txt)}</div>
+      </div>`;
     return;
   }
-  const tl = a.threat_level||'UNKNOWN';
+
+  const tl = a.threat_level || 'UNKNOWN';
   const analysisId = d.analysis_id;
 
-  // If we have an analysis_id we can load recommendations with DB IDs for status tracking
-  const renderFindings = (findings, recMap) => findings.map((f, i) => {
-    const recId = recMap ? recMap[i] : null;
-    const statusControls = recId ? `
-      <div class="finding-controls">
-        <span style="font-size:11px;color:var(--muted)">Status:</span>
-        <select class="btn btn-ghost btn-sm" style="padding:3px 8px;font-size:11px" onchange="updateRecStatus(${recId},this.value,this)">
-          ${['open','implemented','working','investigating','dismissed'].map(s=>`<option value="${s}">${s}</option>`).join('')}
-        </select>
-        <input type="text" placeholder="Add a note..." style="padding:3px 8px;font-size:11px;flex:1;min-width:140px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius)" id="rec-note-${recId}" onblur="saveRecNote(${recId},this.value)" />
-        <button class="btn btn-ghost btn-sm" onclick="saveRecNote(${recId},document.getElementById('rec-note-${recId}').value)">Save</button>
-      </div>` : '';
+  const tlIcon = {LOW:'&#x2705;', MEDIUM:'&#x26A0;&#xFE0F;', HIGH:'&#x1F534;', CRITICAL:'&#x1F6A8;', UNKNOWN:'&#x2753;'}[tl] || '&#x2753;';
+  const tlLabel = {LOW:'Low — network looks healthy', MEDIUM:'Medium — some items need attention', HIGH:'High — action recommended', CRITICAL:'Critical — immediate action required', UNKNOWN:'Unknown'}[tl] || tl;
+
+  // Count findings by severity
+  const findings = a.findings || [];
+  const sevCount = findings.reduce((m,f) => { m[f.severity]=(m[f.severity]||0)+1; return m; }, {});
+  const pillHtml = [
+    sevCount.CRITICAL ? `<span class="ai-pill ai-pill-crit">&#x1F534; ${sevCount.CRITICAL} Critical</span>` : '',
+    sevCount.HIGH     ? `<span class="ai-pill ai-pill-high">&#x26A0;&#xFE0F; ${sevCount.HIGH} High</span>` : '',
+    sevCount.MEDIUM   ? `<span class="ai-pill ai-pill-med">&#x1F7E1; ${sevCount.MEDIUM} Medium</span>` : '',
+    sevCount.LOW      ? `<span class="ai-pill ai-pill-low">&#x1F7E2; ${sevCount.LOW} Low</span>` : '',
+    sevCount.INFO     ? `<span class="ai-pill ai-pill-info">&#x2139;&#xFE0F; ${sevCount.INFO} Info</span>` : '',
+  ].filter(Boolean).join('');
+
+  const modelStr = d.provider === 'local' ? `Local LLM` : (d.model || '');
+  const metaStr  = [
+    d.log_count ? `${d.log_count.toLocaleString()} log entries` : '',
+    d.hours_covered ? `${d.hours_covered}h window` : '',
+    modelStr,
+    d.analyzed_at ? `analyzed ${fmtDate(d.analyzed_at)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  // Render finding cards (expandable)
+  const _renderFinding = (f, i, recId, existingStatus, existingNote) => {
+    const sevIcon = {CRITICAL:'&#x1F534;', HIGH:'&#x26A0;&#xFE0F;', MEDIUM:'&#x1F7E1;', LOW:'&#x1F7E2;', INFO:'&#x2139;&#xFE0F;'}[f.severity] || '&#x26AA;';
+    const statusPills = recId ? ['open','implemented','working','investigating','dismissed'].map(s =>
+      `<button class="status-pill sp-${s}${existingStatus===s?' active':''}" onclick="updateRecStatus(${recId},'${s}',this)" title="${s}">${s}</button>`
+    ).join('') : '';
+    const noteField = recId ? `<input class="finding-note" id="rec-note-${recId}" placeholder="Add a note about this finding..." value="${esc(existingNote||'')}" onblur="saveRecNote(${recId},this.value)" />` : '';
     return `
-      <div class="finding finding-${f.severity}">
-        <h4><span class="tag">${f.severity}</span>&nbsp;${esc(f.title)}</h4>
-        <p>${esc(f.detail)}</p>
-        ${f.recommendation?`<div class="rec">&#x2192; ${esc(f.recommendation)}</div>`:''}
-        ${statusControls}
+      <div class="finding finding-border-${f.severity}" id="finding-card-${i}">
+        <div class="finding-header" onclick="toggleFinding(${i})">
+          <span class="finding-sev-icon">${sevIcon}</span>
+          <div class="finding-hbody">
+            <div class="finding-htitle">${esc(f.title||'')}</div>
+            ${f.recommendation ? `<div class="finding-hrec">&#x2192; ${esc(f.recommendation)}</div>` : ''}
+          </div>
+          ${recId ? `<span class="rec-status rec-status-${existingStatus||'open'}" id="rec-badge-${recId}">${existingStatus||'open'}</span>` : ''}
+          <span class="finding-chevron">&#x25B6;</span>
+        </div>
+        <div class="finding-body">
+          <div class="finding-detail">${esc(f.detail||'')}</div>
+          ${f.recommendation ? `<div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.2);border-radius:var(--radius);padding:10px 12px;font-size:13px;color:var(--accent2);margin-bottom:12px"><strong>Recommendation:</strong> ${esc(f.recommendation)}</div>` : ''}
+          ${recId ? `<div style="margin-bottom:6px;font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em">Track status</div>
+          <div class="status-pills">${statusPills}</div>${noteField}` : ''}
+        </div>
       </div>`;
-  }).join('');
+  };
 
-  const imm = (a.immediate_actions||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
-  const lng = (a.long_term_recommendations||[]).map(x=>`<li style="margin-bottom:8px;color:var(--text)">${esc(x)}</li>`).join('');
+  const imm = (a.immediate_actions||[]).map((x,i) =>
+    `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`
+  ).join('');
 
-  out.innerHTML=`
-    <div class="card">
-      <div style="margin-bottom:12px">
-        <span class="threat-badge threat-${tl}">Threat Level: ${tl}</span>
-        <span style="color:var(--muted);font-size:12px;margin-left:12px">${d.log_count} entries &middot; ${d.hours_covered}h window &middot; ${d.provider==='local'?'Local: ':''}${esc(d.model||'')}</span>
+  const lng = (a.long_term_recommendations||[]).map((x,i) =>
+    `<li class="ai-longterm-item"><span class="ai-longterm-num">${i+1}</span><span class="ai-longterm-text">${esc(x)}</span></li>`
+  ).join('');
+
+  out.innerHTML = `
+    <div class="ai-banner ai-banner-${tl}">
+      <div class="ai-banner-icon">${tlIcon}</div>
+      <div class="ai-banner-body">
+        <div class="ai-banner-level">Threat Level</div>
+        <div class="ai-banner-title">${tlLabel}</div>
+        <div class="ai-banner-meta">${metaStr}</div>
       </div>
-      <p style="font-size:14px;line-height:1.6">${esc(a.summary||'')}</p>
+      ${pillHtml ? `<div class="ai-banner-pills">${pillHtml}</div>` : ''}
     </div>
-    <div id="ai-findings-container"></div>
-    ${imm?`<div class="card"><div class="card-title">Immediate Actions</div><ul style="padding-left:20px">${imm}</ul></div>`:''}
-    ${lng?`<div class="card"><div class="card-title">Long-term Recommendations</div><ul style="padding-left:20px">${lng}</ul></div>`:''}
-    <p style="color:var(--muted);font-size:11px;margin-top:4px">Analyzed at ${fmtDate(d.analyzed_at)}</p>`;
 
-  // Populate findings — fetch rec IDs if analysis was saved
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4CB; Executive Summary</div>
+      <p style="font-size:14px;line-height:1.7;color:var(--text);margin:0">${esc(a.summary||'No summary provided.')}</p>
+    </div>
+
+    ${findings.length ? `<div class="card" style="margin-bottom:16px">
+      <div class="card-title" style="margin-bottom:12px">&#x1F50D; Findings
+        <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Click a finding to expand · set status to track your remediation</span>
+      </div>
+      <div id="ai-findings-container"></div>
+    </div>` : ''}
+
+    ${imm ? `<div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x26A1; Immediate Actions</div>
+      <ul class="ai-action-list">${imm}</ul>
+    </div>` : ''}
+
+    ${lng ? `<div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4C5; Long-term Recommendations</div>
+      <ul class="ai-longterm-list">${lng}</ul>
+    </div>` : ''}
+  `;
+
+  // Populate findings — fetch saved rec IDs + status if analysis was persisted
   const fc = document.getElementById('ai-findings-container');
-  if (fc && (a.findings||[]).length) {
+  if (fc && findings.length) {
+    const populate = (recMap, statusMap, noteMap) => {
+      fc.innerHTML = findings.map((f,i) => {
+        const recId = recMap ? recMap[i] : null;
+        return _renderFinding(f, i, recId, statusMap?.[recId], noteMap?.[recId]);
+      }).join('');
+      // Auto-expand first critical/high finding
+      const firstImportant = findings.findIndex(f => f.severity==='CRITICAL'||f.severity==='HIGH');
+      if (firstImportant >= 0) toggleFinding(firstImportant);
+    };
+
     if (analysisId) {
       apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
         const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
-        const recMap = recs.reduce((m,r,i) => { m[i]=r.id; return m; }, {});
-        fc.innerHTML = `<div class="card"><div class="card-title">Findings <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Set status to track which recommendations you've addressed</span></div>${renderFindings(a.findings, recMap)}</div>`;
-      }).catch(() => {
-        fc.innerHTML = `<div class="card"><div class="card-title">Findings</div>${renderFindings(a.findings, null)}</div>`;
-      });
+        const recMap   = recs.reduce((m,r,i) => { m[i]=r.id;         return m; }, {});
+        const statusMap= recs.reduce((m,r)   => { m[r.id]=r.status;   return m; }, {});
+        const noteMap  = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
+        populate(recMap, statusMap, noteMap);
+      }).catch(() => populate(null, null, null));
     } else {
-      fc.innerHTML = `<div class="card"><div class="card-title">Findings</div>${renderFindings(a.findings, null)}</div>`;
+      populate(null, null, null);
     }
   }
+}
+
+function toggleFinding(i) {
+  const card = document.getElementById(`finding-card-${i}`);
+  if (card) card.classList.toggle('open');
 }
 
 async function saveRecNote(recId, note) {
