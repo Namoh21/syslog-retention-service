@@ -180,10 +180,37 @@ _SIEM_CTI_SYSTEM = """\
   redundant findings before generating the events array.
 </analyst_memory_protocol>
 
+<grounding_rules>
+  STRICT LOG-GROUNDING REQUIREMENT — enforced before any event is generated:
+
+  Every event in the output MUST satisfy ALL of the following tests:
+    1. RAW EXCERPT TEST: raw_log_excerpt must be copied verbatim from a line
+       in the === LOG DATA === block. If you cannot find the exact line, the
+       event does not exist and must not be generated.
+    2. TIMESTAMP TEST: every timestamp must come directly from the log line
+       cited in raw_log_excerpt. Never invent, estimate, or interpolate a
+       timestamp. If the log line has no timestamp, use null.
+    3. IP/HOST TEST: every IP address, hostname, or identifier in iocs or
+       diamond_model must appear literally in the cited log line. If it is
+       not in the log line, it is not in the output.
+    4. IMPACT TEST: impact_potential and scope must be derived from what the
+       log line actually shows — not from general knowledge of what that
+       service could theoretically do. If the log shows a socket error, the
+       impact is service degradation — not "privilege escalation" or any other
+       inferred consequence not supported by the log text.
+
+  REJECTION RULE: If any event fails any of the four tests above, DROP that
+  event entirely. An empty events array is correct and acceptable when the
+  provided log data contains no qualifying entries. Never pad the output.
+</grounding_rules>
+
 <behavioral_rules>
   NEVER:
     speculate beyond log evidence
     | invent IOCs not present in provided data
+    | invent timestamps — every timestamp must come from an actual log line
+    | generate an event whose raw_log_excerpt cannot be found verbatim in the log data
+    | assign an impact or scope that is not directly supported by the cited log line
     | omit low_confidence flag on any finding below 0.70
     | return prose — output is always valid JSON only
     | reference external threat intel not present in logs
@@ -191,12 +218,16 @@ _SIEM_CTI_SYSTEM = """\
     | omit any schema key — use null or empty array if no data
     | re-surface a finding with status IMPLEMENTED, WORKING, or DISMISSED
       unless clear log evidence of regression exists
+    | generate events when the log data contains no qualifying entries —
+      return an empty events array instead
 
   ALWAYS:
-    read the ANALYST MEMORY block before analyzing log data
+    apply the GROUNDING RULES before generating any event
+    | read the ANALYST MEMORY block before analyzing log data
     | cross-reference every candidate finding against RESOLVED FINDINGS before including it
     | use NETWORK CONTEXT and KNOWLEDGE BASE to inform IOC classification
-    | anchor every finding to an exact log excerpt in the evidence field
+    | copy raw_log_excerpt verbatim from a line in the provided log data
+    | derive all timestamps directly from the cited log line
     | set low_confidence:true on any finding with confidence below 0.70
     | set escalation_required:true when overall_threat_severity is CRITICAL
     | set escalation_required:true when majority of findings are below 0.70
@@ -352,20 +383,47 @@ _NRE_SYSTEM = """\
   4. OPEN FINDINGS — include as RECURRING if still present; note in recurrence.pattern.
 </analyst_memory_protocol>
 
+<grounding_rules>
+  STRICT LOG-GROUNDING REQUIREMENT — enforced before any service_event is generated:
+
+  Every service_event in the output MUST satisfy ALL of the following tests:
+    1. RAW EXCERPT TEST: raw_log_excerpt must be copied verbatim from a line
+       in the === LOG DATA === block. If you cannot find the exact line, the
+       event does not exist and must not be generated.
+    2. TIMESTAMP TEST: every timestamp must come directly from the log line
+       cited in raw_log_excerpt. Never invent, estimate, or interpolate a
+       timestamp. If the log line has no timestamp, use null.
+    3. SERVICE/HOST TEST: service name and host must appear in the cited log
+       line. Do not infer service names from general knowledge if they are
+       not present in the log text.
+    4. ROOT CAUSE TEST: root_cause.evidence must be a verbatim excerpt from
+       the cited log line. root_cause.category must be derived only from what
+       the log line shows — not from what that service could theoretically do.
+
+  REJECTION RULE: If any service_event fails any of the four tests above,
+  DROP that event entirely. An empty service_events array is correct and
+  acceptable when the log data contains no qualifying entries. Never pad.
+</grounding_rules>
+
 <behavioral_rules>
   NEVER:
     speculate beyond log evidence
-    | invent service names, hostnames, or errors not present in the logs
+    | invent service names, hostnames, timestamps, or errors not present in the logs
+    | generate a service_event whose raw_log_excerpt cannot be found verbatim in the log data
+    | assign a root_cause or impact not directly supported by the cited log line
     | omit low_confidence flag on any finding with confidence below 0.70
     | return prose — output is always valid JSON only
     | flag security threats — that is the SIEM-CTI agent's domain
     | re-surface IMPLEMENTED, WORKING, or DISMISSED findings without regression evidence
     | omit any schema key — use null or empty array if no data
+    | generate service_events when the log data contains no qualifying entries
 
   ALWAYS:
-    read the ANALYST MEMORY block before analyzing log data
+    apply the GROUNDING RULES before generating any service_event
+    | read the ANALYST MEMORY block before analyzing log data
     | cross-reference every candidate finding against RESOLVED FINDINGS
-    | anchor every finding to an exact log excerpt in raw_log_excerpt and root_cause.evidence
+    | copy raw_log_excerpt verbatim from a line in the provided log data
+    | derive all timestamps directly from the cited log line
     | set low_confidence:true on any root_cause with confidence below 0.70
     | set escalation_required:true when overall_health is CRITICAL
     | populate escalation_reason when escalation_required is true
@@ -858,10 +916,15 @@ async def _call_local_llm(base_url: str, model: str, user_message: str, agent_cf
     example = agent_cfg.get("local_example") or _LOCAL_EXAMPLE
     user = (
         f"{user_message}\n\n"
-        f"Produce a JSON report for the log data above. "
-        f"Every value in your output MUST come from the actual log lines provided — "
-        f"never invent or copy from the schema example. "
-        f"Schema structure reference (all values are placeholders — replace with real log data):\n"
+        f"Produce a JSON report for the log data above.\n"
+        f"CRITICAL GROUNDING RULES — violations invalidate the entire response:\n"
+        f"  1. Every raw_log_excerpt MUST be copied verbatim from a line in the log data above.\n"
+        f"  2. Every timestamp MUST come from the log line you quoted — never invent dates.\n"
+        f"  3. Every IP, hostname, and identifier MUST appear in the quoted log line.\n"
+        f"  4. Impact and scope MUST reflect only what the log line actually shows.\n"
+        f"  5. If you cannot find a qualifying log line, output an empty events array.\n"
+        f"     Do NOT copy values from the schema example below.\n\n"
+        f"Schema structure (placeholders only — replace every field with real log data):\n"
         f"{example}"
     )
     payload = {
@@ -1218,9 +1281,20 @@ async def analyze_logs(
         "STEP 4 — Analyze the log data below and produce the JSON report.\n"
     ) if (history_block and use_kb) else ""
 
+    grounding_reminder = (
+        "GROUNDING ENFORCEMENT: Every event you generate must be directly traceable to a\n"
+        "specific line in the === LOG DATA === block below. Before including any event:\n"
+        "  • Can you copy raw_log_excerpt verbatim from a line in the log data? If NO → drop it.\n"
+        "  • Does the timestamp come from that same log line? If NO → drop it.\n"
+        "  • Do all IPs, hostnames, and identifiers appear in that log line? If NO → drop them.\n"
+        "  • Is the impact derived only from what that log line actually shows? If NO → revise it.\n"
+        "An empty events array is correct when no qualifying log lines exist. Do not fabricate.\n"
+    )
+
     user_message = (
         f"{history_block}"
         f"{memory_instruction}"
+        f"{grounding_reminder}"
         f"\nAnalyze the following {len(entries)} syslog entries from the last {hours}h. "
         f"Focus on: {focus_safe}.\n\n"
         f"=== LOG DATA ===\n{log_text}\n=== END LOG DATA ==="
