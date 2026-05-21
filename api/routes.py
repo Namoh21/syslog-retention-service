@@ -758,13 +758,17 @@ async def netflow_status(
     _: User = Depends(get_current_user),
 ):
     """Live listener diagnostics — packets received, template count, last exporter."""
-    from netflow_listener import _stats as nf_stats, _v9_templates, _ipfix_templates
-    from database import NetFlowRecord
+    from database import get_service_setting, NetFlowRecord
     from sqlalchemy import func as sqlfunc
+    from netflow_listener import _stats as nf_stats, _v9_templates, _ipfix_templates
+
+    nf_enabled_raw = get_service_setting("netflow_enabled", db=db)
+    nf_enabled = settings.netflow_enabled if nf_enabled_raw is None else (nf_enabled_raw.lower() == "true")
+    nf_port = int(get_service_setting("netflow_port", db=db) or settings.netflow_port)
     total_stored = db.query(sqlfunc.count(NetFlowRecord.id)).scalar() or 0
     return {
-        "listening":        settings.netflow_enabled,
-        "port":             int(get_service_setting("netflow_port") or settings.netflow_port),
+        "listening":        nf_enabled,
+        "port":             nf_port,
         "packets_received": nf_stats["packets_received"],
         "records_stored":   nf_stats["records_stored"],
         "parse_errors":     nf_stats["parse_errors"],
