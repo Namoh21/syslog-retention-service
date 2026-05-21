@@ -3150,31 +3150,100 @@ const _fmtBytes = b => {
 let _nfHours = 24, _nfPage = {offset:0, limit:200};
 
 async function netflow() {
-  render(`<div class="page-header"><h1>NetFlow</h1><p>IP flow data collected from your network devices (NetFlow v5/v9/IPFIX).</p></div>
-    <div class="card"><div class="spinner"></div> Loading...</div>`);
+  render(`<div class="page-header"><h1>NetFlow</h1></div><div class="card"><div class="spinner"></div> Loading...</div>`);
 
   const info = serviceInfo;
   const port = info?.netflow_port || 2055;
+  const host = location.hostname;
 
   render(`
     <div class="page-header">
       <h1>&#x1F4CA; NetFlow</h1>
-      <p>IP flow records from your UDM Pro or other NetFlow exporters. Shows per-flow source/destination, bytes, packets, and protocol.</p>
+      <p>Per-flow IP traffic records collected from your UDM Pro or other NetFlow/IPFIX exporters.</p>
     </div>
 
+    <!-- Live status panel -->
     <div class="card" style="margin-bottom:16px">
-      <div class="card-title"><span class="icon">&#x1F4F6;</span> NetFlow Setup</div>
-      <p style="font-size:13px;color:var(--muted);margin-bottom:10px">
-        Configure your UDM Pro to export NetFlow to this server. In the UniFi controller:
-        <strong>Settings → Routing → NetFlow</strong> (or <strong>Settings → System → NetFlow</strong> on older firmware).
+      <div class="card-title"><span class="icon">&#x1F4E1;</span> Collector Status
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="nfLoadStatus()">&#x1F504; Refresh</button>
+      </div>
+      <div id="nf-status-body"><div class="spinner"></div></div>
+    </div>
+
+    <!-- UDM Pro setup guide -->
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title"><span class="icon">&#x1F527;</span> UDM Pro Configuration</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:14px">
+        NetFlow must be configured separately from syslog. Choose a version below — <strong>v9 is recommended</strong> for the UDM Pro as it includes templates with full field names.
       </p>
-      <div class="conn-box">
-        <div class="conn-item"><div class="conn-label">Collector IP</div><div class="conn-val">${location.hostname}</div><div class="conn-note">This server's IP</div></div>
-        <div class="conn-item"><div class="conn-label">Collector Port</div><div class="conn-val">${port}</div><div class="conn-note">UDP — NetFlow v5/v9/IPFIX</div></div>
-        <div class="conn-item"><div class="conn-label">Status</div><div class="conn-val" style="color:var(--accent2)">${info?.netflow_enabled ? 'Listening' : 'Disabled'}</div><div class="conn-note">${info?.netflow_enabled ? 'Ready to receive flows' : 'Set NETFLOW_ENABLED=true'}</div></div>
+
+      <!-- Version tabs -->
+      <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:16px">
+        ${['v9 (Recommended)','v5','v10 / IPFIX'].map((t,i)=>`<div id="nfver-tab-${i}" onclick="nfVerTab(${i})" style="padding:7px 16px;font-size:12px;cursor:pointer;${i===0?'color:var(--accent);border-bottom:2px solid var(--accent);margin-bottom:-1px;':'color:var(--muted);border-bottom:2px solid transparent;'}">${t}</div>`).join('')}
+      </div>
+
+      <div id="nfver-panel-0">
+        <div class="alert alert-info" style="margin-bottom:12px;font-size:13px">
+          <strong>NetFlow v9</strong> uses templates — the UDM sends a template packet first, then data packets. If you see 0 records after enabling, wait 60–90 seconds for the first template to arrive.
+        </div>
+        <ol style="font-size:13px;line-height:2;padding-left:20px">
+          <li>Open <strong>UniFi Network</strong> → <strong>Settings</strong> → <strong>Routing</strong></li>
+          <li>Click <strong>NetFlow</strong> in the left sidebar (may be under <em>System</em> on older firmware)</li>
+          <li>Enable NetFlow and set:<br>
+            <div class="conn-box" style="margin-top:8px">
+              <div class="conn-item"><div class="conn-label">Collector IP</div><div class="conn-val">${host}</div><div class="conn-note">This server</div></div>
+              <div class="conn-item"><div class="conn-label">Collector Port</div><div class="conn-val">${port}</div><div class="conn-note">UDP</div></div>
+              <div class="conn-item"><div class="conn-label">Version</div><div class="conn-val">9</div><div class="conn-note">NetFlow v9</div></div>
+            </div>
+          </li>
+          <li>Click <strong>Apply Changes</strong> and wait ~60 seconds for the first template packet</li>
+        </ol>
+        <div class="help-tip">If the Collector Status above shows <em>Packets received: 0</em> after 2 minutes, check that UDP port ${port} is open on this server (firewall / ufw).</div>
+      </div>
+
+      <div id="nfver-panel-1" style="display:none">
+        <div class="alert alert-info" style="margin-bottom:12px;font-size:13px">
+          <strong>NetFlow v5</strong> uses fixed 48-byte records with no templates. Simpler but fewer fields — no AS numbers on some exporters.
+        </div>
+        <ol style="font-size:13px;line-height:2;padding-left:20px">
+          <li>Open <strong>UniFi Network</strong> → <strong>Settings</strong> → <strong>Routing</strong> → <strong>NetFlow</strong></li>
+          <li>Set:<br>
+            <div class="conn-box" style="margin-top:8px">
+              <div class="conn-item"><div class="conn-label">Collector IP</div><div class="conn-val">${host}</div><div class="conn-note">This server</div></div>
+              <div class="conn-item"><div class="conn-label">Collector Port</div><div class="conn-val">${port}</div><div class="conn-note">UDP</div></div>
+              <div class="conn-item"><div class="conn-label">Version</div><div class="conn-val">5</div><div class="conn-note">NetFlow v5</div></div>
+            </div>
+          </li>
+          <li>Click <strong>Apply Changes</strong> — flows appear within seconds</li>
+        </ol>
+      </div>
+
+      <div id="nfver-panel-2" style="display:none">
+        <div class="alert alert-info" style="margin-bottom:12px;font-size:13px">
+          <strong>IPFIX (v10)</strong> is the IETF standard successor to NetFlow v9. Same template-based approach. UDM Pro support varies by firmware — use v9 if IPFIX is not available.
+        </div>
+        <ol style="font-size:13px;line-height:2;padding-left:20px">
+          <li>Open <strong>UniFi Network</strong> → <strong>Settings</strong> → <strong>Routing</strong> → <strong>NetFlow</strong></li>
+          <li>Set:<br>
+            <div class="conn-box" style="margin-top:8px">
+              <div class="conn-item"><div class="conn-label">Collector IP</div><div class="conn-val">${host}</div><div class="conn-note">This server</div></div>
+              <div class="conn-item"><div class="conn-label">Collector Port</div><div class="conn-val">${port}</div><div class="conn-note">UDP</div></div>
+              <div class="conn-item"><div class="conn-label">Version</div><div class="conn-val">10 / IPFIX</div><div class="conn-note">IPFIX</div></div>
+            </div>
+          </li>
+          <li>Click <strong>Apply Changes</strong> and wait ~60 seconds for the first template</li>
+        </ol>
+        <div class="help-tip">IPFIX and NetFlow v9 use the same collector port on this server — no port change needed if switching between them.</div>
+      </div>
+
+      <div style="margin-top:14px;padding:10px 14px;background:rgba(88,166,255,.07);border-radius:6px;font-size:12px;color:var(--muted)">
+        <strong style="color:var(--text)">Firewall check:</strong>
+        If running this service behind ufw or iptables, open the collector port:<br>
+        <code style="background:var(--bg);padding:2px 6px;border-radius:4px;font-size:12px">sudo ufw allow ${port}/udp comment "NetFlow collector"</code>
       </div>
     </div>
 
+    <!-- Summary -->
     <div class="card" style="margin-bottom:16px">
       <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
         <div class="card-title" style="margin:0">&#x1F4C8; Summary</div>
@@ -3189,6 +3258,7 @@ async function netflow() {
       <div id="nf-stats"><div class="spinner"></div></div>
     </div>
 
+    <!-- Flow records -->
     <div class="card" style="padding:0;overflow:hidden">
       <div style="padding:14px 16px 10px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <div class="card-title" style="margin:0">&#x1F50D; Flow Records</div>
@@ -3199,6 +3269,8 @@ async function netflow() {
           <option value="TCP">TCP</option>
           <option value="UDP">UDP</option>
           <option value="ICMP">ICMP</option>
+          <option value="GRE">GRE</option>
+          <option value="ESP">ESP</option>
         </select>
         <button class="btn btn-ghost btn-sm" onclick="_nfPage.offset=0;nfLoadFlows()">&#x1F504; Refresh</button>
       </div>
@@ -3206,8 +3278,58 @@ async function netflow() {
     </div>
   `);
 
+  nfLoadStatus();
   nfLoadStats();
   nfLoadFlows();
+}
+
+function nfVerTab(idx) {
+  [0,1,2].forEach(i => {
+    const tab = document.getElementById(`nfver-tab-${i}`);
+    const panel = document.getElementById(`nfver-panel-${i}`);
+    if (!tab || !panel) return;
+    const active = i === idx;
+    tab.style.color = active ? 'var(--accent)' : 'var(--muted)';
+    tab.style.borderBottom = active ? '2px solid var(--accent)' : '2px solid transparent';
+    panel.style.display = active ? '' : 'none';
+  });
+}
+
+async function nfLoadStatus() {
+  const el = document.getElementById('nf-status-body');
+  if (!el) return;
+  try {
+    const s = await apiFetch('/api/netflow/status');
+    if (!s) return;
+    const listening = s.listening;
+    const lastPkt = s.last_packet_at ? `${fmtDate(s.last_packet_at)} from ${s.last_exporter}` : 'No packets received yet';
+    const pktColor = s.packets_received > 0 ? 'var(--accent2)' : 'var(--warn)';
+    const tplColor = s.template_count > 0 ? 'var(--accent2)' : 'var(--warn)';
+    const tplNote  = s.template_count === 0 && s.packets_received > 0
+      ? ' — waiting for template packet (normal for first 60s on v9/IPFIX)'
+      : s.template_count === 0 ? ' — no packets arriving yet' : ' templates cached';
+    el.innerHTML = `
+      <div class="stat-grid" style="margin-bottom:12px">
+        <div class="stat"><div class="val" style="color:${listening?'var(--accent2)':'var(--muted)'};font-size:18px">${listening?'Listening':'Disabled'}</div><div class="lbl">Collector on UDP :${s.port}</div></div>
+        <div class="stat"><div class="val" style="color:${pktColor};font-size:18px">${s.packets_received.toLocaleString()}</div><div class="lbl">Packets received (since start)</div></div>
+        <div class="stat"><div class="val" style="color:${tplColor};font-size:18px">${s.template_count}</div><div class="lbl">Templates${tplNote}</div></div>
+        <div class="stat"><div class="val" style="font-size:18px">${(s.total_db_records||0).toLocaleString()}</div><div class="lbl">Total flow records stored</div></div>
+      </div>
+      <div style="font-size:12px;color:var(--muted)">Last packet: ${lastPkt}</div>
+      ${s.parse_errors > 0 ? `<div class="alert alert-warn" style="margin-top:8px;font-size:12px">&#x26A0; ${s.parse_errors} parse errors — check service log for details</div>` : ''}
+      ${s.packets_received === 0 ? `<div class="alert alert-info" style="margin-top:8px;font-size:13px">
+        <strong>No packets received yet.</strong> Common causes:
+        <ul style="margin:6px 0 0 16px;line-height:1.8">
+          <li>UDM Pro NetFlow not configured — follow the setup guide above</li>
+          <li>UDP port ${s.port} blocked by firewall on this server<br><code style="font-size:11px">sudo ufw allow ${s.port}/udp</code></li>
+          <li>Wrong collector IP set on UDM — should be <strong>${location.hostname}</strong></li>
+          <li>Service was just restarted — do a <em>git pull + restart</em> to get the latest collector code</li>
+        </ul>
+      </div>` : ''}
+      ${s.packets_received > 0 && s.template_count === 0 ? `<div class="alert alert-info" style="margin-top:8px;font-size:13px">
+        <strong>Packets arriving but no templates yet.</strong> On NetFlow v9/IPFIX the UDM sends templates every 1–2 minutes. Wait a moment — records will start appearing once the first template is received.
+      </div>` : ''}`;
+  } catch(e) { el.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 
 async function nfLoadStats() {

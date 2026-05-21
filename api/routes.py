@@ -752,6 +752,29 @@ async def netflow_stats(
     }
 
 
+@router.get("/netflow/status", tags=["netflow"])
+async def netflow_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Live listener diagnostics — packets received, template count, last exporter."""
+    from netflow_listener import _stats as nf_stats, _v9_templates, _ipfix_templates
+    from database import NetFlowRecord
+    from sqlalchemy import func as sqlfunc
+    total_stored = db.query(sqlfunc.count(NetFlowRecord.id)).scalar() or 0
+    return {
+        "listening":        settings.netflow_enabled,
+        "port":             int(get_service_setting("netflow_port") or settings.netflow_port),
+        "packets_received": nf_stats["packets_received"],
+        "records_stored":   nf_stats["records_stored"],
+        "parse_errors":     nf_stats["parse_errors"],
+        "last_packet_at":   nf_stats["last_packet_at"],
+        "last_exporter":    nf_stats["last_exporter"],
+        "template_count":   len(_v9_templates) + len(_ipfix_templates),
+        "total_db_records": total_stored,
+    }
+
+
 # ===================== Retention =====================
 
 @router.get("/admin/retention", response_model=RetentionOut, tags=["admin"])
