@@ -13,30 +13,58 @@ from database import FACILITY_NAMES, SEVERITY_NAMES, SyslogEntry
 
 logger = logging.getLogger("ai_analysis")
 
-_SYSTEM_PROMPT = """\
-You are a network security analyst with persistent memory reviewing syslog data \
-from a Unifi Dream Machine (UDM) and associated network devices. Your job is to:
+_ANALYSIS_TASK = """\
+You are a network security analyst reviewing syslog data from a Unifi Dream Machine (UDM) \
+and associated network devices. Your job is to:
 
 1. Identify security threats, anomalies, and suspicious patterns in the log data.
 2. Highlight configuration weaknesses or misconfigurations.
 3. Surface high-severity events (Emergency, Alert, Critical, Error) for immediate attention.
 4. Provide concrete, actionable recommendations to improve network security.
 5. When historical context is provided, avoid repeating recommendations already marked as
-   IMPLEMENTED or WORKING. Reference prior findings when relevant (e.g. "previously flagged
-   issue X now appears resolved"). Note any regressions.
+   IMPLEMENTED or WORKING. Reference prior findings when relevant. Note any regressions.\
+"""
 
-Format your response as structured JSON with these keys:
+_JSON_SCHEMA = """\
 {
-  "summary": "<2-3 sentence executive summary that references prior context if relevant>",
+  "summary": "<2-3 sentence executive summary>",
   "threat_level": "<LOW | MEDIUM | HIGH | CRITICAL>",
   "findings": [
-    {"severity": "<CRITICAL|HIGH|MEDIUM|LOW|INFO>", "title": "...", "detail": "...", "recommendation": "..."}
+    {
+      "severity": "<CRITICAL|HIGH|MEDIUM|LOW|INFO>",
+      "title": "<short title>",
+      "detail": "<what was observed and why it matters>",
+      "recommendation": "<specific action to take>"
+    }
   ],
-  "immediate_actions": ["<action 1>", "<action 2>"],
-  "long_term_recommendations": ["<rec 1>", "<rec 2>"]
-}
+  "immediate_actions": ["<urgent action 1>", "<urgent action 2>"],
+  "long_term_recommendations": ["<strategic recommendation 1>"]
+}\
+"""
 
-Be specific and reference actual log entries where relevant.
+# Anthropic — conversational system prompt, model follows instructions reliably
+_SYSTEM_PROMPT = f"""\
+{_ANALYSIS_TASK}
+
+Respond ONLY with a valid JSON object matching this exact schema — no prose, no markdown, \
+no code fences, no explanation before or after the JSON:
+{_JSON_SCHEMA}
+
+Be specific and reference actual log entries, IPs, and rule names where relevant.\
+"""
+
+# Local LLM — more forceful; many smaller models need explicit repetition
+_SYSTEM_PROMPT_LOCAL = f"""\
+You are a JSON-only network security analyst. You MUST respond with ONLY a valid JSON object. \
+Do NOT include any text, explanation, markdown, or code fences outside the JSON object. \
+Your entire response must start with {{ and end with }}.
+
+{_ANALYSIS_TASK}
+
+Output schema (follow exactly):
+{_JSON_SCHEMA}
+
+IMPORTANT: Output JSON only. Start your response with {{ immediately.\
 """
 
 
@@ -241,20 +269,74 @@ async def _call_local_llm(
     user_message: str,
 ) -> str:
     import httpx as _httpx
+
+    # Append explicit JSON reminder to the user message so it appears
+    # right before the model generates its response
+    user_message_local = (
+        user_message
+        + "\n\nRemember: respond with ONLY a valid JSON object. Start with { immediately."
+    )
+
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_message},
+            {"role": "system", "content": _SYSTEM_PROMPT_LOCAL},
+            {"role": "user",   "content": user_message_local},
         ],
         "max_tokens": 4096,
-        "temperature": 0.2,
-        "stream": False,   # Ollama defaults to streaming — must be disabled
+        "temperature": 0.1,   # lower temp = less creative, more likely to follow format
+        "stream": False,       # Ollama defaults to streaming — must be disabled
+        "response_format": {"type": "json_object"},  # Ollama/OpenAI-compat JSON mode
     }
     async with _httpx.AsyncClient(timeout=600.0) as client:
         r = await client.post(f"{base_url}/v1/chat/completions", json=payload)
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
+
+
+def _extract_json(text: str) -> dict:
+    """
+    Robustly extract a JSON object from LLM output.
+    Handles: valid JSON, markdown code fences, JSON buried in prose,
+    trailing commas, and single-quoted keys.
+    Falls back to {"summary": text, "raw": True} if nothing works.
+    """
+    import json as _json
+    import re as _re
+
+    # 1. Direct parse
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        pass
+
+    # 2. Strip markdown code fences (```json ... ``` or ``` ... ```)
+    stripped = text.strip()
+    fence = _re.search(r"```(?:json)?\s*([\s\S]*?)```", stripped)
+    if fence:
+        try:
+            return _json.loads(fence.group(1).strip())
+        except _json.JSONDecodeError:
+            pass
+
+    # 3. Find the outermost { ... } block anywhere in the text
+    start = text.find("{")
+    end   = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidate = text[start: end + 1]
+        try:
+            return _json.loads(candidate)
+        except _json.JSONDecodeError:
+            # 4. Fix trailing commas before ] or } (common local LLM mistake)
+            fixed = _re.sub(r",\s*([}\]])", r"\1", candidate)
+            try:
+                return _json.loads(fixed)
+            except _json.JSONDecodeError:
+                pass
+
+    # 5. Nothing worked — return raw so the UI shows the plain-text fallback
+    logger.warning("Could not extract JSON from LLM response (%d chars). Returning raw.", len(text))
+    return {"summary": text, "raw": True}
 
 
 async def analyze_logs(
@@ -334,20 +416,7 @@ async def analyze_logs(
             logger.error("Anthropic API error: %s", exc)
             return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}
 
-    try:
-        analysis = _json.loads(raw_text)
-    except _json.JSONDecodeError:
-        # Local models sometimes wrap JSON in markdown code fences — strip them
-        stripped = raw_text.strip()
-        if stripped.startswith("```"):
-            stripped = stripped.split("```", 2)[1]
-            if stripped.startswith("json"):
-                stripped = stripped[4:]
-            stripped = stripped.rsplit("```", 1)[0].strip()
-        try:
-            analysis = _json.loads(stripped)
-        except _json.JSONDecodeError:
-            analysis = {"summary": raw_text, "raw": True}
+    analysis = _extract_json(raw_text)
 
     result = {
         "analysis": analysis,
