@@ -449,65 +449,83 @@ class _NetFlowProtocol(asyncio.DatagramProtocol):
 def _open_firewall(port: int) -> None:
     """
     Best-effort: open the NetFlow UDP port in the host firewall.
-    Tries ufw, firewall-cmd, and netsh in order.  Logs result, never raises.
+    Tries ufw, firewall-cmd, iptables, and netsh in order.
+    Uses full paths because /usr/sbin is often absent from subprocess PATH.
+    Logs result but never raises — listener starts regardless.
     """
-    import subprocess, sys, shutil
+    import subprocess, sys, os
 
-    def _run(*cmd: str) -> bool:
+    # Augment PATH so tools in /usr/sbin, /sbin are found
+    env = os.environ.copy()
+    env["PATH"] = "/usr/sbin:/sbin:/usr/bin:/bin:" + env.get("PATH", "")
+
+    def _find(name: str) -> str | None:
+        """Return full path for a tool, searching common locations."""
+        for d in ("/usr/sbin", "/sbin", "/usr/bin", "/bin"):
+            p = os.path.join(d, name)
+            if os.path.isfile(p) and os.access(p, os.X_OK):
+                return p
+        return None
+
+    def _run(*cmd: str) -> tuple[bool, str]:
         try:
-            r = subprocess.run(list(cmd), capture_output=True, timeout=10)
-            return r.returncode == 0
-        except Exception:
-            return False
+            r = subprocess.run(list(cmd), capture_output=True, timeout=15,
+                               text=True, env=env)
+            return r.returncode == 0, (r.stdout + r.stderr).strip()
+        except Exception as exc:
+            return False, str(exc)
 
     if sys.platform == "win32":
         rule = f"NetFlow Collector UDP {port}"
-        # Remove old rule first (idempotent), then add
         _run("netsh", "advfirewall", "firewall", "delete", "rule",
              f"name={rule}", "protocol=UDP", f"localport={port}")
-        ok = _run(
+        ok, out = _run(
             "netsh", "advfirewall", "firewall", "add", "rule",
             f"name={rule}", "dir=in", "action=allow",
             "protocol=UDP", f"localport={port}",
         )
         if ok:
-            logger.info("Firewall: opened UDP %d (Windows Firewall)", port)
+            logger.info("Firewall: opened UDP %d via Windows Firewall", port)
         else:
-            logger.warning("Firewall: could not open UDP %d via netsh — open it manually", port)
+            logger.warning("Firewall: netsh failed (UDP %d): %s", port, out)
         return
 
-    # Linux — try ufw first, then firewall-cmd, then iptables
-    if shutil.which("ufw"):
-        ok = _run("ufw", "allow", f"{port}/udp", "comment", "NetFlow collector")
+    # ── Linux ──────────────────────────────────────────────────────────────────
+    ufw = _find("ufw")
+    if ufw:
+        ok, out = _run(ufw, "allow", f"{port}/udp", "comment", "NetFlow collector")
         if ok:
             logger.info("Firewall: opened UDP %d via ufw", port)
             return
-        logger.warning("Firewall: ufw found but rule failed — may need sudo. Run: sudo ufw allow %d/udp", port)
+        logger.warning("Firewall: ufw failed (UDP %d): %s", port, out)
         return
 
-    if shutil.which("firewall-cmd"):
-        ok = _run("firewall-cmd", "--permanent", "--add-port", f"{port}/udp")
+    fwcmd = _find("firewall-cmd")
+    if fwcmd:
+        ok, out = _run(fwcmd, "--permanent", "--add-port", f"{port}/udp")
         if ok:
-            _run("firewall-cmd", "--reload")
+            _run(fwcmd, "--reload")
             logger.info("Firewall: opened UDP %d via firewall-cmd", port)
         else:
-            logger.warning("Firewall: firewall-cmd failed — run manually: "
-                           "sudo firewall-cmd --permanent --add-port=%d/udp && sudo firewall-cmd --reload", port)
+            logger.warning("Firewall: firewall-cmd failed (UDP %d): %s", port, out)
         return
 
-    if shutil.which("iptables"):
-        ok = _run("iptables", "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT")
-        if not ok:  # rule doesn't exist yet
-            ok = _run("iptables", "-A", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT")
-        if ok:
-            logger.info("Firewall: opened UDP %d via iptables", port)
+    ipt = _find("iptables")
+    if ipt:
+        # Check if rule already exists before adding
+        exists, _ = _run(ipt, "-C", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT")
+        if not exists:
+            ok, out = _run(ipt, "-A", "INPUT", "-p", "udp", "--dport", str(port), "-j", "ACCEPT")
+            if ok:
+                logger.info("Firewall: opened UDP %d via iptables", port)
+            else:
+                logger.warning("Firewall: iptables failed (UDP %d): %s", port, out)
         else:
-            logger.warning("Firewall: iptables failed — run manually: "
-                           "sudo iptables -A INPUT -p udp --dport %d -j ACCEPT", port)
+            logger.info("Firewall: UDP %d already open in iptables", port)
         return
 
-    logger.info("Firewall: no supported firewall manager found (ufw/firewall-cmd/iptables/netsh). "
-                "Ensure UDP port %d is open manually.", port)
+    logger.warning("Firewall: no firewall manager found — ensure UDP %d is open manually. "
+                   "Run: sudo ufw allow %d/udp", port, port)
 
 
 async def start_netflow_listener(host: str, port: int) -> asyncio.DatagramTransport:
