@@ -290,6 +290,19 @@ class AINetworkContext(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class AIContextEntry(Base):
+    """Structured knowledge-base entries injected into every AI analysis."""
+    __tablename__ = "ai_context_entries"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    title      = Column(String(256), nullable=False)
+    category   = Column(String(64), nullable=False, default="custom")
+    content    = Column(Text, nullable=False, default="")
+    active     = Column(Integer, nullable=False, default=1)   # 1=included, 0=excluded
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 class IpReputationCache(Base):
     """Cached AbuseIPDB + GeoIP results — avoids re-querying the same IP repeatedly."""
     __tablename__ = "ip_reputation_cache"
@@ -373,6 +386,17 @@ def _migrate_ai_tables():
                     updated_at DATETIME
                 )"""))
             conn.execute(text("INSERT INTO ai_network_context (id, content, updated_at) VALUES (1, '', datetime('now'))"))
+        if "ai_context_entries" not in existing:
+            conn.execute(text("""
+                CREATE TABLE ai_context_entries (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title VARCHAR(256) NOT NULL,
+                    category VARCHAR(64) NOT NULL DEFAULT 'custom',
+                    content TEXT NOT NULL DEFAULT '',
+                    active INTEGER NOT NULL DEFAULT 1,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""))
         conn.commit()
 
 

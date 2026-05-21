@@ -147,6 +147,26 @@
   .ai-tab.active{color:var(--accent);border-bottom-color:var(--accent);}
   .ai-tab:hover:not(.active){color:var(--text);}
 
+  /* ── Knowledge Base ── */
+  .kb-category{margin-bottom:20px;}
+  .kb-cat-label{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;padding:4px 0 8px;border-bottom:1px solid var(--border);margin-bottom:8px;}
+  .kb-entry{border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:8px;background:var(--surface2);transition:border-color .15s;}
+  .kb-entry:hover{border-color:rgba(88,166,255,.3);}
+  .kb-entry-inactive{opacity:.55;}
+  .kb-entry-header{display:flex;align-items:center;gap:10px;margin-bottom:6px;}
+  .kb-entry-title{flex:1;font-weight:600;font-size:13px;color:var(--text);}
+  .kb-entry-content{font-size:12px;color:var(--muted);white-space:pre-wrap;font-family:monospace;background:var(--bg);border-radius:4px;padding:8px 10px;margin:6px 0;max-height:120px;overflow-y:auto;}
+  .kb-entry-meta{font-size:11px;margin-top:4px;}
+  .kb-entry-actions{display:flex;gap:4px;opacity:0;transition:opacity .15s;}
+  .kb-entry:hover .kb-entry-actions{opacity:1;}
+  /* Toggle switch */
+  .kb-toggle{display:flex;align-items:center;cursor:pointer;flex-shrink:0;}
+  .kb-toggle input{display:none;}
+  .kb-toggle-track{width:32px;height:18px;background:var(--border);border-radius:9px;position:relative;transition:background .2s;}
+  .kb-toggle-track::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:transform .2s;}
+  .kb-toggle input:checked+.kb-toggle-track{background:var(--accent2);}
+  .kb-toggle input:checked+.kb-toggle-track::after{transform:translateX(14px);}
+
   /* ── Login ── */
   #login-screen{display:flex;align-items:center;justify-content:center;height:100vh;background:var(--bg);}
   .login-box{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:40px;width:360px;box-shadow:0 8px 32px rgba(0,0,0,.4);}
@@ -1207,6 +1227,7 @@ async function ai() {
     <div class="ai-tabs">
       <div class="ai-tab active" id="aitab-analyze" onclick="aiShowTab('analyze')">&#x1F916; Analyze</div>
       <div class="ai-tab" id="aitab-history" onclick="aiShowTab('history')">&#x1F4DC; History</div>
+      <div class="ai-tab" id="aitab-kb" onclick="aiShowTab('kb')">&#x1F4DA; Knowledge Base</div>
     </div>
 
     <!-- Analyze tab -->
@@ -1269,6 +1290,53 @@ async function ai() {
     <div id="aitab-panel-history" style="display:none">
       <div id="ai-history-output"><div class="card"><div class="spinner"></div> Loading history...</div></div>
     </div>
+
+    <!-- Knowledge Base tab -->
+    <div id="aitab-panel-kb" style="display:none">
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-title"><span class="icon">&#x1F4DA;</span> Knowledge Base
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">
+            Structured context injected into every AI analysis. Add entries for devices, exceptions, policies, or anything the AI should always know about your network.
+          </span>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+          <button class="btn btn-primary btn-sm" onclick="kbNewEntry()">+ Add Entry</button>
+          <span style="font-size:12px;color:var(--muted);align-self:center">Active entries are automatically included in every analysis prompt</span>
+        </div>
+        <div id="kb-entry-form" style="display:none;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:12px" id="kb-form-title">New Entry</div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="form-group" style="flex:2">
+              <label>Title</label>
+              <input id="kb-title" placeholder="e.g. Device Inventory, Known Exceptions, VPN Users..." style="width:100%" maxlength="256" />
+            </div>
+            <div class="form-group" style="flex:1">
+              <label>Category</label>
+              <select id="kb-category" style="width:100%">
+                <option value="devices">Devices</option>
+                <option value="network_topology">Network Topology</option>
+                <option value="known_exceptions">Known Exceptions</option>
+                <option value="security_policies">Security Policies</option>
+                <option value="users_services">Users &amp; Services</option>
+                <option value="custom">Custom</option>
+              </select>
+            </div>
+          </div>
+          <div class="form-group" style="margin-bottom:12px">
+            <label>Content</label>
+            <textarea id="kb-content" class="network-notes" style="min-height:140px"
+              placeholder="Enter structured information the AI should know. Be specific — IPs, hostnames, port numbers, expected behaviors, policy exceptions..."></textarea>
+          </div>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-primary btn-sm" onclick="kbSaveEntry()">Save Entry</button>
+            <button class="btn btn-ghost btn-sm" onclick="kbCancelEntry()">Cancel</button>
+            <span id="kb-form-msg" style="font-size:12px;align-self:center"></span>
+          </div>
+          <input type="hidden" id="kb-editing-id" value="" />
+        </div>
+        <div id="kb-list"><div style="color:var(--muted);font-size:13px"><span class="spinner"></span> Loading...</div></div>
+      </div>
+    </div>
   `);
 
   // Load saved network notes
@@ -1316,11 +1384,12 @@ async function ai() {
 }
 
 function aiShowTab(name) {
-  ['analyze','history'].forEach(t => {
+  ['analyze','history','kb'].forEach(t => {
     document.getElementById(`aitab-${t}`).classList.toggle('active', t===name);
     document.getElementById(`aitab-panel-${t}`).style.display = t===name ? '' : 'none';
   });
   if (name === 'history') loadAiHistory();
+  if (name === 'kb') loadKbEntries();
 }
 
 async function saveNetworkNotes() {
@@ -1334,6 +1403,142 @@ async function saveNetworkNotes() {
   } catch(e) {
     st.textContent = 'Save failed: ' + e.message; st.style.color = 'var(--danger)';
   }
+}
+
+// ── Knowledge Base ────────────────────────────────────────────────────────────
+const KB_CAT_LABELS = {
+  devices: 'Devices',
+  network_topology: 'Network Topology',
+  known_exceptions: 'Known Exceptions',
+  security_policies: 'Security Policies',
+  users_services: 'Users & Services',
+  custom: 'Custom',
+};
+
+let _kbEntries = [];
+
+async function loadKbEntries() {
+  const list = document.getElementById('kb-list');
+  if (!list) return;
+  try {
+    _kbEntries = await apiFetch('/api/ai/context-entries') || [];
+    renderKbList();
+  } catch(e) {
+    list.innerHTML = `<div class="alert alert-warn">Failed to load: ${esc(e.message)}</div>`;
+  }
+}
+
+function renderKbList() {
+  const list = document.getElementById('kb-list');
+  if (!list) return;
+  if (!_kbEntries.length) {
+    list.innerHTML = `<div class="empty-state" style="padding:32px">
+      <div class="empty-icon" style="font-size:32px">&#x1F4DA;</div>
+      <p>No knowledge base entries yet.</p>
+      <p style="font-size:12px;color:var(--muted)">Add entries for device inventory, known services, policy exceptions — anything the AI should always know about your network.</p>
+    </div>`;
+    return;
+  }
+
+  // Group by category
+  const bycat = {};
+  for (const e of _kbEntries) {
+    (bycat[e.category] = bycat[e.category]||[]).push(e);
+  }
+
+  const catOrder = ['devices','network_topology','known_exceptions','security_policies','users_services','custom'];
+  const sections = catOrder.filter(c => bycat[c]).map(cat => {
+    const entries = bycat[cat];
+    const rows = entries.map(e => `
+      <div class="kb-entry ${e.active?'':'kb-entry-inactive'}" data-id="${e.id}">
+        <div class="kb-entry-header">
+          <label class="kb-toggle" title="${e.active?'Included in analysis — click to exclude':'Excluded from analysis — click to include'}">
+            <input type="checkbox" ${e.active?'checked':''} onchange="kbToggle(${e.id},this.checked)" />
+            <span class="kb-toggle-track"></span>
+          </label>
+          <span class="kb-entry-title">${esc(e.title)}</span>
+          <div class="kb-entry-actions">
+            <button class="btn btn-ghost btn-sm" onclick="kbEditEntry(${e.id})" title="Edit">&#x270F;&#xFE0F; Edit</button>
+            <button class="btn btn-danger btn-sm" onclick="kbDeleteEntry(${e.id})" title="Delete">&#x1F5D1;</button>
+          </div>
+        </div>
+        <div class="kb-entry-content">${esc(e.content)}</div>
+        <div class="kb-entry-meta">${e.active?'<span style="color:var(--accent2)">&#x2713; Included in analysis</span>':'<span style="color:var(--muted)">&#x2715; Excluded from analysis</span>'}</div>
+      </div>`).join('');
+    return `<div class="kb-category">
+      <div class="kb-cat-label">${KB_CAT_LABELS[cat]||cat} <span style="color:var(--muted);font-weight:400;font-size:11px">(${entries.length})</span></div>
+      ${rows}
+    </div>`;
+  }).join('');
+
+  list.innerHTML = sections;
+}
+
+function kbNewEntry() {
+  document.getElementById('kb-editing-id').value = '';
+  document.getElementById('kb-form-title').textContent = 'New Entry';
+  document.getElementById('kb-title').value = '';
+  document.getElementById('kb-category').value = 'devices';
+  document.getElementById('kb-content').value = '';
+  document.getElementById('kb-form-msg').textContent = '';
+  document.getElementById('kb-entry-form').style.display = '';
+  document.getElementById('kb-title').focus();
+}
+
+function kbEditEntry(id) {
+  const e = _kbEntries.find(x => x.id === id);
+  if (!e) return;
+  document.getElementById('kb-editing-id').value = id;
+  document.getElementById('kb-form-title').textContent = 'Edit Entry';
+  document.getElementById('kb-title').value = e.title;
+  document.getElementById('kb-category').value = e.category;
+  document.getElementById('kb-content').value = e.content;
+  document.getElementById('kb-form-msg').textContent = '';
+  document.getElementById('kb-entry-form').style.display = '';
+  document.getElementById('kb-title').focus();
+}
+
+function kbCancelEntry() {
+  document.getElementById('kb-entry-form').style.display = 'none';
+}
+
+async function kbSaveEntry() {
+  const id = document.getElementById('kb-editing-id').value;
+  const title = document.getElementById('kb-title').value.trim();
+  const category = document.getElementById('kb-category').value;
+  const content = document.getElementById('kb-content').value.trim();
+  const msg = document.getElementById('kb-form-msg');
+  if (!title) { msg.textContent = 'Title is required.'; msg.style.color='var(--danger)'; return; }
+  if (!content) { msg.textContent = 'Content is required.'; msg.style.color='var(--danger)'; return; }
+  try {
+    if (id) {
+      await apiFetch(`/api/ai/context-entries/${id}`, { method:'PUT', body: JSON.stringify({title,category,content}) });
+    } else {
+      await apiFetch('/api/ai/context-entries', { method:'POST', body: JSON.stringify({title,category,content}) });
+    }
+    document.getElementById('kb-entry-form').style.display = 'none';
+    await loadKbEntries();
+  } catch(e) {
+    msg.textContent = 'Save failed: ' + e.message; msg.style.color='var(--danger)';
+  }
+}
+
+async function kbDeleteEntry(id) {
+  const e = _kbEntries.find(x => x.id === id);
+  if (!e || !confirm(`Delete "${e.title}"? This cannot be undone.`)) return;
+  try {
+    await apiFetch(`/api/ai/context-entries/${id}`, { method:'DELETE' });
+    await loadKbEntries();
+  } catch(err) { alert('Delete failed: ' + err.message); }
+}
+
+async function kbToggle(id, active) {
+  try {
+    await apiFetch(`/api/ai/context-entries/${id}`, { method:'PUT', body: JSON.stringify({active}) });
+    const entry = _kbEntries.find(x => x.id === id);
+    if (entry) entry.active = active;
+    renderKbList();
+  } catch(e) { alert('Toggle failed: ' + e.message); }
 }
 
 async function loadAiHistory() {

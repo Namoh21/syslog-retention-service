@@ -67,15 +67,37 @@ def _build_history_context(db) -> str:
     Included in every new analysis so Claude knows what's been addressed.
     """
     import json as _json
-    from database import AIAnalysis, AIRecommendation, AINetworkContext
+    from database import AIAnalysis, AIRecommendation, AINetworkContext, AIContextEntry
 
     lines = ["=== ANALYST MEMORY ===\n"]
 
-    # User's network notes
+    # User's network notes (legacy free-form notes)
     ctx = db.query(AINetworkContext).filter_by(id=1).first()
     if ctx and ctx.content and ctx.content.strip():
         lines.append("NETWORK CONTEXT (provided by the analyst):")
         lines.append(ctx.content.strip())
+        lines.append("")
+
+    # Structured knowledge base entries
+    kb_entries = (
+        db.query(AIContextEntry)
+        .filter(AIContextEntry.active == 1)
+        .order_by(AIContextEntry.category, AIContextEntry.id)
+        .all()
+    )
+    if kb_entries:
+        # Group by category
+        from collections import defaultdict
+        by_cat: dict[str, list] = defaultdict(list)
+        for e in kb_entries:
+            by_cat[e.category].append(e)
+        lines.append("KNOWLEDGE BASE (analyst-curated context for this network):")
+        for cat, entries in by_cat.items():
+            lines.append(f"\n[{cat.upper().replace('_', ' ')}]")
+            for e in entries:
+                lines.append(f"  {e.title}:")
+                for ln in e.content.strip().splitlines():
+                    lines.append(f"    {ln}")
         lines.append("")
 
     # Recent analyses — last 5

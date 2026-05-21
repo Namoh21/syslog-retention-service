@@ -559,6 +559,72 @@ async def update_network_context(
     return {"message": "Network context saved."}
 
 
+# ===================== AI Context Entries (Knowledge Base) =====================
+
+@router.get("/ai/context-entries", tags=["ai"])
+async def list_context_entries(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    from database import AIContextEntry
+    entries = db.query(AIContextEntry).order_by(AIContextEntry.category, AIContextEntry.id).all()
+    return [
+        {
+            "id": e.id, "title": e.title, "category": e.category,
+            "content": e.content, "active": bool(e.active),
+            "created_at": e.created_at.isoformat() if e.created_at else None,
+            "updated_at": e.updated_at.isoformat() if e.updated_at else None,
+        }
+        for e in entries
+    ]
+
+
+@router.post("/ai/context-entries", tags=["ai"])
+async def create_context_entry(body: dict, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    from database import AIContextEntry
+    entry = AIContextEntry(
+        title=str(body.get("title", "Untitled"))[:256],
+        category=str(body.get("category", "custom"))[:64],
+        content=str(body.get("content", ""))[:8000],
+        active=1,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return {"id": entry.id, "message": "Entry created."}
+
+
+@router.put("/ai/context-entries/{entry_id}", tags=["ai"])
+async def update_context_entry(
+    entry_id: int, body: dict,
+    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+):
+    from database import AIContextEntry
+    entry = db.query(AIContextEntry).filter_by(id=entry_id).first()
+    if not entry:
+        from fastapi import HTTPException
+        raise HTTPException(404, "Entry not found")
+    if "title" in body:   entry.title    = str(body["title"])[:256]
+    if "category" in body: entry.category = str(body["category"])[:64]
+    if "content" in body: entry.content  = str(body["content"])[:8000]
+    if "active" in body:  entry.active   = 1 if body["active"] else 0
+    entry.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"message": "Entry updated."}
+
+
+@router.delete("/ai/context-entries/{entry_id}", tags=["ai"])
+async def delete_context_entry(
+    entry_id: int,
+    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+):
+    from database import AIContextEntry
+    entry = db.query(AIContextEntry).filter_by(id=entry_id).first()
+    if entry:
+        db.delete(entry)
+        db.commit()
+    return {"message": "Entry deleted."}
+
+
 # ===================== Retention =====================
 
 @router.get("/admin/retention", response_model=RetentionOut, tags=["admin"])
