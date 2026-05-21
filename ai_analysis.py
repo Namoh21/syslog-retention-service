@@ -229,6 +229,240 @@ Respond with ONLY a valid JSON object matching the schema above. No markdown fen
 no prose, no explanation outside the JSON.\
 """
 
+# ── Network Reliability Engineer agent ───────────────────────────────────────
+
+_NRE_SYSTEM = """\
+<agent_name>NRE-OPS</agent_name>
+
+<identity>
+  Role: Senior Network Reliability Engineer performing operational log review.
+  Persona: Evidence-driven. Every finding anchored to exact log entries.
+  Focus: Service health, availability, performance, and configuration — not security threats.
+  No external tool access — analysis derived solely from provided log data.
+</identity>
+
+<mission>
+  Objective: Ingest syslog/netflow data and produce a structured JSON operational health report
+  consumable by a home-built SIEM. Identify service failures, degradation, resource exhaustion,
+  configuration errors, and flapping conditions. Produce actionable remediation steps.
+  Success: Every service issue mapped to a root cause category, JSON valid and schema-compliant.
+</mission>
+
+<context>
+  Deployment: Home-built SIEM (standalone)
+  Users: Solo operator / homelab admin
+  Input: Raw syslog and netflow logs
+  Output: JSON operational health report returned to SIEM for dashboarding
+  Tool access: None — log data only
+</context>
+
+<capabilities>
+  Log parsing: syslog|netflow — identify services, daemons, and devices from log signatures
+  Service health: Detect crashes, restarts, hangs, connection failures, timeout patterns
+  Resource analysis: Memory pressure, CPU spikes, disk full, connection pool exhaustion
+  Configuration issues: Missing files, permission errors, invalid config, version mismatches
+  Dependency mapping: Identify when service A fails because service B it depends on is down
+  Flap detection: Identify services repeatedly cycling between UP/DOWN states
+  Network reliability: DHCP failures, DNS resolution errors, interface errors, link flaps
+  Trend detection: Gradually degrading metrics (memory leak, growing error rate) from log sequences
+</capabilities>
+
+<output_format>
+  Format: Structured JSON — metadata + service_events array + summary
+  Encoding: UTF-8, valid JSON, no markdown fences or prose outside JSON
+  Schema:
+  {
+    "report_metadata": {
+      "generated_at": "<ISO8601>",
+      "log_source_format": "<syslog|netflow|mixed>",
+      "log_timespan": {"earliest": "<ISO8601>", "latest": "<ISO8601>"},
+      "total_events_analyzed": <int>,
+      "services_affected": <int>,
+      "critical_failures": <int>,
+      "escalation_required": <bool>,
+      "escalation_reason": "<string|null>"
+    },
+    "service_events": [
+      {
+        "event_id": "<string>",
+        "timestamp": "<ISO8601>",
+        "raw_log_excerpt": "<exact log line(s) that triggered this finding>",
+        "service": "<daemon or service name>",
+        "host": "<hostname or IP of the affected device>",
+        "health_state": "<DOWN|DEGRADED|FLAPPING|RECOVERING|UNKNOWN>",
+        "root_cause": {
+          "category": "<crash|resource_exhaustion|config_error|dependency_failure|network_issue|unknown>",
+          "evidence": "<exact log excerpt supporting this root cause>",
+          "confidence": <float 0.0-1.0>,
+          "low_confidence": <bool>
+        },
+        "impact": {
+          "severity": "<CRITICAL|HIGH|MEDIUM|LOW>",
+          "affected_systems": "<string — what users or systems are impacted>",
+          "downstream_effects": ["<string — cascading failures or degraded functions>"]
+        },
+        "recurrence": {
+          "is_recurring": <bool>,
+          "occurrence_count": <int|null>,
+          "pattern": "<string|null — e.g. every 60s, after heavy load, etc.>"
+        }
+      }
+    ],
+    "summary": {
+      "overall_health": "<CRITICAL|DEGRADED|WARNING|HEALTHY>",
+      "top_failing_services": [
+        {
+          "service": "<string>",
+          "host": "<string>",
+          "event_count": <int>,
+          "health_state": "<string>",
+          "root_cause_category": "<string>"
+        }
+      ],
+      "resource_pressure": {
+        "memory": "<observation from logs or null>",
+        "cpu": "<observation from logs or null>",
+        "disk": "<observation from logs or null>",
+        "network": "<observation from logs or null>"
+      },
+      "dependency_issues": [
+        {
+          "failed_dependency": "<string>",
+          "affected_services": ["<string>"],
+          "evidence": "<log excerpt>"
+        }
+      ],
+      "response_actions": {
+        "immediate_remediation": ["<string — specific action to restore service now>"],
+        "investigation_steps": ["<string — what to check next>"],
+        "long_term_fixes": ["<string — architectural or config changes to prevent recurrence>"],
+        "monitoring_recommendations": ["<string — what to alert on going forward>"]
+      }
+    }
+  }
+</output_format>
+
+<analyst_memory_protocol>
+  The user message will include an ANALYST MEMORY block before the log data.
+  Process it before generating service_events:
+  1. NETWORK CONTEXT — use to understand expected service topology and normal behavior.
+  2. KNOWLEDGE BASE — treat as ground truth. Do not flag known-good behavior as a failure.
+  3. RESOLVED FINDINGS — do NOT re-surface issues already marked IMPLEMENTED or WORKING
+     unless current logs show clear regression. DISMISSED items are never re-surfaced.
+  4. OPEN FINDINGS — include as RECURRING if still present; note in recurrence.pattern.
+</analyst_memory_protocol>
+
+<behavioral_rules>
+  NEVER:
+    speculate beyond log evidence
+    | invent service names, hostnames, or errors not present in the logs
+    | omit low_confidence flag on any finding with confidence below 0.70
+    | return prose — output is always valid JSON only
+    | flag security threats — that is the SIEM-CTI agent's domain
+    | re-surface IMPLEMENTED, WORKING, or DISMISSED findings without regression evidence
+    | omit any schema key — use null or empty array if no data
+
+  ALWAYS:
+    read the ANALYST MEMORY block before analyzing log data
+    | cross-reference every candidate finding against RESOLVED FINDINGS
+    | anchor every finding to an exact log excerpt in raw_log_excerpt and root_cause.evidence
+    | set low_confidence:true on any root_cause with confidence below 0.70
+    | set escalation_required:true when overall_health is CRITICAL
+    | populate escalation_reason when escalation_required is true
+    | detect recurring patterns (same service failing repeatedly in the window)
+    | identify dependency chains (service A fails because service B is down)
+    | complete all schema sections every run
+</behavioral_rules>
+
+<tone>
+  Operational, precise, evidence-based. Every claim has a log citation.
+  Focus on what broke, why it broke, and how to fix it — not on threats or adversaries.
+  Assume reader is a homelab operator comfortable with Linux services and networking.
+</tone>
+
+Respond with ONLY a valid JSON object matching the schema above. No markdown fences, \
+no prose, no explanation outside the JSON.\
+"""
+
+_NRE_LOCAL_EXAMPLE = """\
+STRUCTURAL EXAMPLE — REPLACE ALL VALUES WITH REAL DATA FROM THE LOGS ABOVE.
+{
+  "report_metadata": {
+    "generated_at": "<ISO8601 now>",
+    "log_source_format": "syslog",
+    "log_timespan": {"earliest": "<first timestamp>", "latest": "<last timestamp>"},
+    "total_events_analyzed": "<integer>",
+    "services_affected": "<integer>",
+    "critical_failures": "<integer>",
+    "escalation_required": false,
+    "escalation_reason": null
+  },
+  "service_events": [
+    {
+      "event_id": "SVC-001",
+      "timestamp": "<from log>",
+      "raw_log_excerpt": "<exact log line>",
+      "service": "<daemon name from log>",
+      "host": "<hostname or IP>",
+      "health_state": "DEGRADED",
+      "root_cause": {
+        "category": "resource_exhaustion",
+        "evidence": "<exact log line showing the resource issue>",
+        "confidence": 0.85,
+        "low_confidence": false
+      },
+      "impact": {
+        "severity": "HIGH",
+        "affected_systems": "<what systems or users are affected>",
+        "downstream_effects": ["<cascading effect 1>"]
+      },
+      "recurrence": {
+        "is_recurring": true,
+        "occurrence_count": 5,
+        "pattern": "<describe the pattern, e.g. every ~60s>"
+      }
+    }
+  ],
+  "summary": {
+    "overall_health": "DEGRADED",
+    "top_failing_services": [
+      {"service": "<name>", "host": "<host>", "event_count": 3, "health_state": "DEGRADED", "root_cause_category": "resource_exhaustion"}
+    ],
+    "resource_pressure": {
+      "memory": "<observation or null>",
+      "cpu": null,
+      "disk": null,
+      "network": null
+    },
+    "dependency_issues": [],
+    "response_actions": {
+      "immediate_remediation": ["<specific action>"],
+      "investigation_steps": ["<what to check>"],
+      "long_term_fixes": ["<architectural fix>"],
+      "monitoring_recommendations": ["<what to alert on>"]
+    }
+  }
+}
+END STRUCTURAL EXAMPLE\
+"""
+
+# ── Available agents ──────────────────────────────────────────────────────────
+
+AGENTS = {
+    "siem_cti": {
+        "label":        "Cyber Threat Intelligence",
+        "system":       _SIEM_CTI_SYSTEM,
+        "local_example": None,   # set below after _LOCAL_EXAMPLE is defined
+        "schema":       "siem_cti",
+    },
+    "nre": {
+        "label":        "Network Reliability Engineer",
+        "system":       _NRE_SYSTEM,
+        "local_example": _NRE_LOCAL_EXAMPLE,
+        "schema":       "nre",
+    },
+}
+
 # Local LLM example — shows JSON structure only; values are placeholders, NOT real data.
 # WARNING: every value below is fictional. The model MUST replace all of them with
 # data extracted from the actual logs provided by the user. Do not copy these values.
@@ -328,6 +562,9 @@ Do not copy IPs, timestamps, event IDs, or any other value from this example.
 }
 END STRUCTURAL EXAMPLE — output must contain ONLY real data from the logs, not the above.\
 """
+
+# Wire SIEM-CTI local example now that it's defined
+AGENTS["siem_cti"]["local_example"] = _LOCAL_EXAMPLE
 
 # ── Log formatting ────────────────────────────────────────────────────────────
 
@@ -563,14 +800,14 @@ def _save_analysis(db, result: dict, focus: str, hours: float) -> "AIAnalysis | 
 
 # ── LLM callers ───────────────────────────────────────────────────────────────
 
-async def _call_anthropic(api_key: str, model: str, user_message: str) -> str:
+async def _call_anthropic(api_key: str, model: str, user_message: str, agent_cfg: dict) -> str:
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    logger.info("Calling Anthropic API — model=%s", model)
+    logger.info("Calling Anthropic API — model=%s agent=%s", model, agent_cfg.get("schema"))
     try:
         response = await client.messages.create(
             model=model,
             max_tokens=8192,
-            system=_SIEM_CTI_SYSTEM,
+            system=agent_cfg["system"],
             messages=[{"role": "user", "content": user_message}],
             timeout=120.0,
         )
@@ -591,20 +828,21 @@ async def _call_anthropic(api_key: str, model: str, user_message: str) -> str:
         raise
 
 
-async def _call_local_llm(base_url: str, model: str, user_message: str) -> str:
+async def _call_local_llm(base_url: str, model: str, user_message: str, agent_cfg: dict) -> str:
     import httpx as _httpx
+    example = agent_cfg.get("local_example") or _LOCAL_EXAMPLE
     user = (
         f"{user_message}\n\n"
-        f"Produce a SIEM-CTI JSON report for the log data above. "
-        f"Every IP, timestamp, log excerpt, IOC, and event in your output MUST come "
-        f"from the actual log lines provided — never invent or copy from the schema example. "
+        f"Produce a JSON report for the log data above. "
+        f"Every value in your output MUST come from the actual log lines provided — "
+        f"never invent or copy from the schema example. "
         f"Schema structure reference (all values are placeholders — replace with real log data):\n"
-        f"{_LOCAL_EXAMPLE}"
+        f"{example}"
     )
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _SIEM_CTI_SYSTEM},
+            {"role": "system", "content": agent_cfg["system"]},
             {"role": "user",   "content": user},
         ],
         "max_tokens": 8192,
@@ -659,9 +897,11 @@ def _extract_json(text: str) -> dict:
 
     # Unwrap single-key wrapper: {"analysis": {...}} → inner dict
     _SCHEMA_KEYS = {
-        # new SIEM-CTI keys
+        # SIEM-CTI keys
         "report_metadata", "events",
-        # old schema keys + LLM variants
+        # NRE keys
+        "service_events", "service_health",
+        # legacy schema keys + LLM variants
         "summary", "threat_level", "findings", "immediate_actions",
         "long_term_recommendations", "executive_summary", "risk_level",
         "security_findings", "issues", "vulnerabilities", "recommendations",
@@ -756,12 +996,81 @@ def _normalise_siem_cti(obj: dict) -> dict:
     return result
 
 
+def _normalise_nre(obj: dict) -> dict:
+    """Pass through NRE schema; add backward-compat fields for DB persistence."""
+    meta    = obj.get("report_metadata", {}) or {}
+    events  = obj.get("service_events", []) or []
+    summ    = obj.get("summary", {}) or {}
+    ra      = summ.get("response_actions", {}) or {}
+
+    health_raw = str(summ.get("overall_health", "UNKNOWN")).upper()
+    # Map NRE health → threat_level equivalent for banner + DB
+    health_to_tl = {"CRITICAL": "CRITICAL", "DEGRADED": "HIGH",
+                    "WARNING": "MEDIUM", "HEALTHY": "LOW"}
+    threat_level = health_to_tl.get(health_raw, "UNKNOWN")
+
+    total     = meta.get("total_events_analyzed", len(events))
+    affected  = meta.get("services_affected", 0)
+    failures  = meta.get("critical_failures", 0)
+    summary_text = (
+        f"Analyzed {total} events. Overall health: {health_raw}. "
+        f"{affected} service(s) affected, {failures} critical failure(s)."
+        + (" Escalation required." if meta.get("escalation_required") else "")
+    )
+
+    # Compat findings from service_events
+    findings_compat = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        sev = (ev.get("impact") or {}).get("severity", "LOW")
+        if sev not in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"):
+            sev = "LOW"
+        rc = ev.get("root_cause", {}) or {}
+        rec = ev.get("recurrence", {}) or {}
+        detail_parts = [ev.get("raw_log_excerpt", "")]
+        if rc.get("category"):
+            detail_parts.append(f"Root cause: {rc['category']}")
+        if rc.get("evidence") and rc["evidence"] != ev.get("raw_log_excerpt"):
+            detail_parts.append(f"Evidence: {rc['evidence']}")
+        if rec.get("is_recurring") and rec.get("pattern"):
+            detail_parts.append(f"Pattern: {rec['pattern']} ({rec.get('occurrence_count','?')}x)")
+        affected_sys = (ev.get("impact") or {}).get("affected_systems", "")
+        findings_compat.append({
+            "severity":       sev,
+            "title":          f"{ev.get('service','?')} — {ev.get('health_state','?')} on {ev.get('host','?')}",
+            "detail":         "\n".join(detail_parts),
+            "recommendation": "",
+        })
+
+    immediate = ra.get("immediate_remediation", []) or []
+    long_term  = ra.get("long_term_fixes", []) or []
+
+    result = dict(obj)
+    result["_schema"]            = "nre"
+    result["threat_level"]       = threat_level
+    result["_summary_text"]      = summary_text
+    result["_findings_compat"]   = findings_compat
+    result["_immediate_actions"] = immediate if isinstance(immediate, list) else []
+    result["_long_term_recs"]    = long_term if isinstance(long_term, list) else []
+
+    logger.info("NRE normalised: health=%s events=%d services_affected=%d",
+                health_raw, len(events), affected)
+    return result
+
+
 def _normalise(obj: dict) -> dict:
     """Detect schema and normalise to canonical form."""
 
     # SIEM-CTI schema detection — must have report_metadata + events + summary
     if "report_metadata" in obj and "events" in obj and "summary" in obj:
         return _normalise_siem_cti(obj)
+
+    # NRE schema detection — has service_events (or service_health alias)
+    if "service_events" in obj or "service_health" in obj:
+        if "service_health" in obj and "service_events" not in obj:
+            obj = dict(obj); obj["service_events"] = obj.pop("service_health")
+        return _normalise_nre(obj)
 
     # Legacy schema normalisation
     _SUMMARY_KEYS   = ["summary", "executive_summary", "overview", "analysis_summary",
@@ -839,6 +1148,7 @@ def _normalise(obj: dict) -> dict:
 async def analyze_logs(
     entries: list[SyslogEntry],
     *,
+    agent: str = "siem_cti",
     focus: str = "security",
     hours: float = 24,
     db=None,
@@ -846,8 +1156,9 @@ async def analyze_logs(
     import json as _json
     from database import get_service_setting, SessionLocal
 
-    ai_provider = get_service_setting("ai_provider") or "anthropic"
-    is_local = ai_provider == "local"
+    ai_provider  = get_service_setting("ai_provider") or "anthropic"
+    is_local     = ai_provider == "local"
+    agent_cfg    = AGENTS.get(agent) or AGENTS["siem_cti"]
 
     own_session = db is None
     if own_session:
@@ -897,7 +1208,7 @@ async def analyze_logs(
             return {"error": "Local LLM URL not configured. Set it in Settings > AI Configuration.",
                     "log_count": len(entries)}
         try:
-            raw_text = await _call_local_llm(base_url, model, user_message)
+            raw_text = await _call_local_llm(base_url, model, user_message, agent_cfg)
         except Exception as exc:
             logger.error("Local LLM error: %s", exc)
             return {"error": f"Local LLM error: {exc}", "log_count": len(entries)}
@@ -908,7 +1219,7 @@ async def analyze_logs(
                     "log_count": len(entries)}
         model = get_service_setting("claude_model") or settings.claude_model or "claude-sonnet-4-6"
         try:
-            raw_text = await _call_anthropic(api_key, model, user_message)
+            raw_text = await _call_anthropic(api_key, model, user_message, agent_cfg)
         except anthropic.RateLimitError:
             logger.warning("Anthropic rate limit hit")
             return {"error": ("Rate limit reached. Try a shorter time window or reduce "
@@ -935,6 +1246,8 @@ async def analyze_logs(
         "model":         model,
         "hours_covered": hours,
         "provider":      ai_provider,
+        "agent":         agent,
+        "agent_label":   agent_cfg["label"],
     }
 
     try:

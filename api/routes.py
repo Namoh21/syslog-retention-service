@@ -156,11 +156,18 @@ class ResetPassword(BaseModel):
 class AiAnalyzeBody(BaseModel):
     hours: float = 1.0
     focus: str = "security threats and anomalies"
+    agent: str = "siem_cti"
 
     @field_validator("focus")
     @classmethod
     def cap_focus(cls, v: str) -> str:
         return v[:200]
+
+    @field_validator("agent")
+    @classmethod
+    def validate_agent(cls, v: str) -> str:
+        from ai_analysis import AGENTS
+        return v if v in AGENTS else "siem_cti"
 
     @field_validator("hours")
     @classmethod
@@ -422,7 +429,7 @@ async def ai_analyze(
 
     async def _run():
         try:
-            result = await analyze_logs(entries, focus=body.focus, hours=body.hours)
+            result = await analyze_logs(entries, agent=body.agent, focus=body.focus, hours=body.hours)
             _analysis_jobs[job_id]["status"] = "done"
             _analysis_jobs[job_id]["result"] = result
         except asyncio.CancelledError:

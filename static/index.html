@@ -1398,7 +1398,7 @@ function logNav(dir) {
 // ── AI Analysis ───────────────────────────────────────────────────────────────
 async function ai() {
   const aiEnabled = serviceInfo?.ai_enabled;
-  const savedFocus = localStorage.getItem('ai_last_focus') || 'security threats and anomalies';
+  const savedAgent = localStorage.getItem('ai_last_agent') || 'siem_cti';
   render(`
     <div class="page-header"><h1>AI Security Analysis</h1><p>Claude analyzes your recent logs and identifies threats, anomalies, and security recommendations.</p></div>
     ${!aiEnabled ? `<div class="alert alert-warn">
@@ -1440,8 +1440,11 @@ async function ai() {
             <div id="ai-entry-count" style="font-size:11px;color:var(--muted);margin-top:4px">&#x23F3; counting entries...</div>
           </div>
           <div class="form-group">
-            <label>Focus Area</label>
-            <input id="ai-focus" value="${esc(savedFocus)}" style="width:280px" maxlength="200" />
+            <label>Analysis Agent</label>
+            <select id="ai-agent" style="width:280px" onchange="localStorage.setItem('ai_last_agent',this.value)">
+              <option value="siem_cti"${savedAgent==='siem_cti'?' selected':''}>&#x1F50D; Cyber Threat Intelligence (SIEM-CTI)</option>
+              <option value="nre"${savedAgent==='nre'?' selected':''}>&#x1F6E0; Network Reliability Engineer (NRE-OPS)</option>
+            </select>
           </div>
           <div class="form-group"><label>&nbsp;</label>
             <button class="btn btn-primary" id="ai-btn" onclick="runAnalysis()" ${!aiEnabled?'disabled':''}>
@@ -1874,15 +1877,15 @@ async function runAnalysis() {
     localStorage.setItem(consentKey, '1');
   }
 
-  const focus = document.getElementById('ai-focus').value.trim();
-  localStorage.setItem('ai_last_focus', focus);
+  const agent = document.getElementById('ai-agent').value || 'siem_cti';
+  localStorage.setItem('ai_last_agent', agent);
   const hours = parseFloat(document.getElementById('ai-hours').value);
 
   let startResp;
   try {
     startResp = await apiFetch('/api/ai/analyze', {
       method: 'POST',
-      body: JSON.stringify({ hours, focus }),
+      body: JSON.stringify({ hours, agent }),
     });
   } catch(e) {
     document.getElementById('ai-output').innerHTML = `<div class="alert alert-warn">Failed to start analysis: ${e.message}</div>`;
@@ -1900,17 +1903,20 @@ async function runAnalysis() {
   sessionStorage.setItem('ai_active_job', JSON.stringify({
     job_id: _activeJobId,
     provider,
+    agent,
     started_ms: _jobStartTs,
     hours,
     log_count: startResp.log_count,
   }));
 
-  _startPollingUI(provider, startResp.log_count);
+  _startPollingUI(provider, startResp.log_count, agent);
 }
 
-function _startPollingUI(provider, logCount) {
+function _startPollingUI(provider, logCount, agent) {
   const isLocal = provider === 'local';
   const providerLabel = isLocal ? (serviceInfo?.active_model || 'Local LLM') : `Claude (${serviceInfo?.active_model || 'unknown'})`;
+  const agentLabels = {siem_cti:'Cyber Threat Intelligence', nre:'Network Reliability Engineer'};
+  const agentLabel = agentLabels[agent] || agent || '';
   const expectedMs = isLocal ? 180000 : 30000;  // rough estimate for progress bar
 
   const btn        = document.getElementById('ai-btn');
@@ -1926,7 +1932,7 @@ function _startPollingUI(provider, logCount) {
   if (btn) { btn.disabled = true; btn.innerHTML = '&#x1F916; Analyzing...'; }
   if (out) out.innerHTML = '';
   progress.style.display = 'block';
-  if (progressMsg) progressMsg.textContent = `Sending logs to ${providerLabel} for analysis...`;
+  if (progressMsg) progressMsg.textContent = `${agentLabel ? agentLabel+' · ' : ''}Sending logs to ${providerLabel} for analysis...`;
 
   // Indeterminate bar for first 5s, then time-estimated
   if (bar) { bar.classList.add('indeterminate'); bar.style.width = '0%'; }
@@ -2027,7 +2033,7 @@ function _resumeActiveJob() {
     if (!j.job_id) return false;
     _activeJobId = j.job_id;
     _jobStartTs  = j.started_ms || Date.now();
-    _startPollingUI(j.provider || 'anthropic', j.log_count);
+    _startPollingUI(j.provider || 'anthropic', j.log_count, j.agent);
     return true;
   } catch(e) { return false; }
 }
@@ -2400,6 +2406,217 @@ function _renderSiemCti(d, out) {
   _populateFindingCards(findingsForCards, analysisId, 'ai-findings-container');
 }
 
+// ── NRE schema renderer ───────────────────────────────────────────────────────
+function _renderNre(d, out) {
+  const a = d.analysis;
+  const meta   = a.report_metadata || {};
+  const events = a.service_events || [];
+  const summ   = a.summary || {};
+  const ra     = summ.response_actions || {};
+  const tl     = a.threat_level || 'UNKNOWN';
+  const analysisId = d.analysis_id;
+
+  const healthRaw = (summ.overall_health || 'UNKNOWN').toUpperCase();
+  const healthIcon  = {CRITICAL:'&#x1F6A8;',DEGRADED:'&#x1F534;',WARNING:'&#x26A0;&#xFE0F;',HEALTHY:'&#x2705;',UNKNOWN:'&#x2753;'}[healthRaw] || '&#x2753;';
+  const healthLabel = {CRITICAL:'Critical — services down, immediate action required',DEGRADED:'Degraded — services failing, action recommended',WARNING:'Warning — some issues detected',HEALTHY:'Healthy — all services nominal',UNKNOWN:'Unknown'}[healthRaw] || healthRaw;
+
+  const modelStr = d.provider === 'local' ? 'Local LLM' : (d.model || '');
+  const metaStr  = [
+    d.log_count   ? `${d.log_count.toLocaleString()} log entries` : '',
+    d.hours_covered ? `${d.hours_covered}h window` : '',
+    modelStr,
+    d.analyzed_at ? `analyzed ${fmtDate(d.analyzed_at)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  // Stats row
+  const statsHtml = `
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px">
+      ${meta.total_events_analyzed != null ? `<div class="cti-stat"><div class="cti-stat-val">${meta.total_events_analyzed}</div><div class="cti-stat-lbl">Events Analyzed</div></div>` : ''}
+      ${meta.services_affected != null ? `<div class="cti-stat${meta.services_affected>0?' cti-stat-warn':''}"><div class="cti-stat-val">${meta.services_affected}</div><div class="cti-stat-lbl">Services Affected</div></div>` : ''}
+      ${meta.critical_failures != null ? `<div class="cti-stat${meta.critical_failures>0?' cti-stat-warn':''}"><div class="cti-stat-val">${meta.critical_failures}</div><div class="cti-stat-lbl">Critical Failures</div></div>` : ''}
+      ${events.length ? `<div class="cti-stat"><div class="cti-stat-val">${events.length}</div><div class="cti-stat-lbl">Service Events</div></div>` : ''}
+    </div>`;
+
+  // Escalation
+  const escalationHtml = meta.escalation_required ? `
+    <div class="alert" style="background:#2d1515;border:1px solid #c0392b;color:#e74c3c;margin-bottom:16px;display:flex;gap:10px;align-items:flex-start">
+      <span style="font-size:18px">&#x1F6A8;</span>
+      <div><strong>ESCALATION REQUIRED</strong><br><span style="font-size:13px">${esc(meta.escalation_reason||'Critical service failure detected.')}</span></div>
+    </div>` : '';
+
+  // Resource pressure card
+  const rp = summ.resource_pressure || {};
+  const rpItems = [['Memory',rp.memory],['CPU',rp.cpu],['Disk',rp.disk],['Network',rp.network]].filter(([,v])=>v);
+  const resourceHtml = rpItems.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4CA; Resource Pressure</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px">
+        ${rpItems.map(([label,val])=>`
+          <div style="background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:10px 14px">
+            <div style="font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:4px">${esc(label)}</div>
+            <div style="font-size:13px;color:var(--text)">${esc(val)}</div>
+          </div>`).join('')}
+      </div>
+    </div>` : '';
+
+  // Top failing services table
+  const topSvcs = summ.top_failing_services || [];
+  const topSvcsHtml = topSvcs.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4CB; Top Failing Services</div>
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="color:var(--muted);font-size:10px;text-transform:uppercase;border-bottom:1px solid var(--border)">
+          <th style="padding:4px 8px;text-align:left">Service</th>
+          <th style="padding:4px 8px;text-align:left">Host</th>
+          <th style="padding:4px 8px;text-align:left">State</th>
+          <th style="padding:4px 8px;text-align:left">Root Cause</th>
+          <th style="padding:4px 8px;text-align:right">Events</th>
+        </tr></thead>
+        <tbody>${topSvcs.map(s=>`<tr style="border-bottom:1px solid var(--border,#222)">
+          <td style="padding:5px 8px;font-family:monospace;font-weight:600">${esc(s.service||'')}</td>
+          <td style="padding:5px 8px;font-size:12px;color:var(--muted)">${esc(s.host||'')}</td>
+          <td style="padding:5px 8px"><span class="cti-badge" style="${{DOWN:'background:rgba(248,81,73,.2);color:#f85149',DEGRADED:'background:rgba(210,153,34,.2);color:#d29922',FLAPPING:'background:rgba(139,148,158,.2);color:#8b949e',RECOVERING:'background:rgba(63,185,80,.2);color:#3fb950',UNKNOWN:'background:rgba(139,148,158,.1);color:#8b949e'}[s.health_state]||''}">${esc(s.health_state||'')}</span></td>
+          <td style="padding:5px 8px;font-size:12px;color:var(--muted)">${esc(s.root_cause_category||'')}</td>
+          <td style="padding:5px 8px;text-align:right;font-weight:700">${s.event_count||0}</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>` : '';
+
+  // Dependency issues
+  const deps = summ.dependency_issues || [];
+  const depsHtml = deps.length ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F517; Dependency Failures</div>
+      ${deps.map(dep=>`
+        <div style="margin-bottom:10px;padding:10px;background:var(--bg);border-radius:6px;border-left:3px solid #e67e22">
+          <div style="font-size:13px;font-weight:600;margin-bottom:4px">&#x1F4A5; ${esc(dep.failed_dependency||'')}</div>
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px">Affected: ${(dep.affected_services||[]).map(s=>`<code style="font-size:11px">${esc(s)}</code>`).join(', ')}</div>
+          ${dep.evidence ? `<div style="font-size:11px;font-family:monospace;color:var(--muted);background:var(--bg2,#0d1117);padding:4px 8px;border-radius:4px;white-space:pre-wrap">${esc(dep.evidence)}</div>` : ''}
+        </div>`).join('')}
+    </div>` : '';
+
+  // Service event finding cards
+  const sevColour = {CRITICAL:'#f85149',HIGH:'#d29922',MEDIUM:'#58a6ff',LOW:'#3fb950',INFO:'#8b949e'};
+  const stateColour = {DOWN:'background:rgba(248,81,73,.2);color:#f85149',DEGRADED:'background:rgba(210,153,34,.2);color:#d29922',FLAPPING:'background:rgba(139,148,158,.2);color:#8b949e',RECOVERING:'background:rgba(63,185,80,.2);color:#3fb950'};
+
+  const findingsForCards = events.map((ev,i) => {
+    const sev  = (ev.impact||{}).severity || 'LOW';
+    const rc   = ev.root_cause || {};
+    const rec  = ev.recurrence || {};
+    const imp  = ev.impact || {};
+
+    const recTag = rec.is_recurring
+      ? `<span class="cti-badge" style="background:rgba(139,148,158,.15);color:#8b949e;margin-left:8px">&#x1F501; Recurring${rec.occurrence_count?` (${rec.occurrence_count}x)`:''}</span>` : '';
+
+    const stateStyle = stateColour[ev.health_state] || 'background:rgba(139,148,158,.1);color:#8b949e';
+    const logIdSection = `
+      <div class="finding-section" style="padding-top:0">
+        <span style="font-size:11px;color:var(--muted)">
+          <span class="cti-badge" style="${stateStyle}">${esc(ev.health_state||'UNKNOWN')}</span>
+          &nbsp;${esc(ev.service||'')} on <strong>${esc(ev.host||'')}</strong>
+          ${ev.timestamp ? `&middot; <time>${esc(ev.timestamp)}</time>` : ''}
+          &middot; <code style="font-size:11px">${esc(ev.event_id||`SVC-${i+1}`)}</code>
+          ${recTag}
+        </span>
+      </div>`;
+
+    const rcSection = (rc.category || rc.evidence) ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F50E; Root Cause
+          <span style="font-size:10px;font-weight:400;color:${rc.low_confidence?'#e67e22':'var(--muted)'};margin-left:8px">${rc.category||''} ${typeof rc.confidence==='number'?'· '+(rc.confidence*100).toFixed(0)+'% confidence':''}</span>
+        </div>
+        ${rc.evidence ? `<div style="font-size:11px;font-family:monospace;color:var(--muted);background:var(--bg2,#0d1117);padding:6px 10px;border-radius:4px;white-space:pre-wrap">${esc(rc.evidence)}</div>` : ''}
+      </div>` : '';
+
+    const impSection = (imp.affected_systems || (imp.downstream_effects||[]).length) ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F4A5; Impact</div>
+        ${imp.affected_systems ? `<div style="font-size:13px;margin-bottom:6px">${esc(imp.affected_systems)}</div>` : ''}
+        ${(imp.downstream_effects||[]).map(e=>`<div style="font-size:12px;color:var(--muted);margin-bottom:2px">&#x21B3; ${esc(e)}</div>`).join('')}
+      </div>` : '';
+
+    const recSection = rec.pattern ? `
+      <div class="finding-section">
+        <div class="finding-label">&#x1F501; Recurrence Pattern</div>
+        <div style="font-size:13px">${esc(rec.pattern)}</div>
+      </div>` : '';
+
+    return {
+      severity: sev,
+      title: `${ev.service||'?'} — ${ev.health_state||'?'} on ${ev.host||'?'}`,
+      detail: ev.raw_log_excerpt || '',
+      recommendation: '',
+      _extra_html: logIdSection + rcSection + impSection + recSection,
+    };
+  });
+
+  // Response actions
+  const immArr  = ra.immediate_remediation || [];
+  const invArr  = ra.investigation_steps || [];
+  const ltArr   = ra.long_term_fixes || [];
+  const monArr  = ra.monitoring_recommendations || [];
+
+  const actionsHtml = (immArr.length || invArr.length || ltArr.length || monArr.length) ? `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F6E0; Response Actions</div>
+      ${immArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#e74c3c;letter-spacing:.06em;margin-bottom:8px">&#x1F6A8; Immediate Remediation</div>
+        <ul class="ai-action-list" style="margin-bottom:16px">${immArr.map((x,i)=>
+          `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${invArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#e67e22;letter-spacing:.06em;margin-bottom:8px">&#x1F50D; Investigation Steps</div>
+        <ul class="ai-action-list" style="margin-bottom:16px">${invArr.map((x,i)=>
+          `<li class="ai-action-item"><span class="ai-action-num">${i+1}</span><span class="ai-action-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${ltArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">&#x1F4C5; Long-term Fixes</div>
+        <ul class="ai-longterm-list" style="margin-bottom:16px">${ltArr.map((x,i)=>
+          `<li class="ai-longterm-item"><span class="ai-longterm-num">${i+1}</span><span class="ai-longterm-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+      ${monArr.length ? `
+        <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:var(--muted);letter-spacing:.06em;margin-bottom:8px">&#x1F514; Monitoring Recommendations</div>
+        <ul class="ai-longterm-list">${monArr.map((x,i)=>
+          `<li class="ai-longterm-item"><span class="ai-longterm-num">${i+1}</span><span class="ai-longterm-text">${esc(x)}</span></li>`).join('')}</ul>` : ''}
+    </div>` : '';
+
+  const pillHtml = (() => {
+    const sc = events.reduce((m,e)=>{const s=(e.impact||{}).severity||'LOW'; m[s]=(m[s]||0)+1; return m;},{});
+    return [
+      sc.CRITICAL?`<span class="ai-pill ai-pill-crit">&#x1F534; ${sc.CRITICAL} Critical</span>`:'',
+      sc.HIGH?`<span class="ai-pill ai-pill-high">&#x26A0;&#xFE0F; ${sc.HIGH} High</span>`:'',
+      sc.MEDIUM?`<span class="ai-pill ai-pill-med">&#x1F7E1; ${sc.MEDIUM} Medium</span>`:'',
+      sc.LOW?`<span class="ai-pill ai-pill-low">&#x1F7E2; ${sc.LOW} Low</span>`:'',
+    ].filter(Boolean).join('');
+  })();
+
+  out.innerHTML = `
+    <div class="ai-banner ai-banner-${tl}">
+      <div class="ai-banner-icon">${healthIcon}</div>
+      <div class="ai-banner-body">
+        <div class="ai-banner-level">NRE-OPS · Network Health</div>
+        <div class="ai-banner-title">${healthLabel}</div>
+        <div class="ai-banner-meta">${metaStr}</div>
+      </div>
+      ${pillHtml ? `<div class="ai-banner-pills">${pillHtml}</div>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()" title="Download raw JSON" style="flex-shrink:0;align-self:flex-start">&#x2B07; Export JSON</button>
+    </div>
+    ${escalationHtml}
+    ${statsHtml}
+    ${resourceHtml}
+    ${topSvcsHtml}
+    ${depsHtml}
+    ${findingsForCards.length ? `
+      <div style="margin-bottom:16px">
+        <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px">
+          &#x1F6E0; Service Events
+          <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Set status and notes per event to track remediation</span>
+        </div>
+        <div id="ai-findings-container"></div>
+      </div>` : ''}
+    ${actionsHtml}
+  `;
+
+  _populateFindingCards(findingsForCards, analysisId, 'ai-findings-container');
+}
+
 // ── Main analysis renderer (dispatches by schema) ─────────────────────────────
 function renderAnalysis(d, out) {
   _lastAnalysisRaw = d;
@@ -2407,9 +2624,10 @@ function renderAnalysis(d, out) {
   const a = d.analysis;
 
   // SIEM-CTI schema — rich structured renderer
-  if (a && a._schema === 'siem_cti') {
-    return _renderSiemCti(d, out);
-  }
+  if (a && a._schema === 'siem_cti') return _renderSiemCti(d, out);
+
+  // NRE schema — operational health renderer
+  if (a && a._schema === 'nre') return _renderNre(d, out);
 
   // Raw fallback — LLM returned free-form text instead of JSON
   if (!a || a.raw) {
