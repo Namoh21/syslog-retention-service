@@ -75,7 +75,7 @@ def _parse(raw: str, source_ip: str) -> SyslogEntry:
         msg_id = m.group(7) if m.group(7) != "-" else None
         message = m.group(8) or ""
         return SyslogEntry(
-            source_ip=source_ip,
+            log_source_ip=source_ip,
             facility=pri >> 3,
             severity=pri & 0x07,
             hostname=hostname,
@@ -92,7 +92,7 @@ def _parse(raw: str, source_ip: str) -> SyslogEntry:
         hostname = m.group(3)
         message = m.group(4) or ""
         return SyslogEntry(
-            source_ip=source_ip,
+            log_source_ip=source_ip,
             facility=pri >> 3,
             severity=pri & 0x07,
             hostname=hostname,
@@ -103,7 +103,7 @@ def _parse(raw: str, source_ip: str) -> SyslogEntry:
 
     # Fallback: store raw
     return SyslogEntry(
-        source_ip=source_ip,
+        log_source_ip=source_ip,
         facility=1,
         severity=5,
         hostname=source_ip,
@@ -116,7 +116,7 @@ def _apply_normalization(entry: SyslogEntry) -> SyslogEntry:
     """Run the message through the normalizer and stamp fields onto the entry."""
     nf = normalize(entry.message or "")
     entry.event_type    = nf.event_type
-    entry.src_ip        = nf.src_ip or entry.source_ip
+    entry.src_ip        = nf.src_ip or entry.log_source_ip
     entry.dst_ip        = nf.dst_ip
     entry.src_port      = nf.src_port
     entry.dst_port      = nf.dst_port

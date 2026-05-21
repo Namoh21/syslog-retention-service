@@ -58,16 +58,16 @@ def _count_events(db, rule: AlertRule) -> tuple[int, list[SyslogEntry]]:
         # Fires when an IP appears in the window that has never been seen before.
         # Limit "ever seen" to the past 90 days to avoid a full-table scan.
         horizon = datetime.now(timezone.utc) - timedelta(days=90)
-        recent_ips = {r.source_ip for r in q.with_entities(SyslogEntry.source_ip).limit(500).all()}
+        recent_ips = {r.log_source_ip for r in q.with_entities(SyslogEntry.log_source_ip).limit(500).all()}
         if not recent_ips:
             return 0, []
         ever_seen = {
-            r.source_ip for r in
-            db.query(SyslogEntry.source_ip)
+            r.log_source_ip for r in
+            db.query(SyslogEntry.log_source_ip)
             .filter(
                 SyslogEntry.received_at >= horizon,
                 SyslogEntry.received_at < since,
-                SyslogEntry.source_ip.isnot(None),
+                SyslogEntry.log_source_ip.isnot(None),
             )
             .distinct()
             .limit(5000)
@@ -75,7 +75,7 @@ def _count_events(db, rule: AlertRule) -> tuple[int, list[SyslogEntry]]:
         }
         new_ips = recent_ips - ever_seen
         if new_ips:
-            sample = q.filter(SyslogEntry.source_ip.in_(new_ips)).limit(5).all()
+            sample = q.filter(SyslogEntry.log_source_ip.in_(new_ips)).limit(5).all()
             return len(new_ips), sample
         return 0, []
 
@@ -103,7 +103,7 @@ def _build_detail(rule: AlertRule, count: int, sample: list) -> str:
     lines = [f"Alert: {rule.name}", f"Condition: {rule.condition_type}", f"Count: {count}"]
     for e in sample[:3]:
         ts = e.received_at.strftime("%H:%M:%S") if e.received_at else "?"
-        lines.append(f"  [{ts}] {e.source_ip or '?'} → {e.event_type or ''} {e.message or ''}"[:120])
+        lines.append(f"  [{ts}] {e.log_source_ip or '?'} → {e.event_type or ''} {e.message or ''}"[:120])
     return "\n".join(lines)
 
 

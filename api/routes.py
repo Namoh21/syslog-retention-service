@@ -59,7 +59,7 @@ class Token(BaseModel):
 class LogEntryOut(BaseModel):
     id: int
     received_at: datetime
-    source_ip: str
+    log_source_ip: str
     facility: Optional[int]
     severity: Optional[int]
     severity_name: Optional[str]
@@ -254,7 +254,7 @@ async def login(
 @router.get("/logs", response_model=LogsPage, tags=["logs"])
 async def list_logs(
     q: Optional[str] = Query(None),          # KQL query string (takes priority)
-    source_ip: Optional[str] = Query(None),
+    log_source_ip: Optional[str] = Query(None),
     severity_max: Optional[int] = Query(None, ge=0, le=7),
     hostname: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -274,7 +274,7 @@ async def list_logs(
     entries, total = query_logs(
         db,
         kql=q,
-        source_ip=source_ip,
+        log_source_ip=log_source_ip,
         severity_max=severity_max,
         hostname=hostname,
         search=search,
@@ -297,7 +297,7 @@ async def list_logs(
             LogEntryOut(
                 id=e.id,
                 received_at=e.received_at,
-                source_ip=e.source_ip or "",
+                log_source_ip=e.log_source_ip or "",
                 facility=e.facility,
                 severity=e.severity,
                 severity_name=SEVERITY_NAMES[e.severity] if e.severity is not None and e.severity < 8 else None,
@@ -335,7 +335,7 @@ async def get_log(
     return {
         "id": entry.id,
         "received_at": entry.received_at,
-        "source_ip": entry.source_ip,
+        "log_source_ip": entry.log_source_ip,
         "facility": entry.facility,
         "severity": entry.severity,
         "severity_name": SEVERITY_NAMES[entry.severity] if entry.severity is not None and entry.severity < 8 else None,
@@ -1441,7 +1441,7 @@ async def get_audit_log(
 @router.get("/logs/export", tags=["logs"])
 async def export_logs_csv(
     q: Optional[str] = Query(None),          # KQL query string
-    source_ip: Optional[str] = Query(None),
+    log_source_ip: Optional[str] = Query(None),
     severity_max: Optional[int] = Query(None, ge=0, le=7),
     hostname: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
@@ -1459,7 +1459,7 @@ async def export_logs_csv(
 ):
     rows = query_logs_for_export(
         db, max_rows=max_rows, kql=q,
-        source_ip=source_ip, severity_max=severity_max, hostname=hostname,
+        log_source_ip=log_source_ip, severity_max=severity_max, hostname=hostname,
         search=search, since=since, until=until, event_type=event_type,
         src_ip=src_ip, dst_ip=dst_ip, dst_port=dst_port,
         protocol=protocol, action=action,
@@ -1469,7 +1469,7 @@ async def export_logs_csv(
         buf = io.StringIO()
         writer = csv.writer(buf)
         writer.writerow([
-            "id", "received_at", "source_ip", "severity", "severity_name",
+            "id", "received_at", "log_source_ip", "severity", "severity_name",
             "hostname", "app_name", "event_type", "action", "src_ip", "dst_ip",
             "dst_port", "protocol", "rule_name", "message",
         ])
@@ -1478,7 +1478,7 @@ async def export_logs_csv(
         for e in rows:
             sev_name = SEVERITY_NAMES[e.severity] if e.severity is not None and e.severity < 8 else ""
             writer.writerow([
-                e.id, e.received_at, e.source_ip, e.severity, sev_name,
+                e.id, e.received_at, e.log_source_ip, e.severity, sev_name,
                 e.hostname, e.app_name, e.event_type, e.action,
                 e.src_ip, e.dst_ip, e.dst_port, e.protocol, e.rule_name,
                 e.message,
@@ -1594,7 +1594,7 @@ async def investigate_ip(
     """All activity for a specific IP — timeline, event types, rules triggered, sample logs."""
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
     q = db.query(SyslogEntry).filter(
-        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
+        (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
         SyslogEntry.received_at >= since,
     )
     total = q.count()
@@ -1605,7 +1605,7 @@ async def investigate_ip(
     type_counts = (
         db.query(SyslogEntry.event_type, sqlfunc.count(SyslogEntry.id))
         .filter(
-            (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
+            (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip),
             SyslogEntry.received_at >= since,
         )
         .group_by(SyslogEntry.event_type)
@@ -1617,7 +1617,7 @@ async def investigate_ip(
     rule_counts = (
         db.query(SyslogEntry.rule_name, sqlfunc.count(SyslogEntry.id))
         .filter(
-            (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip),
+            (SyslogEntry.src_ip == ip),
             SyslogEntry.received_at >= since,
             SyslogEntry.rule_name.isnot(None),
         )
@@ -1643,10 +1643,10 @@ async def investigate_ip(
 
     # First / last seen
     first_seen = db.query(sqlfunc.min(SyslogEntry.received_at)).filter(
-        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip)
+        (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip)
     ).scalar()
     last_seen = db.query(sqlfunc.max(SyslogEntry.received_at)).filter(
-        (SyslogEntry.source_ip == ip) | (SyslogEntry.src_ip == ip)
+        (SyslogEntry.src_ip == ip) | (SyslogEntry.dst_ip == ip)
     ).scalar()
 
     return {

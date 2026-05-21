@@ -126,7 +126,7 @@ class SyslogEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     received_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
-    source_ip = Column(String(45), index=True)
+    log_source_ip = Column(String(45), index=True)  # IP of the device that sent the syslog packet
     facility = Column(Integer)
     severity = Column(Integer, index=True)
     hostname = Column(String(255), index=True)
@@ -156,7 +156,7 @@ class SyslogEntry(Base):
 
     __table_args__ = (
         Index("ix_entries_received_severity", "received_at", "severity"),
-        Index("ix_entries_source_received", "source_ip", "received_at"),
+        Index("ix_entries_logsource_received", "log_source_ip", "received_at"),
         Index("ix_entries_event_type", "event_type", "received_at"),
         Index("ix_entries_src_ip", "src_ip", "received_at"),
         Index("ix_entries_action", "action", "received_at"),
@@ -356,6 +356,11 @@ def _migrate_db():
         for col_name, col_type in _NORMALIZED_COLUMNS:
             if col_name not in existing:
                 conn.execute(text(f"ALTER TABLE syslog_entries ADD COLUMN {col_name} {col_type}"))
+
+        # Rename source_ip → log_source_ip for clarity (source_ip was the syslog sender IP,
+        # easily confused with src_ip which is the traffic source inside the log message)
+        if "source_ip" in existing and "log_source_ip" not in existing:
+            conn.execute(text("ALTER TABLE syslog_entries RENAME COLUMN source_ip TO log_source_ip"))
 
         # users.token_version — added v1.2 for JWT revocation
         user_cols = {
@@ -801,7 +806,7 @@ def _apply_search(q, search: str):
 def _build_log_query(
     db: Session,
     *,
-    source_ip: Optional[str] = None,
+    log_source_ip: Optional[str] = None,
     severity_max: Optional[int] = None,
     hostname: Optional[str] = None,
     search: Optional[str] = None,
@@ -815,8 +820,8 @@ def _build_log_query(
     action: Optional[str] = None,
 ):
     q = db.query(SyslogEntry)
-    if source_ip:
-        q = q.filter(SyslogEntry.source_ip == source_ip)
+    if log_source_ip:
+        q = q.filter(SyslogEntry.log_source_ip == log_source_ip)
     if severity_max is not None:
         q = q.filter(SyslogEntry.severity <= severity_max)
     if hostname:
@@ -880,8 +885,8 @@ def get_stats(db: Session) -> dict:
         .all()
     )
     by_source = (
-        db.query(SyslogEntry.source_ip, func.count(SyslogEntry.id))
-        .group_by(SyslogEntry.source_ip)
+        db.query(SyslogEntry.log_source_ip, func.count(SyslogEntry.id))
+        .group_by(SyslogEntry.log_source_ip)
         .order_by(func.count(SyslogEntry.id).desc())
         .limit(10)
         .all()

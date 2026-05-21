@@ -42,8 +42,9 @@ def _fmap():
     """Lazy import — avoids circular dependency with database.py."""
     from database import SyslogEntry as E
     return {
-        "source_ip":   (E.source_ip,   "ip"),
-        "src_ip":      (E.src_ip,      "ip"),
+        "log_source_ip": (E.log_source_ip, "ip"),   # IP of the device that sent the syslog packet
+        "source_ip":     (E.log_source_ip, "ip"),   # legacy alias for log_source_ip
+        "src_ip":        (E.src_ip,        "ip"),   # source IP inside the log message (firewall/traffic logs)
         "dst_ip":      (E.dst_ip,      "ip"),
         "hostname":    (E.hostname,    "text"),
         "host":        (E.hostname,    "text"),

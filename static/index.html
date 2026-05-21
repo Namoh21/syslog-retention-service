@@ -703,7 +703,7 @@ function ipContextMenu(e, ip) {
   menu.id = '_ip-ctx';
   menu.style.cssText = `position:fixed;top:${e.clientY}px;left:${e.clientX}px;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 0;min-width:200px;box-shadow:0 4px 16px rgba(0,0,0,.4);font-size:13px`;
   const items = [
-    {icon:'&#x1F50D;', label:'Filter logs for this IP',   fn:`qbLaunchLogs('src_ip:${ip} OR dst_ip:${ip} OR source_ip:${ip}')`},
+    {icon:'&#x1F50D;', label:'Filter logs for this IP',   fn:`qbLaunchLogs('src_ip:${ip} OR dst_ip:${ip}')`},
     {icon:'&#x1F50E;', label:'Investigate this IP',       fn:`_investigateIP('${ip}')`},
     {icon:'&#x1F4CB;', label:'Copy IP address',           fn:`navigator.clipboard?.writeText('${ip}')`},
   ];
@@ -766,7 +766,7 @@ async function dashboard() {
       </tr>`
     ).join('');
     const srcRows = (s.top_sources||[]).map(x =>
-      `<tr class="clickable-row" onclick="qbLaunchLogs('src_ip:${x.ip} OR source_ip:${x.ip}')" title="View logs from ${x.ip}">
+      `<tr class="clickable-row" onclick="qbLaunchLogs('src_ip:${x.ip} OR dst_ip:${x.ip}')" title="View logs for ${x.ip}">
         <td style="font-family:monospace">${x.ip}</td>
         <td style="display:flex;align-items:center;justify-content:space-between">${x.count.toLocaleString()} <span class="row-arrow">&#x2192;</span></td>
       </tr>`
@@ -975,7 +975,7 @@ const QB_FIELDS = [
   {id:'dst_port',  label:'Destination Port',   type:'number',   group:'Network'},
   {id:'protocol',  label:'Protocol',           type:'enum',     group:'Network',
      values:['TCP','UDP','ICMP','DNS','SSH','VPN']},
-  {id:'source_ip', label:'Device IP (syslog sender)', type:'ip', group:'Network'},
+  {id:'log_source_ip', label:'Log Source IP (syslog sender device)', type:'ip', group:'Network'},
   {id:'hostname',  label:'Hostname',           type:'text',     group:'Log'},
   {id:'message',   label:'Message',            type:'text',     group:'Log'},
   {id:'severity',  label:'Severity',           type:'severity', group:'Log',
@@ -1355,8 +1355,8 @@ async function fetchLogs() {
         <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
         <td style="font-size:12px;font-family:monospace;white-space:nowrap">
-          ${e.src_ip||e.source_ip ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('${e.src_ip?'src_ip':'source_ip'}:${esc(e.src_ip||e.source_ip||'')}')" title="Click to filter · Right-click for more"
-            oncontextmenu="event.preventDefault();event.stopPropagation();ipContextMenu(event,'${esc(e.src_ip||e.source_ip||'')}')">${e.src_ip||e.source_ip}</span>` : ''}
+          ${e.src_ip ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('src_ip:${esc(e.src_ip)}')" title="Click to filter · Right-click for more"
+            oncontextmenu="event.preventDefault();event.stopPropagation();ipContextMenu(event,'${esc(e.src_ip)}')">${e.src_ip}</span>` : ''}
         </td>
         <td style="font-size:12px;font-family:monospace;white-space:nowrap">
           ${e.dst_ip ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}')" title="Click to filter · Right-click for more"
@@ -3339,7 +3339,7 @@ async function investigate(ip) {
           <select id="inv-hours"><option value="24">24h</option><option value="168" selected>7d</option><option value="720">30d</option></select>
         </div>
         <button class="btn btn-primary" onclick="runInvestigation()">Investigate</button>
-        <button class="btn btn-ghost" onclick="(ip=>(ip?qbLaunchLogs('src_ip:'+ip+' OR dst_ip:'+ip+' OR source_ip:'+ip):''))(document.getElementById('inv-ip')?.value?.trim())" title="Search all log fields for this IP">&#x1F50D; View Logs</button>
+        <button class="btn btn-ghost" onclick="(ip=>(ip?qbLaunchLogs('src_ip:'+ip+' OR dst_ip:'+ip):''))(document.getElementById('inv-ip')?.value?.trim())" title="Search traffic logs for this IP">&#x1F50D; View Logs</button>
       </div>
     </div>
     <div id="inv-result"></div>
@@ -3440,7 +3440,7 @@ async function loadRuleHits() {
     const d = await apiFetch(`/api/analysis/rule-hits?hours=${hours}&limit=30`);
     if (!d) return;
     const rows = (d.rules||[]).map(r => {
-      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="qbLaunchLogs('src_ip:${s.ip} OR source_ip:${s.ip}')" title="View logs for ${s.ip}">${s.ip}(${s.count})</span>`).join(' ');
+      const srcList = (r.top_sources||[]).map(s=>`<span style="font-family:monospace;font-size:11px;cursor:pointer;color:var(--accent)" onclick="qbLaunchLogs('src_ip:${s.ip} OR dst_ip:${s.ip}')" title="View logs for ${s.ip}">${s.ip}(${s.count})</span>`).join(' ');
       return `<tr>
         <td style="font-size:12px;font-weight:600">${esc(r.rule)}</td>
         <td>${actionBadge(r.action)}</td>
@@ -4779,7 +4779,7 @@ async function showLogDetail(id) {
           ${displayAction ? `<span style="margin-left:10px;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:700;background:${displayAction==='ALLOW'?'rgba(63,185,80,.2)':'rgba(248,81,73,.2)'};color:${displayAction==='ALLOW'?'#3fb950':'#f85149'}">${esc(displayAction)}</span>` : ''}
         </h2>
         <div style="display:flex;gap:8px;align-items:center">
-          <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">&#x1F50D; Filter source</button>
+          <button class="btn btn-ghost btn-sm" onclick="qbLaunchLogs('log_source_ip:${esc(e.log_source_ip||'')}');closeLogDetail()">&#x1F50D; Filter log source</button>
           <button class="modal-close" onclick="closeLogDetail()">&#x2715;</button>
         </div>
       </div>
@@ -4789,7 +4789,7 @@ async function showLogDetail(id) {
           ${sec('Syslog')}
           <div class="dk">Received at</div><div class="dv">${fmtDate(e.received_at)}</div>
           <div class="dk">Source device</div><div class="dv">
-            <a onclick="qbLaunchLogs('source_ip:${esc(e.source_ip||'')}');closeLogDetail()">${esc(e.source_ip||'')}</a>
+            <a onclick="qbLaunchLogs('log_source_ip:${esc(e.log_source_ip||'')}');closeLogDetail()">${esc(e.log_source_ip||'')}</a>
           </div>
           ${row('Hostname', e.hostname, `<a onclick="qbLaunchLogs('hostname:${esc(e.hostname||'')}');closeLogDetail()">${esc(e.hostname||'')}</a>`)}
           ${row('Application', e.app_name, `<a onclick="qbLaunchLogs('app:${esc(e.app_name||'')}');closeLogDetail()">${esc(e.app_name||'')}</a>`)}
