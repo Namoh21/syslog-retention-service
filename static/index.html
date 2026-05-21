@@ -2023,7 +2023,21 @@ function _resumeActiveJob() {
   } catch(e) { return false; }
 }
 
+let _lastAnalysisRaw = null;   // kept for export
+
+function exportAnalysisRaw() {
+  if (!_lastAnalysisRaw) return;
+  const ts = new Date().toISOString().slice(0,19).replace(/[T:]/g,'-');
+  const blob = new Blob([JSON.stringify(_lastAnalysisRaw, null, 2)], {type:'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `siem-analysis-${ts}.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
 function renderAnalysis(d, out) {
+  _lastAnalysisRaw = d;
   if (d.error) { out.innerHTML=`<div class="alert alert-warn"><strong>Analysis failed:</strong> ${esc(d.error)}</div>`; return; }
   const a = d.analysis;
 
@@ -2072,11 +2086,12 @@ function renderAnalysis(d, out) {
       <div class="card">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px">
           <div class="card-title" style="margin:0">&#x1F4DD; Analysis</div>
-          <button class="btn btn-ghost btn-sm" onclick="navigator.clipboard?.writeText(${JSON.stringify(txt)}).then(()=>{this.textContent='Copied!';setTimeout(()=>this.textContent='&#x1F4CB; Copy',1500)})">&#x1F4CB; Copy</button>
+          <div style="display:flex;gap:8px">
+            <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()">&#x2B07; Export JSON</button>
+          </div>
         </div>
         <div class="alert alert-info" style="margin-bottom:14px;font-size:12px">
-          Your local LLM returned plain text instead of structured JSON. For better formatted results, add this to your system prompt or model settings:
-          <em>"Always respond with valid JSON only."</em>
+          The LLM response could not be parsed into structured cards. Use <strong>Export JSON</strong> to download the raw response and share it for debugging.
         </div>
         ${sectionsHtml}
       </div>`;
@@ -2202,6 +2217,7 @@ function renderAnalysis(d, out) {
         <div class="ai-banner-meta">${metaStr}</div>
       </div>
       ${pillHtml ? `<div class="ai-banner-pills">${pillHtml}</div>` : ''}
+      <button class="btn btn-ghost btn-sm" onclick="exportAnalysisRaw()" title="Download raw JSON response for sharing / debugging" style="flex-shrink:0;align-self:flex-start">&#x2B07; Export JSON</button>
     </div>
 
     <div class="card" style="margin-bottom:16px">
