@@ -270,23 +270,48 @@ async def _call_local_llm(
 ) -> str:
     import httpx as _httpx
 
-    # Append explicit JSON reminder to the user message so it appears
-    # right before the model generates its response
-    user_message_local = (
-        user_message
-        + "\n\nRemember: respond with ONLY a valid JSON object. Start with { immediately."
+    # For small local models, showing the schema in the system prompt causes them
+    # to echo the schema template with empty values. Instead:
+    # - system prompt is short and task-focused (no schema)
+    # - the schema + a filled example appear in the user message
+    # - no response_format constraint (causes minimal-JSON echoing in small models)
+    system = (
+        "You are a network security analyst. "
+        "Read the log data and write a thorough security analysis. "
+        "Your entire response must be a single JSON object — no other text."
+    )
+
+    example = '''{
+  "summary": "Two external IPs made repeated connection attempts to SSH and RDP ports over the past hour, suggesting an active brute-force campaign. Several firewall blocks logged from 203.0.113.45 targeting port 22.",
+  "threat_level": "HIGH",
+  "findings": [
+    {
+      "severity": "HIGH",
+      "title": "SSH brute-force from 203.0.113.45",
+      "detail": "47 blocked connection attempts to port 22 from 203.0.113.45 between 03:12 and 03:58 UTC. Pattern matches automated credential stuffing.",
+      "recommendation": "Add 203.0.113.45 to the UDM block list and enable geo-IP blocking for regions with no legitimate users."
+    }
+  ],
+  "immediate_actions": ["Block 203.0.113.45 at the perimeter firewall immediately."],
+  "long_term_recommendations": ["Enable fail2ban or equivalent on all SSH-exposed hosts."]
+}'''
+
+    user = (
+        f"{user_message}\n\n"
+        f"Write your analysis as a JSON object in exactly this format "
+        f"(fill in real content from the logs above — do NOT copy the example values):\n"
+        f"{example}"
     )
 
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT_LOCAL},
-            {"role": "user",   "content": user_message_local},
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
         ],
         "max_tokens": 4096,
-        "temperature": 0.1,   # lower temp = less creative, more likely to follow format
-        "stream": False,       # Ollama defaults to streaming — must be disabled
-        "response_format": {"type": "json_object"},  # Ollama/OpenAI-compat JSON mode
+        "temperature": 0.3,
+        "stream": False,
     }
     async with _httpx.AsyncClient(timeout=600.0) as client:
         r = await client.post(f"{base_url}/v1/chat/completions", json=payload)
