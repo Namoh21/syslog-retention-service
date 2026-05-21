@@ -134,34 +134,44 @@
   .ai-pill-med{background:rgba(88,166,255,.15);color:#58a6ff;}
   .ai-pill-low{background:rgba(63,185,80,.15);color:#3fb950;}
   .ai-pill-info{background:rgba(139,148,158,.15);color:#8b949e;}
-  /* Findings */
-  .finding{border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px;overflow:hidden;background:var(--surface2);}
-  .finding-header{display:flex;align-items:flex-start;gap:12px;padding:14px 16px;cursor:pointer;user-select:none;}
-  .finding-header:hover{background:rgba(88,166,255,.04);}
-  .finding-sev-icon{font-size:18px;flex-shrink:0;margin-top:1px;}
-  .finding-hbody{flex:1;}
-  .finding-htitle{font-size:13px;font-weight:600;color:var(--text);margin-bottom:2px;}
-  .finding-hrec{font-size:12px;color:var(--accent2);}
-  .finding-chevron{font-size:10px;color:var(--muted);transition:transform .2s;flex-shrink:0;margin-top:4px;}
-  .finding.open .finding-chevron{transform:rotate(90deg);}
-  .finding-body{display:none;padding:0 16px 14px 46px;border-top:1px solid var(--border);}
-  .finding.open .finding-body{display:block;}
-  .finding-detail{font-size:13px;color:var(--muted);line-height:1.6;margin:10px 0 12px;}
-  .finding-border-CRITICAL{border-color:rgba(248,81,73,.4);}
-  .finding-border-HIGH{border-color:rgba(210,153,34,.4);}
-  .finding-border-MEDIUM{border-color:rgba(88,166,255,.3);}
-  .finding-border-LOW,.finding-border-INFO{border-color:rgba(63,185,80,.25);}
-  /* Status pills */
-  .status-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;}
-  .status-pill{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;opacity:.45;}
-  .status-pill:hover{opacity:.75;}
-  .status-pill.active{opacity:1;}
+  /* ── Finding bubbles ── */
+  .finding{border-radius:10px;margin-bottom:14px;overflow:hidden;background:var(--surface2);border:1px solid var(--border);transition:box-shadow .2s;}
+  .finding:hover{box-shadow:0 2px 12px rgba(0,0,0,.18);}
+  .finding-stripe-CRITICAL{border-left:5px solid #f85149;}
+  .finding-stripe-HIGH{border-left:5px solid #d29922;}
+  .finding-stripe-MEDIUM{border-left:5px solid #58a6ff;}
+  .finding-stripe-LOW{border-left:5px solid #3fb950;}
+  .finding-stripe-INFO{border-left:5px solid #8b949e;}
+  /* Header row */
+  .finding-top{display:flex;align-items:center;gap:10px;padding:14px 16px 10px;}
+  .finding-sev-badge{display:inline-flex;align-items:center;gap:5px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;white-space:nowrap;flex-shrink:0;}
+  .fsb-CRITICAL{background:rgba(248,81,73,.2);color:#f85149;}
+  .fsb-HIGH{background:rgba(210,153,34,.2);color:#d29922;}
+  .fsb-MEDIUM{background:rgba(88,166,255,.15);color:#58a6ff;}
+  .fsb-LOW{background:rgba(63,185,80,.15);color:#3fb950;}
+  .fsb-INFO{background:rgba(139,148,158,.15);color:#8b949e;}
+  .finding-title{font-size:14px;font-weight:700;color:var(--text);flex:1;}
+  .finding-status-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;flex-shrink:0;}
+  /* Body sections */
+  .finding-section{padding:0 16px 12px 16px;}
+  .finding-section+.finding-section{border-top:1px solid rgba(48,54,61,.6);padding-top:12px;}
+  .finding-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:5px;}
+  .finding-text{font-size:13px;color:var(--text);line-height:1.6;}
+  .finding-rec-box{background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.2);border-radius:6px;padding:10px 12px;font-size:13px;color:var(--accent2);line-height:1.6;}
+  /* Status pill row */
+  .status-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+  .status-pill{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;opacity:.4;}
+  .status-pill:hover{opacity:.7;}
+  .status-pill.active{opacity:1;box-shadow:0 0 0 2px currentColor;}
   .sp-open{background:rgba(88,166,255,.15);color:#58a6ff;border-color:rgba(88,166,255,.3);}
   .sp-implemented{background:rgba(63,185,80,.2);color:#3fb950;border-color:rgba(63,185,80,.35);}
   .sp-working{background:rgba(63,185,80,.12);color:#3fb950;border-color:rgba(63,185,80,.25);}
   .sp-investigating{background:rgba(210,153,34,.2);color:#d29922;border-color:rgba(210,153,34,.35);}
   .sp-dismissed{background:rgba(139,148,158,.1);color:#8b949e;border-color:rgba(139,148,158,.2);}
-  .finding-note{width:100%;margin-top:6px;padding:5px 8px;font-size:12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:var(--radius);font-family:inherit;}
+  .finding-note{width:100%;padding:7px 10px;font-size:12px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;font-family:inherit;resize:vertical;min-height:36px;}
+  .finding-note:focus{outline:none;border-color:var(--accent);}
+  .finding-note-saved{font-size:11px;color:var(--accent2);margin-left:8px;opacity:0;transition:opacity .3s;}
+  .finding-dismissed{opacity:.55;}
   /* Immediate actions */
   .ai-action-list{list-style:none;padding:0;margin:0;}
   .ai-action-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(48,54,61,.5);}
@@ -1626,22 +1636,26 @@ async function loadAiHistory() {
   }
 }
 
-async function updateRecStatus(recId, status, pillEl) {
+async function updateRecStatus(recId, status, pillEl, findingIdx) {
+  // Update pill active state immediately (optimistic)
+  if (pillEl) {
+    const group = pillEl.closest('.status-pills');
+    if (group) group.querySelectorAll('.status-pill').forEach(p => p.classList.toggle('active', p === pillEl));
+  }
+  // Update header badge
+  const badgeId = recId ? `rec-badge-${recId}` : `rec-badge-x${findingIdx}`;
+  const badge = document.getElementById(badgeId);
+  const statusBadgeClass = {open:'sp-open',implemented:'sp-implemented',working:'sp-working',investigating:'sp-investigating',dismissed:'sp-dismissed'}[status]||'sp-open';
+  if (badge) { badge.className = `finding-status-badge ${statusBadgeClass}`; badge.textContent = status; }
+  // Dim card if dismissed
+  const card = document.getElementById(`finding-card-${findingIdx}`);
+  if (card) card.classList.toggle('finding-dismissed', status==='dismissed');
+
+  if (!recId) return;
   try {
-    await apiFetch(`/api/ai/recommendations/${recId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ status })
-    });
-    // Update pill active state
-    if (pillEl) {
-      const group = pillEl.closest('.status-pills');
-      if (group) group.querySelectorAll('.status-pill').forEach(p => p.classList.toggle('active', p === pillEl));
-    }
-    // Update badge in finding header
-    const badge = document.getElementById(`rec-badge-${recId}`);
-    if (badge) { badge.className = `rec-status rec-status-${status}`; badge.textContent = status; }
+    await apiFetch(`/api/ai/recommendations/${recId}`, { method:'PATCH', body: JSON.stringify({ status }) });
   } catch(e) {
-    alert('Failed to update status: ' + e.message);
+    alert('Failed to save status: ' + e.message);
   }
 }
 
@@ -1913,30 +1927,53 @@ function renderAnalysis(d, out) {
     d.analyzed_at ? `analyzed ${fmtDate(d.analyzed_at)}` : '',
   ].filter(Boolean).join(' · ');
 
-  // Render finding cards (expandable)
+  // Render a finding as an always-visible rich bubble
   const _renderFinding = (f, i, recId, existingStatus, existingNote) => {
-    const sevIcon = {CRITICAL:'&#x1F534;', HIGH:'&#x26A0;&#xFE0F;', MEDIUM:'&#x1F7E1;', LOW:'&#x1F7E2;', INFO:'&#x2139;&#xFE0F;'}[f.severity] || '&#x26AA;';
-    const statusPills = recId ? ['open','implemented','working','investigating','dismissed'].map(s =>
-      `<button class="status-pill sp-${s}${existingStatus===s?' active':''}" onclick="updateRecStatus(${recId},'${s}',this)" title="${s}">${s}</button>`
-    ).join('') : '';
-    const noteField = recId ? `<input class="finding-note" id="rec-note-${recId}" placeholder="Add a note about this finding..." value="${esc(existingNote||'')}" onblur="saveRecNote(${recId},this.value)" />` : '';
+    const sev = f.severity || 'INFO';
+    const sevIcon = {CRITICAL:'&#x1F534;',HIGH:'&#x26A0;&#xFE0F;',MEDIUM:'&#x1F7E1;',LOW:'&#x1F7E2;',INFO:'&#x2139;&#xFE0F;'}[sev] || '&#x26AA;';
+    const curStatus = existingStatus || 'open';
+    const isDismissed = curStatus === 'dismissed';
+
+    const statusPills = ['open','implemented','working','investigating','dismissed'].map(s =>
+      `<button class="status-pill sp-${s}${curStatus===s?' active':''}" onclick="updateRecStatus(${recId||'null'},'${s}',this,${i})" title="Mark as ${s}">${s}</button>`
+    ).join('');
+
+    const statusBadgeClass = {open:'sp-open',implemented:'sp-implemented',working:'sp-working',investigating:'sp-investigating',dismissed:'sp-dismissed'}[curStatus]||'sp-open';
+
     return `
-      <div class="finding finding-border-${f.severity}" id="finding-card-${i}">
-        <div class="finding-header" onclick="toggleFinding(${i})">
-          <span class="finding-sev-icon">${sevIcon}</span>
-          <div class="finding-hbody">
-            <div class="finding-htitle">${esc(f.title||'')}</div>
-            ${f.recommendation ? `<div class="finding-hrec">&#x2192; ${esc(f.recommendation)}</div>` : ''}
-          </div>
-          ${recId ? `<span class="rec-status rec-status-${existingStatus||'open'}" id="rec-badge-${recId}">${existingStatus||'open'}</span>` : ''}
-          <span class="finding-chevron">&#x25B6;</span>
+      <div class="finding finding-stripe-${sev}${isDismissed?' finding-dismissed':''}" id="finding-card-${i}">
+
+        <!-- Header: severity badge + title + current status -->
+        <div class="finding-top">
+          <span class="finding-sev-badge fsb-${sev}">${sevIcon} ${sev}</span>
+          <span class="finding-title">${esc(f.title||'Untitled Finding')}</span>
+          <span class="finding-status-badge ${statusBadgeClass}" id="rec-badge-${recId||'x'+i}">${curStatus}</span>
         </div>
-        <div class="finding-body">
-          <div class="finding-detail">${esc(f.detail||'')}</div>
-          ${f.recommendation ? `<div style="background:rgba(63,185,80,.07);border:1px solid rgba(63,185,80,.2);border-radius:var(--radius);padding:10px 12px;font-size:13px;color:var(--accent2);margin-bottom:12px"><strong>Recommendation:</strong> ${esc(f.recommendation)}</div>` : ''}
-          ${recId ? `<div style="margin-bottom:6px;font-size:11px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.06em">Track status</div>
-          <div class="status-pills">${statusPills}</div>${noteField}` : ''}
+
+        <!-- Issue detail -->
+        <div class="finding-section">
+          <div class="finding-label">&#x1F50D; Issue</div>
+          <div class="finding-text">${esc(f.detail||'')}</div>
         </div>
+
+        <!-- Recommendation -->
+        ${f.recommendation ? `
+        <div class="finding-section">
+          <div class="finding-label">&#x2192; Recommendation</div>
+          <div class="finding-rec-box">${esc(f.recommendation)}</div>
+        </div>` : ''}
+
+        <!-- Status tracking + notes -->
+        <div class="finding-section">
+          <div class="finding-label">&#x1F4CC; Status &amp; Notes</div>
+          <div class="status-pills">${statusPills}</div>
+          <textarea class="finding-note" id="rec-note-${recId||'x'+i}"
+            placeholder="Add your notes — steps taken, who's working on it, links to tickets..."
+            onblur="saveRecNote(${recId||'null'},this.value,${i})"
+          >${esc(existingNote||'')}</textarea>
+          <span class="finding-note-saved" id="note-saved-${recId||'x'+i}">Saved ✓</span>
+        </div>
+
       </div>`;
   };
 
@@ -1964,9 +2001,10 @@ function renderAnalysis(d, out) {
       <p style="font-size:14px;line-height:1.7;color:var(--text);margin:0">${esc(a.summary||'No summary provided.')}</p>
     </div>
 
-    ${findings.length ? `<div class="card" style="margin-bottom:16px">
-      <div class="card-title" style="margin-bottom:12px">&#x1F50D; Findings
-        <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Click a finding to expand · set status to track your remediation</span>
+    ${findings.length ? `<div style="margin-bottom:16px">
+      <div style="font-size:13px;font-weight:700;color:var(--text);margin-bottom:10px">
+        &#x1F50D; Findings
+        <span style="font-size:11px;font-weight:400;color:var(--muted);margin-left:8px">Set a status and add notes to track your remediation progress</span>
       </div>
       <div id="ai-findings-container"></div>
     </div>` : ''}
@@ -1982,7 +2020,7 @@ function renderAnalysis(d, out) {
     </div>` : ''}
   `;
 
-  // Populate findings — fetch saved rec IDs + status if analysis was persisted
+  // Populate findings — fetch saved rec IDs + status/notes if analysis was persisted
   const fc = document.getElementById('ai-findings-container');
   if (fc && findings.length) {
     const populate = (recMap, statusMap, noteMap) => {
@@ -1990,17 +2028,14 @@ function renderAnalysis(d, out) {
         const recId = recMap ? recMap[i] : null;
         return _renderFinding(f, i, recId, statusMap?.[recId], noteMap?.[recId]);
       }).join('');
-      // Auto-expand first critical/high finding
-      const firstImportant = findings.findIndex(f => f.severity==='CRITICAL'||f.severity==='HIGH');
-      if (firstImportant >= 0) toggleFinding(firstImportant);
     };
 
     if (analysisId) {
       apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
         const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
-        const recMap   = recs.reduce((m,r,i) => { m[i]=r.id;         return m; }, {});
-        const statusMap= recs.reduce((m,r)   => { m[r.id]=r.status;   return m; }, {});
-        const noteMap  = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
+        const recMap    = recs.reduce((m,r,i) => { m[i]=r.id;              return m; }, {});
+        const statusMap = recs.reduce((m,r)   => { m[r.id]=r.status;       return m; }, {});
+        const noteMap   = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
         populate(recMap, statusMap, noteMap);
       }).catch(() => populate(null, null, null));
     } else {
@@ -2009,17 +2044,12 @@ function renderAnalysis(d, out) {
   }
 }
 
-function toggleFinding(i) {
-  const card = document.getElementById(`finding-card-${i}`);
-  if (card) card.classList.toggle('open');
-}
-
-async function saveRecNote(recId, note) {
+async function saveRecNote(recId, note, findingIdx) {
+  if (!recId) return;
   try {
-    await apiFetch(`/api/ai/recommendations/${recId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ user_notes: note })
-    });
+    await apiFetch(`/api/ai/recommendations/${recId}`, { method:'PATCH', body: JSON.stringify({ user_notes: note }) });
+    const saved = document.getElementById(`note-saved-${recId}`);
+    if (saved) { saved.style.opacity='1'; setTimeout(()=>{ saved.style.opacity='0'; }, 2000); }
   } catch(e) { /* non-fatal */ }
 }
 
