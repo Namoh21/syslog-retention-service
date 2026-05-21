@@ -2735,12 +2735,11 @@ async function loadSvcConfig() {
       <div style="font-size:13px;font-weight:600;margin-bottom:12px">&#x1F4CA; NetFlow Collector</div>
       <div style="display:grid;grid-template-columns:auto 1fr;gap:12px 20px;align-items:start;margin-bottom:12px">
         <div class="form-group" style="margin-bottom:0">
-          <label>Enable NetFlow collection</label>
-          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;margin-top:6px">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
             <input type="checkbox" id="sc-nf-enabled" ${c.netflow_enabled?'checked':''} />
-            <span style="font-size:13px">${c.netflow_enabled?'<span style="color:var(--accent2)">Listening</span>':'<span style="color:var(--muted)">Disabled</span>'}</span>
+            <span style="font-size:13px;font-weight:600">Enable NetFlow collection</span>
           </label>
-          <div class="help-tip">Receives NetFlow v5/v9/IPFIX from your UDM Pro. Takes effect immediately — no restart needed.</div>
+          <div class="help-tip">Check to receive NetFlow v5/v9/IPFIX from your UDM Pro. Takes effect immediately — no restart needed.</div>
         </div>
         <div class="form-group" style="margin-bottom:0">
           <label>NetFlow UDP port</label>
