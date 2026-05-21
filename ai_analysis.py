@@ -147,6 +147,39 @@ _SIEM_CTI_SYSTEM = """\
   }
 </output_format>
 
+<analyst_memory_protocol>
+  The user message will include an ANALYST MEMORY block before the log data.
+  This block contains three sections — process them in order before generating events:
+
+  1. NETWORK CONTEXT
+     Analyst-provided description of the environment: known hosts, VLANs, services,
+     expected traffic patterns. Use this to correctly classify IOCs as internal/external
+     and to avoid flagging expected behavior as suspicious.
+
+  2. KNOWLEDGE BASE
+     Categorized entries the analyst has saved. Treat these as ground truth for the
+     environment. If a KB entry states a host, IP, service, or pattern is expected or
+     known-good, do NOT flag it as an IOC or generate an event for it unless current
+     logs show clear evidence that the known-good state has changed.
+
+  3. RESOLVED FINDINGS (IMPLEMENTED | WORKING | DISMISSED)
+     These are findings from prior analyses that the analyst has already actioned.
+     RULE: Do NOT generate an event for any finding that matches a resolved item
+     unless current logs show unambiguous evidence of REGRESSION (the same issue
+     has returned after being fixed). If regression is detected, include the event
+     and set significance to "REGRESSION — previously resolved on <date>".
+     Items with status DISMISSED were intentionally accepted; never re-surface them.
+
+  4. OPEN FINDINGS (still being tracked)
+     These are known issues the analyst is already aware of. If they appear in the
+     current logs, include them as events but note "RECURRING — open since <date>"
+     in the significance field of the timeline entry. Do not suppress them — the
+     analyst needs to see if they are escalating or stable.
+
+  After processing analyst memory, apply it to filter false positives and avoid
+  redundant findings before generating the events array.
+</analyst_memory_protocol>
+
 <behavioral_rules>
   NEVER:
     speculate beyond log evidence
@@ -156,9 +189,14 @@ _SIEM_CTI_SYSTEM = """\
     | reference external threat intel not present in logs
     | suppress findings due to low confidence — include and flag
     | omit any schema key — use null or empty array if no data
+    | re-surface a finding with status IMPLEMENTED, WORKING, or DISMISSED
+      unless clear log evidence of regression exists
 
   ALWAYS:
-    anchor every finding to an exact log excerpt in the evidence field
+    read the ANALYST MEMORY block before analyzing log data
+    | cross-reference every candidate finding against RESOLVED FINDINGS before including it
+    | use NETWORK CONTEXT and KNOWLEDGE BASE to inform IOC classification
+    | anchor every finding to an exact log excerpt in the evidence field
     | set low_confidence:true on any finding with confidence below 0.70
     | set escalation_required:true when overall_threat_severity is CRITICAL
     | set escalation_required:true when majority of findings are below 0.70
@@ -168,6 +206,8 @@ _SIEM_CTI_SYSTEM = """\
     | deduplicate IOCs in summary.aggregate_iocs with seen_in_events references
     | rank summary.top_mitre_techniques by event_count descending
     | complete all schema sections every run
+    | mark recurring open findings as "RECURRING" in timeline significance
+    | mark regressions as "REGRESSION — previously resolved on <date>" in timeline significance
 </behavioral_rules>
 
 <tone>
@@ -286,18 +326,32 @@ def _format_entries(entries: list[SyslogEntry], *, local_llm: bool = False) -> s
 # ── Context builders ──────────────────────────────────────────────────────────
 
 def _build_history_context(db) -> str:
-    """Analyst memory: network notes, knowledge base, and past analyses."""
+    """
+    Build the ANALYST MEMORY block consumed by the SIEM-CTI agent.
+
+    Produces four clearly-labelled sections so the agent can:
+    - Use network context + KB to avoid false positives
+    - Skip re-surfacing RESOLVED findings (IMPLEMENTED / WORKING / DISMISSED)
+    - Mark OPEN findings as RECURRING when they appear again
+    """
     from database import AIAnalysis, AIRecommendation, AINetworkContext, AIContextEntry
     from collections import defaultdict
 
-    lines = ["=== ANALYST MEMORY ===\n"]
+    has_content = False
+    lines: list[str] = []
 
+    # ── 1. Network context ────────────────────────────────────────────────────
     ctx = db.query(AINetworkContext).filter_by(id=1).first()
     if ctx and ctx.content and ctx.content.strip():
-        lines.append("NETWORK CONTEXT (provided by the analyst):")
-        lines.append(ctx.content.strip())
+        lines.append("=== ANALYST MEMORY: NETWORK CONTEXT ===")
+        lines.append("The analyst has described this environment. Use it to classify")
+        lines.append("IOCs and avoid flagging expected behavior as suspicious.")
         lines.append("")
+        lines.append(ctx.content.strip())
+        lines.append("=== END NETWORK CONTEXT ===\n")
+        has_content = True
 
+    # ── 2. Knowledge base ─────────────────────────────────────────────────────
     kb = (
         db.query(AIContextEntry)
         .filter(AIContextEntry.active == 1)
@@ -308,36 +362,71 @@ def _build_history_context(db) -> str:
         by_cat: dict[str, list] = defaultdict(list)
         for e in kb:
             by_cat[e.category].append(e)
-        lines.append("KNOWLEDGE BASE:")
+        lines.append("=== ANALYST MEMORY: KNOWLEDGE BASE ===")
+        lines.append("These entries are analyst-verified ground truth for this environment.")
+        lines.append("Do NOT flag IPs, services, or patterns described here as suspicious")
+        lines.append("unless the current logs show the expected behavior has clearly changed.")
+        lines.append("")
         for cat, entries in by_cat.items():
-            lines.append(f"\n[{cat.upper().replace('_', ' ')}]")
+            lines.append(f"[{cat.upper().replace('_', ' ')}]")
             for e in entries:
                 lines.append(f"  {e.title}:")
                 for ln in e.content.strip().splitlines():
                     lines.append(f"    {ln}")
-        lines.append("")
+            lines.append("")
+        lines.append("=== END KNOWLEDGE BASE ===\n")
+        has_content = True
 
+    # ── 3 & 4. Past analyses — split resolved vs open ─────────────────────────
     past = (
         db.query(AIAnalysis)
         .order_by(AIAnalysis.analyzed_at.desc())
-        .limit(5)
+        .limit(10)
         .all()
     )
-    if past:
-        lines.append("PREVIOUS ANALYSES:")
-        for a in reversed(past):
-            ts = a.analyzed_at.strftime("%Y-%m-%d") if a.analyzed_at else "?"
-            lines.append(f"\n[{ts}] Threat: {a.threat_level or '?'} | {a.summary or ''}")
-            recs = db.query(AIRecommendation).filter_by(analysis_id=a.id).all()
-            for r in [r for r in recs if r.status != "open"]:
-                note = f" — {r.user_notes}" if r.user_notes else ""
-                lines.append(f"  [{r.status.upper()}] {r.title}{note}")
-            open_r = [r for r in recs if r.status == "open"]
-            if open_r:
-                lines.append(f"  Still open: {', '.join(r.title or '?' for r in open_r[:5])}")
 
-    lines.append("\n=== END ANALYST MEMORY ===\n")
-    return "\n".join(lines) if len(lines) > 3 else ""
+    resolved_lines: list[str] = []
+    open_lines: list[str] = []
+
+    _RESOLVED_STATUSES = {"implemented", "working", "dismissed"}
+
+    for a in reversed(past):
+        ts = a.analyzed_at.strftime("%Y-%m-%d %H:%M UTC") if a.analyzed_at else "?"
+        recs = db.query(AIRecommendation).filter_by(analysis_id=a.id).all()
+        for r in recs:
+            status = (r.status or "open").lower()
+            note = f" | analyst note: {r.user_notes.strip()}" if r.user_notes and r.user_notes.strip() else ""
+            sev  = f" | severity: {r.severity}" if r.severity else ""
+            entry = f"  - [{ts}]{sev} {r.title or '(untitled)'}{note}"
+            if status in _RESOLVED_STATUSES:
+                resolved_lines.append(f"  STATUS: {status.upper()}")
+                resolved_lines.append(entry)
+            else:
+                open_lines.append(f"  STATUS: OPEN (first seen {ts})")
+                open_lines.append(entry)
+
+    if resolved_lines:
+        lines.append("=== ANALYST MEMORY: RESOLVED FINDINGS — DO NOT RE-SURFACE ===")
+        lines.append("These findings were actioned by the analyst. Do NOT generate an")
+        lines.append("event for any of these unless current logs show clear regression")
+        lines.append("(issue returned after being fixed). DISMISSED items must never")
+        lines.append("be re-surfaced. If regression: note 'REGRESSION' in significance.")
+        lines.append("")
+        lines.extend(resolved_lines)
+        lines.append("=== END RESOLVED FINDINGS ===\n")
+        has_content = True
+
+    if open_lines:
+        lines.append("=== ANALYST MEMORY: OPEN FINDINGS — STILL BEING TRACKED ===")
+        lines.append("These findings are known and being actively tracked. If they appear")
+        lines.append("in the current logs, include them as events but add 'RECURRING' to")
+        lines.append("the timeline significance field. Do not suppress them.")
+        lines.append("")
+        lines.extend(open_lines)
+        lines.append("=== END OPEN FINDINGS ===\n")
+        has_content = True
+
+    return "\n".join(lines) + "\n" if has_content else ""
 
 
 def _build_netflow_context(db, hours: float) -> str:
@@ -745,9 +834,21 @@ async def analyze_logs(
         log_text = netflow + "\n\n" + log_text
 
     focus_safe = (focus or "security threats and anomalies")[:200]
+
+    memory_instruction = (
+        "STEP 1 — Read all ANALYST MEMORY sections above before analyzing any logs.\n"
+        "STEP 2 — Cross-reference every candidate finding against RESOLVED FINDINGS.\n"
+        "          Skip any finding that matches a resolved item (no regression in logs).\n"
+        "          Skip any finding that matches a DISMISSED item unconditionally.\n"
+        "STEP 3 — Use NETWORK CONTEXT and KNOWLEDGE BASE to classify IOCs and filter\n"
+        "          known-good traffic before generating events.\n"
+        "STEP 4 — Analyze the log data below and produce the SIEM-CTI JSON report.\n"
+    ) if history_block else ""
+
     user_message = (
         f"{history_block}"
-        f"Analyze the following {len(entries)} syslog entries from the last {hours}h. "
+        f"{memory_instruction}"
+        f"\nAnalyze the following {len(entries)} syslog entries from the last {hours}h. "
         f"Focus on: {focus_safe}.\n\n"
         f"=== LOG DATA ===\n{log_text}\n=== END LOG DATA ==="
     )
