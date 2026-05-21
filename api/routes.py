@@ -36,7 +36,7 @@ def _cleanup_jobs() -> None:
 
 from auth import (
     authenticate_user, create_access_token, generate_api_key,
-    get_current_user, get_password_hash, require_admin,
+    get_current_user, get_password_hash, require_admin, require_write,
     validate_password_strength,
 )
 from config import settings
@@ -228,8 +228,12 @@ async def login(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Session = Depends(get_db),
 ):
+    ip = request.client.host if request.client else "unknown"
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
+        write_audit(db, form_data.username, "auth.login_failed",
+                    f"Failed login attempt from {ip}", ip)
+        db.commit()
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -237,7 +241,6 @@ async def login(
         )
     # Clear rate-limit counter on successful login
     from main import clear_login_attempts
-    ip = request.client.host if request.client else "unknown"
     clear_login_attempts(ip)
     token_version = getattr(user, "token_version", 0)
     token = create_access_token({"sub": user.username, "ver": token_version})
@@ -377,12 +380,20 @@ async def stats(
 async def ai_analyze(
     body: AiAnalyzeBody,
     db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
+    current: User = Depends(require_write),
 ):
     from ai_analysis import analyze_logs
     from database import get_service_setting
 
     _cleanup_jobs()
+
+    # Rate limit: max 2 running analysis jobs per user
+    user_running = sum(
+        1 for j in _analysis_jobs.values()
+        if j.get("username") == current.username and j.get("status") == "running"
+    )
+    if user_running >= 2:
+        raise HTTPException(status_code=429, detail="You already have 2 analyses running. Wait for one to complete before starting another.")
 
     since = datetime.now(timezone.utc) - timedelta(hours=body.hours)
     ai_provider = get_service_setting("ai_provider") or "anthropic"
@@ -469,8 +480,9 @@ async def ai_quick_recommendations(
 # ===================== AI History & Context =====================
 
 class RecommendationUpdate(BaseModel):
-    status: str       # open | implemented | working | investigating | dismissed
+    status: Optional[str] = None    # open | implemented | working | investigating | dismissed
     user_notes: Optional[str] = None
+    priority: Optional[str] = None  # critical | high | medium | low (user-assigned)
 
 
 @router.get("/ai/history", tags=["ai"])
@@ -508,6 +520,7 @@ async def get_ai_history(
                     "detail": r.detail,
                     "recommendation": r.recommendation,
                     "status": r.status,
+                    "priority": r.priority,
                     "user_notes": r.user_notes,
                     "updated_at": r.updated_at,
                 }
@@ -522,21 +535,28 @@ async def update_recommendation(
     rec_id: int,
     body: RecommendationUpdate,
     db: Session = Depends(get_db),
-    current: User = Depends(get_current_user),
+    current: User = Depends(require_write),
 ):
     from database import AIRecommendation
-    valid = {"open", "implemented", "working", "investigating", "dismissed"}
-    if body.status not in valid:
-        raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(valid))}")
     rec = db.query(AIRecommendation).filter_by(id=rec_id).first()
     if not rec:
         raise HTTPException(status_code=404)
-    rec.status = body.status
+    if body.status is not None:
+        valid_status = {"open", "implemented", "working", "investigating", "dismissed"}
+        if body.status not in valid_status:
+            raise HTTPException(status_code=400, detail=f"status must be one of: {', '.join(sorted(valid_status))}")
+        rec.status = body.status
     if body.user_notes is not None:
         rec.user_notes = body.user_notes
+    if body.priority is not None:
+        valid_priority = {"critical", "high", "medium", "low", ""}
+        p = body.priority.lower()
+        if p not in valid_priority:
+            raise HTTPException(status_code=400, detail="priority must be: critical, high, medium, or low")
+        rec.priority = p or None
     rec.updated_at = datetime.now(timezone.utc)
     db.commit()
-    return {"id": rec.id, "status": rec.status, "user_notes": rec.user_notes}
+    return {"id": rec.id, "status": rec.status, "user_notes": rec.user_notes, "priority": rec.priority}
 
 
 @router.get("/ai/network-context", tags=["ai"])
@@ -550,7 +570,7 @@ async def get_network_context(db: Session = Depends(get_db), _: User = Depends(g
 async def update_network_context(
     body: dict,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_write),
 ):
     from database import AINetworkContext
     content = str(body.get("content", ""))[:4000]
@@ -582,7 +602,7 @@ async def list_context_entries(db: Session = Depends(get_db), _: User = Depends(
 
 
 @router.post("/ai/context-entries", tags=["ai"])
-async def create_context_entry(body: dict, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+async def create_context_entry(body: dict, db: Session = Depends(get_db), _: User = Depends(require_write)):
     from database import AIContextEntry
     entry = AIContextEntry(
         title=str(body.get("title", "Untitled"))[:256],
@@ -601,7 +621,7 @@ async def create_context_entry(body: dict, db: Session = Depends(get_db), _: Use
 @router.put("/ai/context-entries/{entry_id}", tags=["ai"])
 async def update_context_entry(
     entry_id: int, body: dict,
-    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+    db: Session = Depends(get_db), _: User = Depends(require_write),
 ):
     from database import AIContextEntry
     entry = db.query(AIContextEntry).filter_by(id=entry_id).first()
@@ -620,7 +640,7 @@ async def update_context_entry(
 @router.delete("/ai/context-entries/{entry_id}", tags=["ai"])
 async def delete_context_entry(
     entry_id: int,
-    db: Session = Depends(get_db), _: User = Depends(get_current_user),
+    db: Session = Depends(get_db), _: User = Depends(require_write),
 ):
     from database import AIContextEntry
     entry = db.query(AIContextEntry).filter_by(id=entry_id).first()

@@ -299,6 +299,9 @@ def _numcmp(col, op: str, num: int):
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
+_MAX_KQL_LEN   = 1000   # characters — prevents tokenizer DoS
+_MAX_KQL_DEPTH = 20     # max parenthesis nesting depth
+
 def apply_kql(query: SAQuery, kql_str: str) -> SAQuery:
     """
     Apply a KQL filter string to a SQLAlchemy query over SyslogEntry rows.
@@ -306,6 +309,13 @@ def apply_kql(query: SAQuery, kql_str: str) -> SAQuery:
     message LIKE search so bad syntax never returns zero results silently.
     """
     if not kql_str or not kql_str.strip():
+        return query
+    # Security: reject oversized queries and null-byte / control-char smuggling
+    kql_str = kql_str[:_MAX_KQL_LEN]
+    if "\x00" in kql_str or "\x01" in kql_str:
+        return query
+    # Security: reject deeply nested expressions (DoS prevention)
+    if kql_str.count("(") > _MAX_KQL_DEPTH:
         return query
     try:
         toks = _lex(kql_str.strip())

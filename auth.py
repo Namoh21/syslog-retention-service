@@ -87,7 +87,10 @@ def _get_user_from_api_key(raw_key: str, db: Session) -> Optional[User]:
         return None
     record.last_used_at = datetime.now(timezone.utc)
     db.commit()
-    return User(username=f"apikey:{record.label}", is_active=True, is_admin=False)
+    user = User(username=f"apikey:{record.label}", is_active=True, is_admin=False)
+    # Carry read_only flag so routes can enforce it
+    user._api_key_read_only = record.read_only
+    return user
 
 
 async def get_current_user(
@@ -107,6 +110,14 @@ async def get_current_user(
 async def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if not current_user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+async def require_write(current_user: User = Depends(get_current_user)) -> User:
+    """Rejects read-only API keys on any state-changing endpoint."""
+    if getattr(current_user, "_api_key_read_only", False):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
+                            detail="This API key is read-only. Use a read/write key for this operation.")
     return current_user
 
 

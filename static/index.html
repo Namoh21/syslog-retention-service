@@ -78,6 +78,8 @@
   .clickable-row:hover td{background:rgba(88,166,255,.10)!important;}
   .row-arrow{opacity:0;color:var(--accent);font-size:12px;margin-left:6px;transition:opacity .15s;}
   .clickable-row:hover .row-arrow{opacity:1;}
+  .ip-cell{cursor:pointer;color:var(--accent);transition:opacity .15s;}
+  .ip-cell:hover{opacity:.75;text-decoration:underline;}
   .truncate{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   /* ── Severity / event badges ── */
@@ -172,6 +174,22 @@
   .finding-note:focus{outline:none;border-color:var(--accent);}
   .finding-note-saved{font-size:11px;color:var(--accent2);margin-left:8px;opacity:0;transition:opacity .3s;}
   .finding-dismissed{opacity:.55;}
+  /* Priority pills */
+  .priority-pills{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px;}
+  .priority-pill{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:all .15s;opacity:.35;}
+  .priority-pill:hover{opacity:.7;}
+  .priority-pill.active{opacity:1;box-shadow:0 0 0 2px currentColor;}
+  .pp-critical{background:rgba(248,81,73,.18);color:#f85149;border-color:rgba(248,81,73,.35);}
+  .pp-high{background:rgba(210,153,34,.18);color:#d29922;border-color:rgba(210,153,34,.35);}
+  .pp-medium{background:rgba(88,166,255,.15);color:#58a6ff;border-color:rgba(88,166,255,.3);}
+  .pp-low{background:rgba(63,185,80,.15);color:#3fb950;border-color:rgba(63,185,80,.3);}
+  /* Priority badge in header */
+  .priority-badge{padding:3px 9px;border-radius:20px;font-size:11px;font-weight:600;}
+  .pri-critical{background:rgba(248,81,73,.18);color:#f85149;}
+  .pri-high{background:rgba(210,153,34,.18);color:#d29922;}
+  .pri-medium{background:rgba(88,166,255,.15);color:#58a6ff;}
+  .pri-low{background:rgba(63,185,80,.15);color:#3fb950;}
+  .pri-unset{background:rgba(139,148,158,.1);color:var(--muted);cursor:pointer;}
   /* Immediate actions */
   .ai-action-list{list-style:none;padding:0;margin:0;}
   .ai-action-item{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid rgba(48,54,61,.5);}
@@ -360,25 +378,25 @@
     </div>
     <ul>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Monitor</li>
-      <li><a onclick="showPage('dashboard')" data-page="dashboard"><span class="nav-icon">&#x1F4CA;</span> Dashboard<span id="nav-log-count" style="margin-left:auto;font-size:10px;color:var(--muted)"></span></a></li>
-      <li><a onclick="showPage('logs')" data-page="logs"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
+      <li><a onclick="showPage('dashboard')" data-page="dashboard" title="Overview of log activity, NetFlow traffic, and service health"><span class="nav-icon">&#x1F4CA;</span> Dashboard<span id="nav-log-count" style="margin-left:auto;font-size:10px;color:var(--muted)"></span></a></li>
+      <li><a onclick="showPage('logs')" data-page="logs" title="Search and filter all syslog entries using KQL queries"><span class="nav-icon">&#x1F4CB;</span> Log Viewer</a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Analyze</li>
-      <li><a onclick="showPage('ai')" data-page="ai"><span class="nav-icon">&#x1F916;</span> AI Analysis<span id="nav-ai-badge" class="nav-badge" style="display:none">&#x2713;</span></a></li>
-      <li><a onclick="showPage('investigate')" data-page="investigate"><span class="nav-icon">&#x1F50E;</span> Investigate IP</a></li>
-      <li><a onclick="showPage('rulehits')" data-page="rulehits"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
-      <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
-      <li><a onclick="showPage('netflow')" data-page="netflow"><span class="nav-icon">&#x1F4CA;</span> NetFlow</a></li>
-      <li><a onclick="showPage('simulate')" data-page="simulate"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
-      <li><a onclick="showPage('policygaps')" data-page="policygaps"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
-      <li><a onclick="showPage('alertrules')" data-page="alertrules"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
+      <li><a onclick="showPage('ai')" data-page="ai" title="Run Claude AI security analysis on your recent logs"><span class="nav-icon">&#x1F916;</span> AI Analysis<span id="nav-ai-badge" class="nav-badge" style="display:none">&#x2713;</span></a></li>
+      <li><a onclick="showPage('investigate')" data-page="investigate" title="Deep-dive into all activity for a specific IP address"><span class="nav-icon">&#x1F50E;</span> Investigate IP</a></li>
+      <li><a onclick="showPage('rulehits')" data-page="rulehits" title="See which firewall rules are triggering most frequently"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
+      <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix" title="Visual map of connections between devices on your network"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
+      <li><a onclick="showPage('netflow')" data-page="netflow" title="IP flow data from NetFlow v5/v9/IPFIX exporters (UDM Pro)"><span class="nav-icon">&#x1F4CA;</span> NetFlow</a></li>
+      <li><a onclick="showPage('simulate')" data-page="simulate" title="Test a KQL rule against your logs before creating an alert"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
+      <li><a onclick="showPage('policygaps')" data-page="policygaps" title="Find traffic that reaches your devices without being explicitly blocked"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
+      <li><a onclick="showPage('alertrules')" data-page="alertrules" title="Configure automated alerts triggered by log patterns"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
-      <li><a onclick="showPage('svcSettings')" data-page="svcSettings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
-      <li><a onclick="showPage('retention')" data-page="retention"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
-      <li><a onclick="showPage('users')" data-page="users"><span class="nav-icon">&#x1F464;</span> Users</a></li>
-      <li><a onclick="showPage('apikeys')" data-page="apikeys"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
-      <li><a onclick="showPage('auditlog')" data-page="auditlog"><span class="nav-icon">&#x1F4DC;</span> Audit Log</a></li>
+      <li><a onclick="showPage('svcSettings')" data-page="svcSettings" title="AI provider, API keys, NetFlow, and display settings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
+      <li><a onclick="showPage('retention')" data-page="retention" title="Control how long logs are kept and storage limits"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
+      <li><a onclick="showPage('users')" data-page="users" title="Manage who can access the web console"><span class="nav-icon">&#x1F464;</span> Users</a></li>
+      <li><a onclick="showPage('apikeys')" data-page="apikeys" title="Generate API keys for external integrations and Claude Projects"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
+      <li><a onclick="showPage('auditlog')" data-page="auditlog" title="Log of all admin actions and authentication events"><span class="nav-icon">&#x1F4DC;</span> Audit Log</a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Help</li>
-      <li><a onclick="showPage('setup')" data-page="setup"><span class="nav-icon">&#x2139;&#xFE0F;</span> Setup Guide</a></li>
+      <li><a onclick="showPage('setup')" data-page="setup" title="Step-by-step guide to configuring your UDM Pro and this service"><span class="nav-icon">&#x2139;&#xFE0F;</span> Setup Guide</a></li>
     </ul>
     <div class="user-info">
       <span class="status-dot"></span>Service running<br/>
@@ -666,6 +684,37 @@ function saveTZ() {
   if (msg) { msg.innerHTML = `<div class="alert alert-ok">Timezone saved — all timestamps now show in <strong>${tzLabel()}</strong></div>`; setTimeout(()=>{ if(msg) msg.innerHTML=''; }, 3000); }
 }
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+// ── IP right-click context menu ───────────────────────────────────────────────
+let _ctxMenu = null;
+function ipContextMenu(e, ip) {
+  if (!ip) return;
+  _dismissCtxMenu();
+  const menu = document.createElement('div');
+  menu.id = '_ip-ctx';
+  menu.style.cssText = `position:fixed;top:${e.clientY}px;left:${e.clientX}px;z-index:9999;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:4px 0;min-width:200px;box-shadow:0 4px 16px rgba(0,0,0,.4);font-size:13px`;
+  const items = [
+    {icon:'&#x1F50D;', label:'Filter logs for this IP',   fn:`qbLaunchLogs('src_ip:${ip} OR dst_ip:${ip} OR source_ip:${ip}')`},
+    {icon:'&#x1F50E;', label:'Investigate this IP',       fn:`_investigateIP('${ip}')`},
+    {icon:'&#x1F4CB;', label:'Copy IP address',           fn:`navigator.clipboard?.writeText('${ip}')`},
+  ];
+  menu.innerHTML = items.map(it =>
+    `<div onclick="_dismissCtxMenu();${it.fn}" style="padding:8px 14px;cursor:pointer;display:flex;align-items:center;gap:8px;color:var(--text)" onmouseenter="this.style.background='rgba(88,166,255,.08)'" onmouseleave="this.style.background=''">${it.icon} ${it.label}</div>`
+  ).join('') + `<div style="padding:4px 14px 6px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);margin-top:2px">${ip}</div>`;
+  document.body.appendChild(menu);
+  _ctxMenu = menu;
+  setTimeout(() => document.addEventListener('click', _dismissCtxMenu, {once:true}), 10);
+}
+function _dismissCtxMenu() { if(_ctxMenu){_ctxMenu.remove();_ctxMenu=null;} }
+function _investigateIP(ip) {
+  showPage('investigate');
+  setTimeout(() => {
+    const el = document.getElementById('inv-ip');
+    if (el) { el.value = ip; el.dispatchEvent(new Event('input')); }
+    const btn = document.querySelector('#inv-ip ~ button, [onclick*="invSearch"]');
+    if (btn) btn.click();
+  }, 100);
+}
 
 function copyToClipboard(text, btn) {
   const original = btn ? btn.textContent : '';
@@ -1295,12 +1344,14 @@ async function fetchLogs() {
         </td>
         <td>${etBadge(e.event_type)}</td>
         <td>${actionBadge(e.action)}</td>
-        <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
-            onclick="event.stopPropagation();qbLaunchLogs('${e.src_ip?'src_ip':'source_ip'}:${esc(e.src_ip||e.source_ip||'')}')"
-            title="Filter for this IP">${e.src_ip||e.source_ip||''}</td>
-        <td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--accent)"
-            onclick="event.stopPropagation();qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}')"
-            title="Filter for this IP">${e.dst_ip?`${e.dst_ip}${e.dst_port?':'+e.dst_port:''}`:''}</td>
+        <td style="font-size:12px;font-family:monospace;white-space:nowrap">
+          ${e.src_ip||e.source_ip ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('${e.src_ip?'src_ip':'source_ip'}:${esc(e.src_ip||e.source_ip||'')}')" title="Click to filter · Right-click for more"
+            oncontextmenu="event.preventDefault();event.stopPropagation();ipContextMenu(event,'${esc(e.src_ip||e.source_ip||'')}')">${e.src_ip||e.source_ip}</span>` : ''}
+        </td>
+        <td style="font-size:12px;font-family:monospace;white-space:nowrap">
+          ${e.dst_ip ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('dst_ip:${esc(e.dst_ip||'')}')" title="Click to filter · Right-click for more"
+            oncontextmenu="event.preventDefault();event.stopPropagation();ipContextMenu(event,'${esc(e.dst_ip||'')}')">${e.dst_ip}${e.dst_port?':'+e.dst_port:''}</span>` : ''}
+        </td>
         <td style="font-size:12px">${e.protocol||''}</td>
         <td style="font-size:12px">${e.hostname||''}</td>
         <td><span class="sev sev-${e.severity}" style="font-size:10px">${e.severity_name||e.severity}</span></td>
@@ -2012,26 +2063,47 @@ function renderAnalysis(d, out) {
   ].filter(Boolean).join(' · ');
 
   // Render a finding as an always-visible rich bubble
-  const _renderFinding = (f, i, recId, existingStatus, existingNote) => {
+  const _PRIORITY_META = {
+    critical: {label:'Critical', cls:'pri-critical', icon:'&#x1F6A8;'},
+    high:     {label:'High',     cls:'pri-high',     icon:'&#x1F525;'},
+    medium:   {label:'Medium',   cls:'pri-medium',   icon:'&#x26A1;'},
+    low:      {label:'Low',      cls:'pri-low',      icon:'&#x1F4CC;'},
+  };
+
+  const _renderFinding = (f, i, recId, existingStatus, existingNote, existingPriority) => {
     const sev = f.severity || 'INFO';
     const sevIcon = {CRITICAL:'&#x1F534;',HIGH:'&#x26A0;&#xFE0F;',MEDIUM:'&#x1F7E1;',LOW:'&#x1F7E2;',INFO:'&#x2139;&#xFE0F;'}[sev] || '&#x26AA;';
-    const curStatus = existingStatus || 'open';
+    const curStatus   = existingStatus   || 'open';
+    const curPriority = existingPriority || '';
     const isDismissed = curStatus === 'dismissed';
+    const rid = recId || 'x'+i;
 
     const statusPills = ['open','implemented','working','investigating','dismissed'].map(s =>
       `<button class="status-pill sp-${s}${curStatus===s?' active':''}" onclick="updateRecStatus(${recId||'null'},'${s}',this,${i})" title="Mark as ${s}">${s}</button>`
     ).join('');
 
+    const priorityPills = ['critical','high','medium','low'].map(p => {
+      const m = _PRIORITY_META[p];
+      return `<button class="priority-pill pp-${p}${curPriority===p?' active':''}" onclick="updateRecPriority(${recId||'null'},'${p}',this,${i})" title="Set priority: ${m.label}">${m.icon} ${m.label}</button>`;
+    }).join('');
+
     const statusBadgeClass = {open:'sp-open',implemented:'sp-implemented',working:'sp-working',investigating:'sp-investigating',dismissed:'sp-dismissed'}[curStatus]||'sp-open';
+    const priMeta = _PRIORITY_META[curPriority];
+    const priBadge = priMeta
+      ? `<span class="priority-badge ${priMeta.cls}" id="pri-badge-${rid}">${priMeta.icon} ${priMeta.label}</span>`
+      : `<span class="priority-badge pri-unset" id="pri-badge-${rid}">&#x1F4CC; Set priority</span>`;
 
     return `
       <div class="finding finding-stripe-${sev}${isDismissed?' finding-dismissed':''}" id="finding-card-${i}">
 
-        <!-- Header: severity badge + title + current status -->
+        <!-- Header row -->
         <div class="finding-top">
           <span class="finding-sev-badge fsb-${sev}">${sevIcon} ${sev}</span>
           <span class="finding-title">${esc(f.title||'Untitled Finding')}</span>
-          <span class="finding-status-badge ${statusBadgeClass}" id="rec-badge-${recId||'x'+i}">${curStatus}</span>
+          <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+            ${priBadge}
+            <span class="finding-status-badge ${statusBadgeClass}" id="rec-badge-${rid}">${curStatus}</span>
+          </div>
         </div>
 
         <!-- Issue detail -->
@@ -2047,15 +2119,21 @@ function renderAnalysis(d, out) {
           <div class="finding-rec-box">${esc(f.recommendation)}</div>
         </div>` : ''}
 
-        <!-- Status tracking + notes -->
+        <!-- Priority -->
+        <div class="finding-section">
+          <div class="finding-label">&#x1F3AF; Your Priority <span style="font-weight:400;color:var(--muted);font-size:10px">(your assessment, independent of AI severity)</span></div>
+          <div class="priority-pills">${priorityPills}</div>
+        </div>
+
+        <!-- Status & Notes -->
         <div class="finding-section">
           <div class="finding-label">&#x1F4CC; Status &amp; Notes</div>
           <div class="status-pills">${statusPills}</div>
-          <textarea class="finding-note" id="rec-note-${recId||'x'+i}"
-            placeholder="Add your notes — steps taken, who's working on it, links to tickets..."
+          <textarea class="finding-note" id="rec-note-${rid}"
+            placeholder="Add your notes — steps taken, who's working on it, links to tickets, target date..."
             onblur="saveRecNote(${recId||'null'},this.value,${i})"
           >${esc(existingNote||'')}</textarea>
-          <span class="finding-note-saved" id="note-saved-${recId||'x'+i}">Saved ✓</span>
+          <span class="finding-note-saved" id="note-saved-${rid}">Saved ✓</span>
         </div>
 
       </div>`;
@@ -2107,25 +2185,43 @@ function renderAnalysis(d, out) {
   // Populate findings — fetch saved rec IDs + status/notes if analysis was persisted
   const fc = document.getElementById('ai-findings-container');
   if (fc && findings.length) {
-    const populate = (recMap, statusMap, noteMap) => {
+    const populate = (recMap, statusMap, noteMap, priMap) => {
       fc.innerHTML = findings.map((f,i) => {
         const recId = recMap ? recMap[i] : null;
-        return _renderFinding(f, i, recId, statusMap?.[recId], noteMap?.[recId]);
+        return _renderFinding(f, i, recId, statusMap?.[recId], noteMap?.[recId], priMap?.[recId]);
       }).join('');
     };
 
     if (analysisId) {
       apiFetch(`/api/ai/history?analysis_id=${analysisId}`).then(hist => {
         const recs = hist && hist.length ? (hist[0].recommendations || []) : [];
-        const recMap    = recs.reduce((m,r,i) => { m[i]=r.id;              return m; }, {});
-        const statusMap = recs.reduce((m,r)   => { m[r.id]=r.status;       return m; }, {});
+        const recMap    = recs.reduce((m,r,i) => { m[i]=r.id;                return m; }, {});
+        const statusMap = recs.reduce((m,r)   => { m[r.id]=r.status;         return m; }, {});
         const noteMap   = recs.reduce((m,r)   => { m[r.id]=r.user_notes||''; return m; }, {});
-        populate(recMap, statusMap, noteMap);
-      }).catch(() => populate(null, null, null));
+        const priMap    = recs.reduce((m,r)   => { m[r.id]=r.priority||'';   return m; }, {});
+        populate(recMap, statusMap, noteMap, priMap);
+      }).catch(() => populate(null, null, null, null));
     } else {
-      populate(null, null, null);
+      populate(null, null, null, null);
     }
   }
+}
+
+async function updateRecPriority(recId, priority, pillEl, findingIdx) {
+  // Optimistic UI update
+  if (pillEl) {
+    const group = pillEl.closest('.priority-pills');
+    if (group) group.querySelectorAll('.priority-pill').forEach(p => p.classList.toggle('active', p === pillEl));
+  }
+  const _PRIORITY_META = {critical:{label:'Critical',icon:'&#x1F6A8;',cls:'pri-critical'}, high:{label:'High',icon:'&#x1F525;',cls:'pri-high'}, medium:{label:'Medium',icon:'&#x26A1;',cls:'pri-medium'}, low:{label:'Low',icon:'&#x1F4CC;',cls:'pri-low'}};
+  const rid = recId || 'x'+findingIdx;
+  const badge = document.getElementById(`pri-badge-${rid}`);
+  const meta = _PRIORITY_META[priority];
+  if (badge && meta) { badge.className = `priority-badge ${meta.cls}`; badge.innerHTML = `${meta.icon} ${meta.label}`; }
+  if (!recId) return;
+  try {
+    await apiFetch(`/api/ai/recommendations/${recId}`, { method:'PATCH', body: JSON.stringify({ priority }) });
+  } catch(e) { alert('Failed to save priority: ' + e.message); }
 }
 
 async function saveRecNote(recId, note, findingIdx) {
@@ -2182,6 +2278,14 @@ async function saveRetention() {
 
 async function purgeNow() {
   const msg = document.getElementById('ret-msg');
+  // Show impact before committing
+  try {
+    const stats = await apiFetch('/api/stats');
+    const total = stats?.total_entries ?? '?';
+    const days  = document.getElementById('ret-days')?.value || '?';
+    if (!confirm(`This will permanently delete all log entries older than ${days} days.\n\nCurrent total: ${Number(total).toLocaleString()} entries\n\nThis action cannot be undone. Continue?`)) return;
+  } catch { if (!confirm('Purge old log entries? This cannot be undone.')) return; }
+  msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Purging...</div>';
   try {
     const d = await apiFetch('/api/admin/purge',{method:'POST'});
     msg.innerHTML=`<div class="alert alert-ok">${d.message}</div>`;

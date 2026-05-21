@@ -271,11 +271,13 @@ class AIRecommendation(Base):
     id          = Column(Integer, primary_key=True, index=True)
     analysis_id = Column(Integer, index=True, nullable=False)
     title       = Column(String(256))
-    severity    = Column(String(16))
+    severity    = Column(String(16))   # AI-assigned: CRITICAL/HIGH/MEDIUM/LOW/INFO
     detail      = Column(Text)
     recommendation = Column(Text)
     # open | implemented | working | investigating | dismissed
     status      = Column(String(32), default="open", nullable=False)
+    # User-assigned priority: critical | high | medium | low (overrides AI severity)
+    priority    = Column(String(16), nullable=True)
     user_notes  = Column(Text)
     created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
     updated_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
@@ -401,6 +403,13 @@ def _migrate_ai_tables():
                     created_at DATETIME,
                     updated_at DATETIME
                 )"""))
+        # Add priority column to existing ai_recommendations table if missing
+        try:
+            ai_rec_cols = [row[1] for row in conn.execute(text("PRAGMA table_info(ai_recommendations)")).fetchall()]
+            if "priority" not in ai_rec_cols:
+                conn.execute(text("ALTER TABLE ai_recommendations ADD COLUMN priority VARCHAR(16)"))
+        except Exception:
+            pass
         if "ai_network_context" not in existing:
             conn.execute(text("""
                 CREATE TABLE ai_network_context (
