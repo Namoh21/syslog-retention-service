@@ -1306,7 +1306,7 @@ async function ai() {
         <div class="form-row" style="align-items:flex-end">
           <div class="form-group">
             <label>Time Window</label>
-            <select id="ai-hours">
+            <select id="ai-hours" onchange="aiUpdateEntryCount()">
               <option value="0.25">Last 15 minutes</option>
               <option value="0.5">Last 30 minutes</option>
               <option value="1" ${serviceInfo?.ai_provider==='local'?'selected':''}>Last 1 hour</option>
@@ -1316,6 +1316,7 @@ async function ai() {
               <option value="72">Last 3 days</option>
               <option value="168">Last 7 days</option>
             </select>
+            <div id="ai-entry-count" style="font-size:11px;color:var(--muted);margin-top:4px">&#x23F3; counting entries...</div>
           </div>
           <div class="form-group">
             <label>Focus Area</label>
@@ -1411,6 +1412,8 @@ async function ai() {
     }
   } catch(e) { /* non-fatal */ }
 
+  aiUpdateEntryCount();
+
   // Update notification button state
   const notifyBtn = document.getElementById('ai-notify-btn');
   if (notifyBtn) {
@@ -1454,6 +1457,24 @@ function aiShowTab(name) {
   });
   if (name === 'history') loadAiHistory();
   if (name === 'kb') loadKbEntries();
+}
+
+async function aiUpdateEntryCount() {
+  const el = document.getElementById('ai-entry-count');
+  if (!el) return;
+  const hours = parseFloat(document.getElementById('ai-hours')?.value || '1');
+  const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  el.textContent = '⏳ counting...';
+  try {
+    const d = await apiFetch(`/api/logs?limit=1&since=${encodeURIComponent(since)}`);
+    if (!d) return;
+    const n = d.total ?? 0;
+    const isLocal = serviceInfo?.ai_provider === 'local';
+    const capNote = !isLocal && n > (serviceInfo?.ai_analysis_max_logs ?? 200)
+      ? ` (capped at ${(serviceInfo?.ai_analysis_max_logs ?? 200).toLocaleString()})`
+      : '';
+    el.innerHTML = `<span style="color:${n>0?'var(--accent2)':'var(--muted)'}">${n.toLocaleString()} log entr${n===1?'y':'ies'} in this window${capNote}</span>`;
+  } catch { el.textContent = ''; }
 }
 
 async function saveNetworkNotes() {
