@@ -61,6 +61,7 @@ _NORMALIZED_COLUMNS = [
     ("norm_user",     "VARCHAR(128)"),
     ("norm_hostname", "VARCHAR(255)"),
     ("domain",        "VARCHAR(255)"),
+    ("url_category",  "VARCHAR(128)"),
     ("rule_name",     "VARCHAR(255)"),
     ("extra_json",    "TEXT"),
 ]
@@ -151,6 +152,7 @@ class SyslogEntry(Base):
     norm_user     = Column(String(128), nullable=True)
     norm_hostname = Column(String(255), nullable=True)
     domain        = Column(String(255), nullable=True)
+    url_category  = Column(String(128), nullable=True)
     rule_name     = Column(String(255), nullable=True)
     extra_json    = Column(Text,        nullable=True)   # JSON blob for leftover fields
 

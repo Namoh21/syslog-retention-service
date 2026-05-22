@@ -78,6 +78,7 @@ class LogEntryOut(BaseModel):
     rule_name: Optional[str]
     norm_user: Optional[str]
     domain: Optional[str]
+    url_category: Optional[str]
     mac_address: Optional[str]
 
     class Config:
@@ -322,6 +323,7 @@ async def list_logs(
                 rule_name=e.rule_name,
                 norm_user=e.norm_user,
                 domain=e.domain,
+                url_category=e.url_category,
                 mac_address=e.mac_address,
             )
             for e in entries
@@ -1584,7 +1586,8 @@ async def export_logs_csv(
             writer.writerow([
                 e.id, e.received_at, e.log_source_ip, e.severity, sev_name,
                 e.hostname, e.app_name, e.event_type, e.action,
-                e.src_ip, e.dst_ip, e.dst_port, e.protocol, e.rule_name,
+                e.src_ip, e.dst_ip, e.dst_port, e.protocol,
+                e.domain, e.url_category, e.rule_name,
                 e.message,
             ])
             yield buf.getvalue()

@@ -80,6 +80,10 @@
   .clickable-row:hover .row-arrow{opacity:1;}
   .ip-cell{cursor:pointer;color:var(--accent);transition:opacity .15s;}
   .ip-cell:hover{opacity:.75;text-decoration:underline;}
+  .cat-badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;cursor:pointer;background:rgba(88,166,255,.12);color:#58a6ff;white-space:nowrap;}
+  .cat-badge:hover{opacity:.8;}
+  .cat-badge-threat{background:rgba(248,81,73,.15);color:#f85149;}
+  .cat-badge-warn{background:rgba(210,153,34,.15);color:#d29922;}
   .truncate{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
   /* ── Severity / event badges ── */
@@ -981,12 +985,16 @@ const QB_FIELDS = [
   {id:'severity',  label:'Severity',           type:'severity', group:'Log',
      values:['0 Emergency','1 Alert','2 Critical','3 Error','4 Warning','5 Notice','6 Informational','7 Debug']},
   {id:'app',       label:'Application',        type:'text',     group:'Log'},
-  {id:'action',    label:'Action',             type:'enum',     group:'Firewall',
+  {id:'action',       label:'Action',          type:'enum',  group:'Firewall',
      values:['BLOCK','ALLOW','ALERT']},
-  {id:'event_type',label:'Event Type',         type:'enum',     group:'Firewall',
-     values:['firewall_block','firewall_allow','ids_alert','threat_block','auth_failure',
-             'auth_success','dhcp_ack','vpn_connect','vpn_disconnect','dns_query','port_scan','unknown']},
-  {id:'received_at', label:'Timestamp',        type:'datetime', group:'Log'},
+  {id:'event_type',   label:'Event Type',      type:'enum',  group:'Firewall',
+     values:['firewall_block','firewall_allow','ids_alert','threat_block','content_filter',
+             'auth_failure','auth_success','dhcp_ack','vpn_connect','vpn_disconnect',
+             'dns_query','dns_response','port_scan','unknown']},
+  {id:'domain',       label:'Domain / URL',    type:'text',  group:'Web / DNS'},
+  {id:'url_category', label:'Category',        type:'text',  group:'Web / DNS'},
+  {id:'rule_name',    label:'Rule / Signature',type:'text',  group:'Web / DNS'},
+  {id:'received_at',  label:'Timestamp',       type:'datetime', group:'Log'},
 ];
 
 const QB_OPS = {
@@ -1363,9 +1371,15 @@ async function fetchLogs() {
             oncontextmenu="event.preventDefault();event.stopPropagation();ipContextMenu(event,'${esc(e.dst_ip||'')}')">${e.dst_ip}${e.dst_port?':'+e.dst_port:''}</span>` : ''}
         </td>
         <td style="font-size:12px">${e.protocol||''}</td>
+        <td style="font-size:12px;font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          ${e.domain ? `<span class="ip-cell" onclick="event.stopPropagation();qbLaunchLogs('domain:*${esc(e.domain)}*')" title="${esc(e.domain)} — click to filter">${esc(e.domain)}</span>` : ''}
+        </td>
+        <td style="font-size:11px;white-space:nowrap">
+          ${e.url_category ? (()=>{const t=/malware|botnet|phish|exploit|ransomware|threat|attack|scan|c2|command.control/i.test(e.url_category); const w=/adware|suspicious|proxy|anonymizer|p2p|torrent/i.test(e.url_category); return `<span class="cat-badge${t?' cat-badge-threat':w?' cat-badge-warn':''}" onclick="event.stopPropagation();qbLaunchLogs('category:*${esc(e.url_category)}*')" title="Filter by category: ${esc(e.url_category)}">${esc(e.url_category)}</span>`;})() : ''}
+        </td>
         <td style="font-size:12px">${e.hostname||''}</td>
         <td><span class="sev sev-${e.severity}" style="font-size:10px">${e.severity_name||e.severity}</span></td>
-        <td class="truncate" style="max-width:300px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
+        <td class="truncate" style="max-width:280px;font-size:12px">${esc(e.rule_name||e.message||'')}</td>
       </tr>`).join('');
     const start = logPage.offset+1, end = Math.min(logPage.offset+logPage.limit, logPage.total);
     const queryInfo = _qbQuery ? `<span style="color:var(--muted);font-size:11px;margin-left:8px">query: <code style="font-size:11px">${esc(_qbQuery)}</code></span>` : '';
@@ -1374,6 +1388,7 @@ async function fetchLogs() {
         <table><thead><tr>
           <th>Timestamp <span style="font-weight:400;color:var(--muted);font-size:10px">(${tzLabel()})</span></th><th>Event Type</th><th>Action</th>
           <th>Src IP</th><th>Dst IP:Port</th><th>Protocol</th>
+          <th>Domain / URL</th><th>Category</th>
           <th>Hostname</th><th>Severity</th><th>Rule / Message</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
@@ -5300,7 +5315,18 @@ async function showLogDetail(id) {
           ${row('Facility', e.facility)}
           ${row('Event type', e.event_type, `<a onclick="qbLaunchLogs('event_type:${esc(e.event_type||'')}');closeLogDetail()">${esc(e.event_type||'')}</a>`)}
           ${row('User', e.user)}
-          ${row('Domain', e.domain)}
+
+          ${(e.domain || e.url_category) ? `${sec('Web / DNS Intelligence')}` : ''}
+          ${e.domain ? `<div class="dk">Domain / URL</div><div class="dv" style="font-family:monospace">
+            <a onclick="qbLaunchLogs('domain:*${esc(e.domain)}*');closeLogDetail()">${esc(e.domain)}</a>
+            <button class="btn btn-ghost btn-sm" style="margin-left:8px" onclick="(()=>{document.getElementById('inv-ip').value='${esc(e.domain)}';showPage('investigate');closeLogDetail();})()">&#x1F50E; Investigate</button>
+          </div>` : ''}
+          ${e.url_category ? `<div class="dk">Category</div><div class="dv">
+            ${(()=>{const t=/malware|botnet|phish|exploit|ransomware|threat|attack|c2/i.test(e.url_category); const w=/adware|suspicious|proxy|anonymizer|p2p|torrent/i.test(e.url_category); return `<span class="cat-badge${t?' cat-badge-threat':w?' cat-badge-warn':''}" onclick="qbLaunchLogs('category:*${esc(e.url_category)}*');closeLogDetail()">${esc(e.url_category)}</span>`;})()}
+          </div>` : ''}
+          ${e.rule_name ? `<div class="dk">Rule / Signature</div><div class="dv" style="font-size:12px;font-family:monospace">
+            <a onclick="qbLaunchLogs('rule:*${esc(e.rule_name)}*');closeLogDetail()">${esc(e.rule_name)}</a>
+          </div>` : ''}
 
           ${netSection}
           ${ipSection}

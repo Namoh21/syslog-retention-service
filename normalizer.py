@@ -39,7 +39,8 @@ class NormalizedFields:
     mac_address: Optional[str] = None
     user: Optional[str] = None
     hostname: Optional[str] = None    # device hostname from DHCP / DNS
-    domain: Optional[str] = None      # DNS query target
+    domain: Optional[str] = None      # DNS query target / SNI hostname / URL host
+    url_category: Optional[str] = None  # traffic category: Malware, Streaming, Social, etc.
     rule_name: Optional[str] = None   # firewall rule / IDS signature
     extra: Optional[dict] = field(default_factory=dict)
 
@@ -186,6 +187,9 @@ _IDS_PLAIN = re.compile(
     re.IGNORECASE,
 )
 
+_IDS_CATEGORY = re.compile(r"\[Classification:\s*([^\]]+)\]", re.IGNORECASE)
+_IDS_PRIORITY = re.compile(r"\[Priority:\s*(\d+)\]", re.IGNORECASE)
+
 def _parse_ids(msg: str) -> Optional[NormalizedFields]:
     # Try JSON first (Suricata eve.json)
     jm = _IDS_JSON.search(msg)
@@ -194,6 +198,7 @@ def _parse_ids(msg: str) -> Optional[NormalizedFields]:
             d = json.loads(jm.group(0))
             if d.get("event_type") == "alert":
                 alert = d.get("alert", {})
+                cat = alert.get("category") or ""
                 return NormalizedFields(
                     event_type="ids_alert",
                     src_ip=d.get("src_ip"),
@@ -203,7 +208,8 @@ def _parse_ids(msg: str) -> Optional[NormalizedFields]:
                     protocol=d.get("proto", "").upper() or None,
                     action="BLOCK" if alert.get("action") == "blocked" else "ALERT",
                     rule_name=alert.get("signature"),
-                    extra={"category": alert.get("category"), "severity": alert.get("severity")},
+                    url_category=cat or None,
+                    extra={"category": cat, "severity": alert.get("severity")},
                 )
         except (json.JSONDecodeError, KeyError):
             pass
@@ -218,6 +224,8 @@ def _parse_ids(msg: str) -> Optional[NormalizedFields]:
             dp = int(m.group(4)) if m.group(4) else None
         except ValueError:
             sp = dp = None
+        cat_m = _IDS_CATEGORY.search(msg)
+        cat = cat_m.group(1).strip() if cat_m else None
         return NormalizedFields(
             event_type="ids_alert",
             src_ip=m.group(1),
@@ -226,29 +234,36 @@ def _parse_ids(msg: str) -> Optional[NormalizedFields]:
             dst_port=dp,
             action="ALERT",
             rule_name=msg[:120],
+            url_category=cat,
         )
     return None
 
 
 # ── Unifi Threat Management ───────────────────────────────────────────────────
 # "Threat Management blocked <IP> (category: Malware)"
+# "ubnt-threat-mgmt: blocked src=1.2.3.4 category=Botnet"
 _THREAT = re.compile(
-    r"(?:threat|blocked|malware|botnet|phishing|exploit)",
+    r"(?:threat|blocked|malware|botnet|phishing|exploit|ransomware|adware|spyware)",
     re.IGNORECASE,
 )
-_THREAT_IP = re.compile(r"blocked\s+" + _IP4, re.IGNORECASE)
-_THREAT_CAT = re.compile(r"category[:\s]+([^,\)]+)", re.IGNORECASE)
+_THREAT_IP = re.compile(r"(?:blocked\s+|src=)" + _IP4, re.IGNORECASE)
+_THREAT_CAT = re.compile(r"category[=:\s]+([^,\)\s]+)", re.IGNORECASE)
+_THREAT_DOMAIN = re.compile(r"domain[=:\s]+(\S+)", re.IGNORECASE)
 
 def _parse_threat(msg: str) -> Optional[NormalizedFields]:
     if not _THREAT.search(msg):
         return None
-    ip_m = _THREAT_IP.search(msg)
-    cat_m = _THREAT_CAT.search(msg)
+    ip_m   = _THREAT_IP.search(msg)
+    cat_m  = _THREAT_CAT.search(msg)
+    dom_m  = _THREAT_DOMAIN.search(msg)
+    cat    = cat_m.group(1).strip() if cat_m else None
     return NormalizedFields(
         event_type="threat_block",
         src_ip=ip_m.group(1) if ip_m else None,
+        domain=dom_m.group(1).strip() if dom_m else None,
         action="BLOCK",
-        rule_name=cat_m.group(1).strip() if cat_m else "Threat Management",
+        url_category=cat or "Threat",
+        rule_name=cat or "Threat Management",
     )
 
 
@@ -364,38 +379,107 @@ def _parse_vpn(msg: str) -> Optional[NormalizedFields]:
     )
 
 
-# ── DNS (dnsmasq) ─────────────────────────────────────────────────────────────
-# "query[A] example.com from 192.168.1.5"
-# "reply example.com is 93.184.216.34"
+# ── DNS (dnsmasq + CoreDNS) ───────────────────────────────────────────────────
+# dnsmasq: "query[A] example.com from 192.168.1.5"
+# dnsmasq: "reply example.com is 93.184.216.34"
+# CoreDNS: [INFO] 10.10.100.50:52341 - 1 "A IN example.com. udp 28 false 512" NOERROR qr,rd 48b 0.001s
 _DNS_QUERY = re.compile(
     r"query\[(\w+)\]\s+(\S+)\s+from\s+" + _IP4, re.IGNORECASE
 )
 _DNS_REPLY = re.compile(
     r"reply\s+(\S+)\s+is\s+(\S+)", re.IGNORECASE
 )
-_DNS_KEYWORD = re.compile(r"\b(dnsmasq|named|bind|query|nxdomain)\b", re.IGNORECASE)
+_DNS_COREDNS = re.compile(
+    r'"(\w+)\s+IN\s+(\S+?)\.' +         # query type + domain (trailing dot)
+    r'.*?"\s+\w+',                        # response code
+    re.IGNORECASE,
+)
+_DNS_COREDNS_CLIENT = re.compile(r'\]\s+' + _IP4 + r':\d+\s+-\s+\d+\s+"')
+_DNS_KEYWORD = re.compile(r"\b(dnsmasq|named|bind|query|nxdomain|coredns)\b", re.IGNORECASE)
+# Also catch raw CoreDNS log lines which start with [INFO]/[ERROR] + IP
+_DNS_COREDNS_LINE = re.compile(r'\[(?:INFO|WARN|ERROR)\]\s+' + _IP4 + r':\d+')
 
 def _parse_dns(msg: str) -> Optional[NormalizedFields]:
+    # CoreDNS format: [INFO] 10.10.100.50:52341 - 1 "A IN example.com. udp 28 false 512" NOERROR
+    if _DNS_COREDNS_LINE.search(msg):
+        client_m = _DNS_COREDNS_CLIENT.search(msg)
+        query_m  = _DNS_COREDNS.search(msg)
+        if query_m:
+            domain = query_m.group(2).rstrip(".")
+            return NormalizedFields(
+                event_type="dns_query",
+                src_ip=client_m.group(1) if client_m else None,
+                domain=domain,
+                protocol="DNS",
+                extra={"qtype": query_m.group(1)},
+            )
+
     if not _DNS_KEYWORD.search(msg):
         return None
+
+    # dnsmasq query
     m = _DNS_QUERY.search(msg)
     if m:
         return NormalizedFields(
             event_type="dns_query",
             src_ip=m.group(3),
-            domain=m.group(2),
+            domain=m.group(2).rstrip("."),
             protocol="DNS",
             extra={"qtype": m.group(1)},
         )
+    # dnsmasq reply
     m = _DNS_REPLY.search(msg)
     if m:
         return NormalizedFields(
             event_type="dns_response",
-            domain=m.group(1),
-            dst_ip=m.group(2) if re.match(_IP4, m.group(2)) else None,
+            domain=m.group(1).rstrip("."),
+            dst_ip=m.group(2) if re.match(r"^\d+\.\d+\.\d+\.\d+$", m.group(2)) else None,
             protocol="DNS",
         )
     return None
+
+
+# ── Content filter / Web category (UDM + Squid + Pi-hole) ────────────────────
+# UDM: "content filter blocked: url=http://example.com category=Social Networks client=192.168.1.5"
+# Pi-hole: "gravity blocked example.com (from 192.168.1.5)"
+# Squid: "DENIED http://example.com/ [Social Networks]"
+_CF_URL = re.compile(r'url[=:\s]+(https?://\S+)', re.IGNORECASE)
+_CF_HOST = re.compile(r'(?:blocked|denied)\s+(?:https?://)?(\S+?)(?:\s|/|$)', re.IGNORECASE)
+_CF_CAT = re.compile(r'categor\w*[=:\s]+([^,\)\]\n]+)', re.IGNORECASE)
+_CF_CLIENT = re.compile(r'(?:client|from)[=:\s]+' + _IP4, re.IGNORECASE)
+_CF_KEYWORD = re.compile(
+    r'(?:content.filter|web.filter|squid|pihole|pi-hole|gravity|adblock|dnsbl)',
+    re.IGNORECASE,
+)
+
+def _parse_content_filter(msg: str) -> Optional[NormalizedFields]:
+    if not _CF_KEYWORD.search(msg):
+        return None
+    url_m    = _CF_URL.search(msg)
+    host_m   = _CF_HOST.search(msg)
+    cat_m    = _CF_CAT.search(msg)
+    client_m = _CF_CLIENT.search(msg)
+
+    domain = None
+    if url_m:
+        # Extract host from URL
+        import urllib.parse as _up
+        try:
+            domain = _up.urlparse(url_m.group(1)).netloc or None
+        except Exception:
+            domain = url_m.group(1)
+    elif host_m:
+        domain = host_m.group(1).strip("/").rstrip(".")
+
+    cat = cat_m.group(1).strip() if cat_m else None
+
+    return NormalizedFields(
+        event_type="content_filter",
+        src_ip=client_m.group(1) if client_m else None,
+        domain=domain,
+        url_category=cat or "Blocked",
+        action="BLOCK",
+    )
 
 
 # ── Port scan detection ───────────────────────────────────────────────────────
@@ -422,6 +506,7 @@ _PARSERS = [
     _parse_firewall,
     _parse_ids,
     _parse_threat,
+    _parse_content_filter,
     _parse_dhcp,
     _parse_auth,
     _parse_vpn,

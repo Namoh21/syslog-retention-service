@@ -129,6 +129,7 @@ def _apply_normalization(entry: SyslogEntry) -> SyslogEntry:
     entry.norm_user     = nf.user
     entry.norm_hostname = nf.hostname
     entry.domain        = nf.domain
+    entry.url_category  = nf.url_category
     entry.rule_name     = nf.rule_name
     entry.extra_json    = json.dumps(nf.extra) if nf.extra else None
     return entry
