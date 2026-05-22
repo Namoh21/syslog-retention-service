@@ -185,24 +185,46 @@ _SIEM_CTI_SYSTEM = """\
   STRICT LOG-GROUNDING REQUIREMENT — enforced before any event is generated:
 
   Every event in the output MUST satisfy ALL of the following tests:
-    1. RAW EXCERPT TEST: raw_log_excerpt must be copied verbatim from a line
-       in the === LOG DATA === block. If you cannot find the exact line, the
-       event does not exist and must not be generated.
-    2. TIMESTAMP TEST: every timestamp must come directly from the log line
-       cited in raw_log_excerpt. Never invent, estimate, or interpolate a
-       timestamp. If the log line has no timestamp, use null.
-    3. IP/HOST TEST: every IP address, hostname, or identifier in iocs or
-       diamond_model must appear literally in the cited log line. If it is
-       not in the log line, it is not in the output.
-    4. IMPACT TEST: impact_potential and scope must be derived from what the
-       log line actually shows — not from general knowledge of what that
-       service could theoretically do. If the log shows a socket error, the
-       impact is service degradation — not "privilege escalation" or any other
-       inferred consequence not supported by the log text.
 
-  REJECTION RULE: If any event fails any of the four tests above, DROP that
-  event entirely. An empty events array is correct and acceptable when the
-  provided log data contains no qualifying entries. Never pad the output.
+  1. RAW EXCERPT TEST
+     raw_log_excerpt must be copied verbatim from a line in the === LOG DATA ===
+     block. If you cannot locate the exact line, the event does not exist.
+
+  2. TIMESTAMP TEST
+     Every timestamp must come directly from the log line cited in raw_log_excerpt.
+     RFC 3164 syslog lines (e.g. "Mar  8 14:29:59 host app: msg") do NOT contain
+     a year. When the year is absent from the log line, derive it from the analysis
+     window dates provided in the user message — do NOT invent a year from training
+     data. If the year cannot be determined, use null rather than guessing.
+
+  3. IOC TEST — no IP, domain, hash, or account may be added to iocs[] unless it
+     appears VERBATIM in the raw_log_excerpt field of that same event.
+     Specific non-IOC patterns (never add these as IOCs):
+       • PID numbers (e.g. "PID 570652") — these are process IDs, not IOCs
+       • Service/daemon names (e.g. "udapi-server", "coredns") — not IOCs
+       • Unix socket paths (e.g. "/run/utm/.cd_dl.so") — not IOCs
+       • Generic internal gateway IPs (e.g. 10.0.0.1) unless that exact IP
+         string appears in the log line
+     If the log line contains no IP address, the iocs array must be empty ([]).
+
+  4. MITRE TEST — verify technique IDs against known ATT&CK:
+     • T1021 = Remote Services (Initial Access / Lateral Movement)
+     • TA0002 = Execution  |  TA0004 = Privilege Escalation
+     • A systemd PID supervision mismatch is NOT privilege escalation —
+       it is a service configuration/reliability issue (no MITRE mapping applies)
+     • A socket connection error is NOT privilege escalation
+     • Only map to MITRE when the log provides direct evidence of adversarial
+       activity, not when a system or daemon behaves unexpectedly
+
+  5. IMPACT TEST
+     impact_potential must be derived from what the log line literally shows.
+     A daemon notification mismatch → service supervision issue, not privilege
+     escalation. A socket error → service degradation, not privilege escalation.
+     A DNS query → network communication, not an attack.
+
+  REJECTION RULE: If any event fails any of the five tests above, DROP that
+  event entirely. An empty events array is correct when no qualifying log lines
+  exist. Never pad the output with inferred or fabricated events.
 </grounding_rules>
 
 <behavioral_rules>
@@ -389,22 +411,34 @@ _NRE_SYSTEM = """\
   STRICT LOG-GROUNDING REQUIREMENT — enforced before any service_event is generated:
 
   Every service_event in the output MUST satisfy ALL of the following tests:
-    1. RAW EXCERPT TEST: raw_log_excerpt must be copied verbatim from a line
-       in the === LOG DATA === block. If you cannot find the exact line, the
-       event does not exist and must not be generated.
-    2. TIMESTAMP TEST: every timestamp must come directly from the log line
-       cited in raw_log_excerpt. Never invent, estimate, or interpolate a
-       timestamp. If the log line has no timestamp, use null.
-    3. SERVICE/HOST TEST: service name and host must appear in the cited log
-       line. Do not infer service names from general knowledge if they are
-       not present in the log text.
-    4. ROOT CAUSE TEST: root_cause.evidence must be a verbatim excerpt from
-       the cited log line. root_cause.category must be derived only from what
-       the log line shows — not from what that service could theoretically do.
 
-  REJECTION RULE: If any service_event fails any of the four tests above,
-  DROP that event entirely. An empty service_events array is correct and
-  acceptable when the log data contains no qualifying entries. Never pad.
+  1. RAW EXCERPT TEST
+     raw_log_excerpt must be copied verbatim from a line in the === LOG DATA ===
+     block. If you cannot locate the exact line, the event does not exist.
+
+  2. TIMESTAMP TEST
+     Every timestamp must come from the log line cited in raw_log_excerpt.
+     RFC 3164 syslog lines (e.g. "Mar  8 14:29:59 host app: msg") do NOT contain
+     a year. When the year is absent, derive it from the analysis window dates in
+     the user message — do NOT invent a year from training data. Use null if
+     the year cannot be determined.
+
+  3. SERVICE/HOST TEST
+     service name and host must appear in the cited log line. Acceptable sources:
+     the app_name field (e.g. "systemd", "udapi-server"), the hostname field, or
+     an explicit device identifier. Do not infer from general knowledge alone.
+
+  4. ROOT CAUSE TEST
+     root_cause.evidence must be a verbatim excerpt from the cited log line.
+     root_cause.category must reflect only what the log line shows:
+       • "Got notification message from PID X, but reception only permitted for
+         main PID Y" → category: config_error (wrong Type=notify setup), NOT crash
+       • A socket connection failure → dependency_failure
+       • OOM/earlyoom message → resource_exhaustion
+       • Service start/stop → not necessarily a failure
+
+  REJECTION RULE: If any service_event fails any test above, DROP it entirely.
+  An empty service_events array is correct when no qualifying log lines exist.
 </grounding_rules>
 
 <behavioral_rules>
@@ -1285,13 +1319,18 @@ async def analyze_logs(
         "STEP 4 — Analyze the log data below and produce the JSON report.\n"
     ) if (history_block and use_kb) else ""
 
+    window_year = datetime.now(timezone.utc).year
     grounding_reminder = (
+        f"ANALYSIS WINDOW: {hours}h ending now. Current year: {window_year}.\n"
+        f"Use {window_year} as the year for any RFC 3164 log lines that lack a year field.\n"
         "GROUNDING ENFORCEMENT: Every event you generate must be directly traceable to a\n"
         "specific line in the === LOG DATA === block below. Before including any event:\n"
         "  • Can you copy raw_log_excerpt verbatim from a line in the log data? If NO → drop it.\n"
         "  • Does the timestamp come from that same log line? If NO → drop it.\n"
-        "  • Do all IPs, hostnames, and identifiers appear in that log line? If NO → drop them.\n"
+        "  • Do ALL IPs in iocs[] appear verbatim in that log line? If NO → remove them.\n"
+        "  • If the log line has no IP address, iocs[] must be empty.\n"
         "  • Is the impact derived only from what that log line actually shows? If NO → revise it.\n"
+        "  • Is each MITRE technique a correct match verified against known ATT&CK IDs? If NO → remove it.\n"
         "An empty events array is correct when no qualifying log lines exist. Do not fabricate.\n"
     )
 
