@@ -247,8 +247,9 @@ class UniFiClient:
             f"/v2/api/site/{self.site}/app-traffic-rate",
         ]:
             try:
-                # v2 endpoints require session cookie auth; API key falls back automatically
-                data = await self._request("POST", path, params=v2_params,
+                # v2 endpoint requires an empty JSON body ({}) + query params
+                # API key may be rejected; session cookie auth fallback handled automatically
+                data = await self._request("POST", path, json={}, params=v2_params,
                                            allow_session_fallback=True)
                 rows = data.get("data", data if isinstance(data, list) else [])
                 if rows:
