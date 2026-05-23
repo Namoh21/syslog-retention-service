@@ -1472,7 +1472,17 @@ async function ai() {
             </button>
           </div>
         </div>
-        <p class="help-tip" id="ai-timing-tip">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review all log entries in the selected window (no entry cap). Defaults to 1 hour — use a shorter window for faster results on a Pi.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
+        <div style="margin-top:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+          <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
+            <input type="checkbox" id="ai-include-config" ${serviceInfo?.unifi_enabled?'checked':''} />
+            <span>&#x1F4F6; Include live UniFi config</span>
+          </label>
+          <div style="font-size:11px;color:var(--muted);line-height:1.5;flex:1;min-width:200px">
+            Fetches firewall rules, port forwards, VLANs, IPS settings, and device inventory from your UDM Pro and gives the AI agent the full network picture — enabling specific, rule-referenced recommendations.
+            ${serviceInfo?.unifi_enabled ? '' : '<br><span style="color:#e67e22">⚠ UniFi API not configured — set it up in Service Settings first.</span>'}
+          </div>
+        </div>
+        <p class="help-tip" id="ai-timing-tip" style="margin-top:8px">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review all log entries in the selected window (no entry cap). Defaults to 1 hour — use a shorter window for faster results on a Pi.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
         <p class="help-tip" style="margin-top:4px">&#x26A0;&#xFE0F; ${serviceInfo?.ai_provider==='local' ? 'Log data is sent to your local LLM — it stays on your network.' : "Log data (IPs, hostnames, usernames) is sent to Anthropic's API. You will be asked to confirm before the first analysis."}</p>
       </div>
       <div id="ai-progress" style="display:none" class="alert alert-info">
@@ -1911,12 +1921,13 @@ async function runAnalysis() {
   const agent = document.getElementById('ai-agent').value || 'siem_cti';
   localStorage.setItem('ai_last_agent', agent);
   const hours = parseFloat(document.getElementById('ai-hours').value);
+  const includeConfig = document.getElementById('ai-include-config')?.checked || false;
 
   let startResp;
   try {
     startResp = await apiFetch('/api/ai/analyze', {
       method: 'POST',
-      body: JSON.stringify({ hours, agent }),
+      body: JSON.stringify({ hours, agent, include_unifi_config: includeConfig }),
     });
   } catch(e) {
     document.getElementById('ai-output').innerHTML = `<div class="alert alert-warn">Failed to start analysis: ${e.message}</div>`;
@@ -2676,7 +2687,7 @@ function _renderSiemCti(d, out) {
     <div class="ai-banner ai-banner-${tl}">
       <div class="ai-banner-icon">${tlIcon}</div>
       <div class="ai-banner-body">
-        <div class="ai-banner-level">SIEM-CTI · Threat Level</div>
+        <div class="ai-banner-level">SIEM-CTI · Threat Level${d.unifi_config_used?' · <span style="color:#3fb950;font-size:10px">&#x1F4F6; UniFi config included</span>':''}</div>
         <div class="ai-banner-title">${tlLabel}</div>
         <div class="ai-banner-meta">${metaStr}</div>
       </div>
@@ -2889,7 +2900,7 @@ function _renderNre(d, out) {
     <div class="ai-banner ai-banner-${tl}">
       <div class="ai-banner-icon">${healthIcon}</div>
       <div class="ai-banner-body">
-        <div class="ai-banner-level">NRE-OPS · Network Health</div>
+        <div class="ai-banner-level">NRE-OPS · Network Health${d.unifi_config_used?' · <span style="color:#3fb950;font-size:10px">&#x1F4F6; UniFi config included</span>':''}</div>
         <div class="ai-banner-title">${healthLabel}</div>
         <div class="ai-banner-meta">${metaStr}</div>
       </div>

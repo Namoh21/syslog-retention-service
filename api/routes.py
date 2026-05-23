@@ -158,6 +158,7 @@ class AiAnalyzeBody(BaseModel):
     hours: float = 1.0
     focus: str = "security threats and anomalies"
     agent: str = "siem_cti"
+    include_unifi_config: bool = False
 
     @field_validator("focus")
     @classmethod
@@ -431,7 +432,10 @@ async def ai_analyze(
 
     async def _run():
         try:
-            result = await analyze_logs(entries, agent=body.agent, focus=body.focus, hours=body.hours)
+            result = await analyze_logs(
+                entries, agent=body.agent, focus=body.focus, hours=body.hours,
+                include_unifi_config=body.include_unifi_config,
+            )
             _analysis_jobs[job_id]["status"] = "done"
             _analysis_jobs[job_id]["result"] = result
         except asyncio.CancelledError:
@@ -1766,6 +1770,16 @@ async def unifi_sites(_: User = Depends(get_current_user)):
         return await client.get_sites()
     except Exception as exc:
         return []
+
+
+@router.get("/unifi/config", tags=["unifi"])
+async def unifi_config_snapshot(_: User = Depends(get_current_user)):
+    """Return full UniFi configuration snapshot (firewall rules, port forwards, VLANs, IPS, devices)."""
+    from unifi_poller import fetch_config_snapshot
+    try:
+        return await fetch_config_snapshot()
+    except Exception as exc:
+        return {"error": str(exc)}
 
 
 @router.get("/unifi/debug", tags=["unifi"])

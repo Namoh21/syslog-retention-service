@@ -155,6 +155,70 @@ class UniFiClient:
                 logger.debug("sites %s failed: %s", path, exc)
         return []
 
+    async def get_config_snapshot(self, site: str = "") -> dict:
+        """
+        Fetch key configuration items from the controller.
+        Returns a dict with firewall_rules, port_forwards, networks,
+        ips_settings, devices_summary, traffic_rules, firewall_groups.
+        Skips any section that fails rather than aborting entirely.
+        """
+        s = site or self.site
+
+        async def _safe(path: str) -> list:
+            for p in [f"/proxy/network/api/s/{s}/{path}",
+                      f"/api/s/{s}/{path}"]:
+                try:
+                    d = await self._request("GET", p)
+                    return d.get("data", [])
+                except Exception:
+                    pass
+            return []
+
+        async def _safe_setting(subsystem: str) -> dict:
+            for p in [f"/proxy/network/api/s/{s}/get/setting/{subsystem}",
+                      f"/api/s/{s}/get/setting/{subsystem}"]:
+                try:
+                    d = await self._request("GET", p)
+                    rows = d.get("data", [])
+                    return rows[0] if rows else {}
+                except Exception:
+                    pass
+            return {}
+
+        import asyncio as _aio
+        (fw_rules, fw_groups, port_fwd, networks,
+         wlans, traffic_rules, devices, routing) = await _aio.gather(
+            _safe("rest/firewallrule"),
+            _safe("rest/firewallgroup"),
+            _safe("rest/portforward"),
+            _safe("rest/networkconf"),
+            _safe("rest/wlanconf"),
+            _safe("rest/trafficrule"),
+            _safe("stat/device"),
+            _safe("rest/routing"),
+            return_exceptions=False,
+        )
+        ips = await _safe_setting("ips")
+
+        # Summarise devices (keep small)
+        devices_summary = [
+            {k: d.get(k) for k in ("name", "model", "type", "ip", "version",
+                                    "uptime", "state") if d.get(k)}
+            for d in devices[:20]
+        ]
+
+        return {
+            "firewall_rules":  fw_rules,
+            "firewall_groups": fw_groups,
+            "port_forwards":   port_fwd,
+            "networks":        networks,
+            "wifi_networks":   wlans,
+            "traffic_rules":   traffic_rules,
+            "devices":         devices_summary,
+            "static_routes":   routing,
+            "ips_settings":    ips,
+        }
+
     async def get_dpi_stats(self) -> list[dict]:
         """Per-client DPI breakdown: app name, category, traffic bytes."""
         for path in [
@@ -310,6 +374,20 @@ async def run_unifi_poller():
 
 
 # ── On-demand operations ──────────────────────────────────────────────────────
+
+async def fetch_config_snapshot() -> dict:
+    """Fetch UniFi config for injection into AI analysis context."""
+    url, api_key, username, password, site = _load_credentials()
+    if not url:
+        return {}
+    try:
+        client = UniFiClient(url, api_key=api_key, username=username,
+                             password=password, site=site)
+        return await client.get_config_snapshot(site)
+    except Exception as exc:
+        logger.warning("Config snapshot failed: %s", exc)
+        return {}
+
 
 def get_stats() -> dict:
     return dict(_stats)

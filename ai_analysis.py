@@ -820,6 +820,132 @@ def _build_history_context(db) -> str:
     return "\n".join(lines) + "\n" if has_content else ""
 
 
+async def _build_unifi_config_context() -> str:
+    """
+    Fetch live UniFi configuration and format it as a structured context block
+    the AI can reference when making recommendations.
+    """
+    try:
+        from unifi_poller import fetch_config_snapshot
+        cfg = await fetch_config_snapshot()
+        if not cfg:
+            return ""
+    except Exception as exc:
+        logger.warning("UniFi config context failed: %s", exc)
+        return ""
+
+    lines = ["=== UNIFI NETWORK CONFIGURATION (live, read from API) ===",
+             "Use this to make specific, rule-referenced recommendations.",
+             "When recommending changes, name the exact rule, VLAN, or setting.",
+             ""]
+
+    # ── Firewall rules ────────────────────────────────────────────────────────
+    fw = cfg.get("firewall_rules", [])
+    if fw:
+        lines.append("FIREWALL RULES:")
+        for r in fw:
+            enabled = "" if r.get("enabled", True) else " [DISABLED]"
+            action  = r.get("action", "?").upper()
+            name    = r.get("name", "unnamed")
+            ruleset = r.get("ruleset", "")
+            idx     = r.get("rule_index", "")
+            src     = r.get("src_firewallgroup_ids") or r.get("src_address", "any")
+            dst     = r.get("dst_firewallgroup_ids") or r.get("dst_address", "any")
+            proto   = r.get("protocol", "all")
+            dst_port = r.get("dst_port", "")
+            port_str = f" dport:{dst_port}" if dst_port else ""
+            lines.append(f"  [{action}]{enabled} {ruleset} #{idx} \"{name}\" "
+                         f"src={src} dst={dst} proto={proto}{port_str}")
+        lines.append("")
+
+    # ── Firewall groups ───────────────────────────────────────────────────────
+    groups = cfg.get("firewall_groups", [])
+    if groups:
+        lines.append("FIREWALL GROUPS (IP/port sets referenced by rules):")
+        for g in groups:
+            members = g.get("group_members", [])
+            gtype   = g.get("group_type", "")
+            lines.append(f"  \"{g.get('name','')}\" [{gtype}]: "
+                         f"{', '.join(str(m) for m in members[:8])}"
+                         f"{'…' if len(members) > 8 else ''}")
+        lines.append("")
+
+    # ── Port forwards ─────────────────────────────────────────────────────────
+    pf = cfg.get("port_forwards", [])
+    if pf:
+        lines.append("PORT FORWARDS (internet-exposed services — HIGH SECURITY RELEVANCE):")
+        for r in pf:
+            enabled   = "" if r.get("enabled", True) else " [DISABLED]"
+            name      = r.get("name", "unnamed")
+            proto     = r.get("proto", "tcp")
+            dst_port  = r.get("dst_port", "?")
+            fwd_ip    = r.get("fwd", "?")
+            fwd_port  = r.get("fwd_port", dst_port)
+            src_filter = r.get("src", "any")
+            lines.append(f"  {proto.upper()}/{dst_port} → {fwd_ip}:{fwd_port}{enabled} "
+                         f"\"{name}\" (src filter: {src_filter})")
+        lines.append("")
+
+    # ── Networks / VLANs ──────────────────────────────────────────────────────
+    nets = cfg.get("networks", [])
+    if nets:
+        lines.append("NETWORKS / VLANs:")
+        for n in nets:
+            purpose  = n.get("purpose", "")
+            name     = n.get("name", "")
+            subnet   = n.get("ip_subnet", "")
+            vlan_id  = n.get("vlan", "")
+            dhcp     = "DHCP" if n.get("dhcpd_enabled") else "no-DHCP"
+            vlan_str = f" VLAN{vlan_id}" if vlan_id else ""
+            lines.append(f"  \"{name}\"{vlan_str} {subnet} [{purpose}] {dhcp}")
+        lines.append("")
+
+    # ── WiFi ──────────────────────────────────────────────────────────────────
+    wlans = cfg.get("wifi_networks", [])
+    if wlans:
+        lines.append("WIFI NETWORKS:")
+        for w in wlans:
+            security = w.get("security", "open")
+            vlan     = w.get("vlan_id", "default")
+            enabled  = "" if w.get("enabled", True) else " [DISABLED]"
+            lines.append(f"  SSID \"{w.get('name','')}\" security={security} "
+                         f"vlan={vlan}{enabled}")
+        lines.append("")
+
+    # ── IPS settings ─────────────────────────────────────────────────────────
+    ips = cfg.get("ips_settings", {})
+    if ips:
+        lines.append("IPS / THREAT DETECTION SETTINGS:")
+        lines.append(f"  Enabled: {ips.get('enabled', False)}")
+        lines.append(f"  Mode: {ips.get('ips_mode', 'unknown')}")
+        cats = ips.get("suppression", {}).get("categories", [])
+        if cats:
+            lines.append(f"  Suppressed categories: {', '.join(str(c) for c in cats)}")
+        lines.append("")
+
+    # ── Devices ───────────────────────────────────────────────────────────────
+    devs = cfg.get("devices", [])
+    if devs:
+        lines.append("MANAGED DEVICES:")
+        for d in devs:
+            lines.append(f"  {d.get('type','?')} \"{d.get('name','?')}\" "
+                         f"ip={d.get('ip','?')} model={d.get('model','?')} "
+                         f"fw={d.get('version','?')}")
+        lines.append("")
+
+    # ── Static routes ─────────────────────────────────────────────────────────
+    routes = cfg.get("static_routes", [])
+    if routes:
+        lines.append("STATIC ROUTES:")
+        for r in routes:
+            lines.append(f"  {r.get('network','')} via {r.get('nexthop','')} "
+                         f"[\"{r.get('name','')}\"]")
+        lines.append("")
+
+    lines.append("=== END UNIFI CONFIGURATION ===\n")
+    return "\n".join(lines)
+
+
 def _build_netflow_context(db, hours: float) -> str:
     """Summarise recent NetFlow data to prepend to the log analysis."""
     try:
@@ -1277,6 +1403,7 @@ async def analyze_logs(
     agent: str = "siem_cti",
     focus: str = "security",
     hours: float = 24,
+    include_unifi_config: bool = False,
     db=None,
 ) -> dict[str, Any]:
     import json as _json
@@ -1307,6 +1434,16 @@ async def analyze_logs(
     if netflow:
         log_text = netflow + "\n\n" + log_text
 
+    # Optionally prepend live UniFi configuration for config-aware analysis
+    unifi_cfg_block = ""
+    if include_unifi_config:
+        try:
+            unifi_cfg_block = await _build_unifi_config_context()
+            if unifi_cfg_block:
+                logger.info("UniFi config context included (%d chars)", len(unifi_cfg_block))
+        except Exception as exc:
+            logger.warning("Could not fetch UniFi config context: %s", exc)
+
     focus_safe = (focus or "security threats and anomalies")[:200]
 
     memory_instruction = (
@@ -1334,9 +1471,23 @@ async def analyze_logs(
         "An empty events array is correct when no qualifying log lines exist. Do not fabricate.\n"
     )
 
+    config_instruction = (
+        "UNIFI CONFIGURATION CONTEXT: The section above contains the live UniFi network "
+        "configuration fetched directly from the controller API. When making recommendations:\n"
+        "  • Reference specific rule names, VLAN names, and settings by their exact names\n"
+        "  • Identify rules that should exist but are missing\n"
+        "  • Flag port forwards that are unnecessary or misconfigured\n"
+        "  • Cross-reference log events against the firewall rules that should have caught them\n"
+        "  • Check IPS settings against observed threat categories in the logs\n"
+        "  • For each recommendation, state the exact config change needed (rule name, action, "
+        "source/destination group) so the analyst can implement it directly in the UniFi UI\n"
+    ) if unifi_cfg_block else ""
+
     user_message = (
         f"{history_block}"
         f"{memory_instruction}"
+        f"{unifi_cfg_block}"
+        f"{config_instruction}"
         f"{grounding_reminder}"
         f"\nAnalyze the following {len(entries)} syslog entries from the last {hours}h. "
         f"Focus on: {focus_safe}.\n\n"
@@ -1390,9 +1541,10 @@ async def analyze_logs(
         "analyzed_at":   datetime.now(timezone.utc).isoformat(),
         "model":         model,
         "hours_covered": hours,
-        "provider":      ai_provider,
-        "agent":         agent,
-        "agent_label":   agent_cfg["label"],
+        "provider":             ai_provider,
+        "agent":               agent,
+        "agent_label":         agent_cfg["label"],
+        "unifi_config_used":   bool(unifi_cfg_block),
     }
 
     try:
