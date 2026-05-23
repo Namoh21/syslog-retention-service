@@ -129,6 +129,7 @@ class UniFiClient:
 
     async def get_system_info(self) -> dict:
         """Controller version info — used to verify connectivity."""
+        last_exc: Exception = RuntimeError("No sysinfo path succeeded")
         for path in [
             "/proxy/network/api/s/default/stat/sysinfo",
             "/api/s/default/stat/sysinfo",
@@ -140,7 +141,7 @@ class UniFiClient:
             except Exception as exc:
                 last_exc = exc
                 logger.debug("sysinfo %s failed: %s", path, exc)
-        raise last_exc  # type: ignore[possibly-unbound]
+        raise last_exc
 
     async def get_sites(self) -> list[dict]:
         """List all sites: [{"name": "default", "desc": "Home"}, ...]"""
@@ -311,13 +312,32 @@ def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
 def _load_credentials() -> tuple[str, str, str, str, str]:
     """Returns (url, api_key, username, password, site) from DB settings."""
     from database import get_service_setting, decrypt_value
-    url      = get_service_setting("unifi_url") or ""
-    api_key  = get_service_setting("unifi_api_key") or ""
-    username = get_service_setting("unifi_username") or ""
-    enc_pass = get_service_setting("unifi_password") or ""
-    password = decrypt_value(enc_pass) if enc_pass else ""
-    site     = get_service_setting("unifi_site") or "default"
+    url         = get_service_setting("unifi_url") or ""
+    enc_api_key = get_service_setting("unifi_api_key") or ""
+    api_key     = decrypt_value(enc_api_key) if enc_api_key else ""
+    username    = get_service_setting("unifi_username") or ""
+    enc_pass    = get_service_setting("unifi_password") or ""
+    password    = decrypt_value(enc_pass) if enc_pass else ""
+    site        = get_service_setting("unifi_site") or "default"
     return url, api_key, username, password, site
+
+
+# ── In-process config cache (avoids hammering UDM on every page load) ─────────
+_config_cache: dict = {"data": None, "ts": 0.0}
+_CONFIG_CACHE_TTL = 60   # seconds — stale after 1 minute
+
+
+def _cache_get() -> dict | None:
+    import time
+    if _config_cache["data"] and (time.monotonic() - _config_cache["ts"]) < _CONFIG_CACHE_TTL:
+        return _config_cache["data"]
+    return None
+
+
+def _cache_set(data: dict) -> None:
+    import time
+    _config_cache["data"] = data
+    _config_cache["ts"]   = time.monotonic()
 
 
 # ── Poll loop ─────────────────────────────────────────────────────────────────
@@ -344,9 +364,11 @@ async def _poll_once(url="", api_key="", username="", password="",
 
 
 async def run_unifi_poller():
-    """Background task — polls on configured interval when enabled."""
+    """Background task — polls on configured interval when enabled.
+    DPI: every poll cycle.  Config snapshot: every 6th cycle (~30 min at default)."""
     from database import get_service_setting
     logger.info("UniFi poller started")
+    _snapshot_counter = 0
     while True:
         try:
             interval = int(get_service_setting("unifi_poll_interval") or 300)
@@ -373,25 +395,36 @@ async def run_unifi_poller():
                           last_poll=datetime.now(timezone.utc).isoformat())
             logger.warning("UniFi poll failed: %s", exc)
 
-        try:
-            diff_result = await snapshot_and_diff()
-            if diff_result.get("has_changes"):
-                logger.info("UniFi config changes detected: %d items", len(diff_result["changes"]))
-        except Exception as exc:
-            logger.warning("UniFi snapshot_and_diff failed: %s", exc)
+        # Config snapshot runs every 6th DPI cycle to avoid hammering the UDM API
+        _snapshot_counter += 1
+        if _snapshot_counter >= 6:
+            _snapshot_counter = 0
+            try:
+                diff_result = await snapshot_and_diff()
+                if diff_result.get("has_changes"):
+                    logger.info("UniFi config changes detected: %d items",
+                                len(diff_result.get("changes", [])))
+            except Exception as exc:
+                logger.warning("UniFi snapshot_and_diff failed: %s", exc)
 
 
 # ── On-demand operations ──────────────────────────────────────────────────────
 
-async def fetch_config_snapshot() -> dict:
-    """Fetch UniFi config for injection into AI analysis context."""
+async def fetch_config_snapshot(use_cache: bool = True) -> dict:
+    """Fetch UniFi config. Returns cached result if fresh (< 60s), otherwise live."""
+    if use_cache:
+        cached = _cache_get()
+        if cached is not None:
+            return cached
     url, api_key, username, password, site = _load_credentials()
     if not url:
         return {}
     try:
         client = UniFiClient(url, api_key=api_key, username=username,
                              password=password, site=site)
-        return await client.get_config_snapshot(site)
+        data = await client.get_config_snapshot(site)
+        _cache_set(data)
+        return data
     except Exception as exc:
         logger.warning("Config snapshot failed: %s", exc)
         return {}
@@ -404,7 +437,8 @@ async def snapshot_and_diff() -> dict:
     """
     from database import SessionLocal, UnifiConfigSnapshot, UnifiConfigChange
 
-    config = await fetch_config_snapshot()
+    # Bypass cache — snapshot_and_diff always needs fresh data for accurate diffs
+    config = await fetch_config_snapshot(use_cache=False)
     if not config:
         return {"snapshot_id": None, "changes": [], "has_changes": False, "error": "fetch returned empty"}
 

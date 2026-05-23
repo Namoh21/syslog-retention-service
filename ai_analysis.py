@@ -822,16 +822,39 @@ def _build_history_context(db) -> str:
 
 async def _build_unifi_config_context() -> str:
     """
-    Fetch live UniFi configuration and format it as a structured context block
-    the AI can reference when making recommendations.
+    Build UniFi config context block for AI analysis.
+    Uses the most recent DB snapshot (< 10 min) to avoid live API calls on every
+    analysis run. Falls back to live fetch if no recent snapshot exists.
     """
+    import json as _json
+    cfg: dict = {}
     try:
-        from unifi_poller import fetch_config_snapshot
-        cfg = await fetch_config_snapshot()
-        if not cfg:
+        from database import UnifiConfigSnapshot, SessionLocal
+        db = SessionLocal()
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+            row = (db.query(UnifiConfigSnapshot)
+                   .filter(UnifiConfigSnapshot.taken_at >= cutoff)
+                   .order_by(UnifiConfigSnapshot.taken_at.desc())
+                   .first())
+            if row:
+                cfg = _json.loads(row.config_json)
+                logger.info("UniFi config context: using DB snapshot from %s", row.taken_at)
+        finally:
+            db.close()
+    except Exception:
+        pass
+
+    if not cfg:
+        try:
+            from unifi_poller import fetch_config_snapshot
+            cfg = await fetch_config_snapshot()
+            logger.info("UniFi config context: fetched live from API")
+        except Exception as exc:
+            logger.warning("UniFi config context failed: %s", exc)
             return ""
-    except Exception as exc:
-        logger.warning("UniFi config context failed: %s", exc)
+
+    if not cfg:
         return ""
 
     lines = ["=== UNIFI NETWORK CONFIGURATION (live, read from API) ===",

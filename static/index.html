@@ -1477,12 +1477,12 @@ async function ai() {
         </div>
         <div style="margin-top:10px;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
           <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px">
-            <input type="checkbox" id="ai-include-config" ${serviceInfo?.unifi_enabled?'checked':''} />
+            <input type="checkbox" id="ai-include-config" ${serviceInfo?.unifi_configured?'checked':''} />
             <span>&#x1F4F6; Include live UniFi config</span>
           </label>
           <div style="font-size:11px;color:var(--muted);line-height:1.5;flex:1;min-width:200px">
             Fetches firewall rules, port forwards, VLANs, IPS settings, and device inventory from your UDM Pro and gives the AI agent the full network picture — enabling specific, rule-referenced recommendations.
-            ${serviceInfo?.unifi_enabled ? '' : '<br><span style="color:#e67e22">⚠ UniFi API not configured — set it up in Service Settings first.</span>'}
+            ${serviceInfo?.unifi_configured ? '' : '<br><span style="color:#e67e22">⚠ UniFi API not configured — set it up in Service Settings first.</span>'}
           </div>
         </div>
         <p class="help-tip" id="ai-timing-tip" style="margin-top:8px">${serviceInfo?.ai_provider==='local' ? 'Your local LLM will review all log entries in the selected window (no entry cap). Defaults to 1 hour — use a shorter window for faster results on a Pi.' : 'Claude will review recent log entries from the selected window. Analysis typically takes 10–30 seconds.'}</p>
@@ -3138,7 +3138,7 @@ async function purgeNow() {
   msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Purging...</div>';
   try {
     const d = await apiFetch('/api/admin/purge',{method:'POST'});
-    msg.innerHTML=`<div class="alert alert-ok">${d.message}</div>`;
+    msg.innerHTML=`<div class="alert alert-ok">${esc(d.message||"")}</div>`;
   } catch(e) { msg.innerHTML=`<div class="alert alert-warn">${e.message}</div>`; }
 }
 
@@ -3820,7 +3820,7 @@ async function testApiKey() {
   msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Testing connection to Anthropic...</div>';
   try {
     const d = await apiFetch('/api/admin/settings/test-anthropic-key', { method:'POST' });
-    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${d.message}</div>`;
+    msg.innerHTML = `<div class="alert alert-ok">&#x2705; ${esc(d.message||'')}</div>`;
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">&#x274C; ${e.message}</div>`; }
 }
 
@@ -5202,7 +5202,7 @@ async function sendTestDigest() {
   msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span>Generating and sending digest...</div>';
   try {
     const d = await apiFetch('/api/admin/digest/send', { method:'POST' });
-    msg.innerHTML = `<div class="alert alert-ok">Digest sent! Threat level: ${d.threat_level}, ${d.log_count} entries analyzed.</div>`;
+    msg.innerHTML = `<div class="alert alert-ok">Digest sent! Threat level: ${esc(d.threat_level||'')}, ${Number(d.log_count||0).toLocaleString()} entries analyzed.</div>`;
   } catch(e) { msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
 }
 

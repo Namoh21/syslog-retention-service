@@ -998,6 +998,18 @@ def purge_old_entries(db: Session) -> int:
     days = policy.retention_days if policy else settings.retention_days
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     deleted = db.query(SyslogEntry).filter(SyslogEntry.received_at < cutoff).delete()
+
+    # Prune UniFi config snapshots — keep only 7 days; full snapshot JSON can be large
+    snap_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    db.query(UnifiConfigSnapshot).filter(UnifiConfigSnapshot.taken_at < snap_cutoff).delete()
+
+    # Prune individual config change records — keep 30 days for audit trail
+    change_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    db.query(UnifiConfigChange).filter(UnifiConfigChange.detected_at < change_cutoff).delete()
+
+    # Prune DPI records — keep same window as syslog
+    db.query(DpiRecord).filter(DpiRecord.polled_at < cutoff).delete()
+
     db.commit()
     return deleted
 

@@ -713,7 +713,7 @@ async def create_agent(body: dict, db: Session = Depends(get_db), _: User = Depe
     if existing:
         existing.label = str(body.get("label", existing.label))[:128]
         existing.description = body.get("description")
-        existing.system_prompt = str(body.get("system_prompt", existing.system_prompt))
+        existing.system_prompt = str(body.get("system_prompt", existing.system_prompt))[:32_768]
         existing.use_kb_history = bool(body.get("use_kb_history", existing.use_kb_history))
         existing.schema_type = str(body.get("schema_type", existing.schema_type))[:32]
         existing.updated_at = now
@@ -723,7 +723,7 @@ async def create_agent(body: dict, db: Session = Depends(get_db), _: User = Depe
         key=key,
         label=str(body.get("label", "Custom Agent"))[:128],
         description=body.get("description"),
-        system_prompt=str(body.get("system_prompt", "")),
+        system_prompt=str(body.get("system_prompt", ""))[:32_768],
         use_kb_history=bool(body.get("use_kb_history", True)),
         schema_type=str(body.get("schema_type", "auto"))[:32],
         created_at=now, updated_at=now,
@@ -1185,8 +1185,10 @@ async def service_info(_: User = Depends(get_current_user)):
         "netflow_port":    settings.netflow_port,
         "claude_model": get_service_setting("claude_model") or settings.claude_model,
         "active_model": active_model,
-        "ai_enabled": ai_enabled,
-        "ai_provider": ai_provider,
+        "ai_enabled":     ai_enabled,
+        "ai_provider":    ai_provider,
+        "unifi_enabled":  (get_service_setting("unifi_enabled") or "false").lower() == "true",
+        "unifi_configured": bool(get_service_setting("unifi_url")),
     }
 
 
@@ -1745,14 +1747,16 @@ async def unifi_save_settings(
     from database import set_service_setting, encrypt_value
     from fastapi import Request
     changed = []
-    for key in ("unifi_enabled", "unifi_url", "unifi_api_key", "unifi_username",
+    for key in ("unifi_enabled", "unifi_url", "unifi_username",
                 "unifi_site", "unifi_poll_interval"):
         if key in body:
             set_service_setting(key, str(body[key]), db)
             changed.append(key)
-    if "unifi_password" in body and body["unifi_password"]:
-        set_service_setting("unifi_password", encrypt_value(str(body["unifi_password"])), db)
-        changed.append("unifi_password")
+    # Sensitive credentials are encrypted at rest
+    for key in ("unifi_api_key", "unifi_password"):
+        if key in body and body[key]:
+            set_service_setting(key, encrypt_value(str(body[key])), db)
+            changed.append(key)
     db.commit()
     return {"message": f"UniFi settings saved: {', '.join(changed)}"}
 
@@ -1769,6 +1773,7 @@ async def unifi_sites(_: User = Depends(get_current_user)):
                              password=password, site=site)
         return await client.get_sites()
     except Exception as exc:
+        logger.warning("unifi_sites: %s", exc)
         return []
 
 
@@ -1782,13 +1787,22 @@ async def unifi_config_snapshot(_: User = Depends(get_current_user)):
         return {"error": str(exc)}
 
 
+_UNIFI_DEBUG_ALLOWED_PREFIXES = (
+    "/proxy/network/api/",
+    "/api/s/",
+    "/api/self/",
+)
+
 @router.get("/unifi/debug", tags=["unifi"])
 async def unifi_debug(
     path: str = Query("/proxy/network/api/s/default/stat/dpi"),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_write),   # write-level only — not read-only API keys
 ):
-    """Return raw JSON from any UniFi API path — for diagnostics."""
+    """Return raw JSON from any allowed UniFi API path — for diagnostics."""
     from unifi_poller import UniFiClient, _load_credentials
+    from fastapi import HTTPException
+    if not any(path.startswith(p) for p in _UNIFI_DEBUG_ALLOWED_PREFIXES):
+        raise HTTPException(400, f"Path must start with one of: {_UNIFI_DEBUG_ALLOWED_PREFIXES}")
     url, api_key, username, password, site = _load_credentials()
     if not url:
         return {"error": "unifi_url not configured"}
