@@ -262,7 +262,7 @@ class UniFiClient:
                     return rows
                 logger.info("DPI v2 %s returned 200 but empty data, trying next", path)
             except Exception as exc:
-                logger.debug("DPI v2 %s failed: %s", path, exc)
+                logger.warning("DPI v2 %s failed: %s", path, exc)
 
         # Legacy v1 per-client DPI (UniFi Network App < 8 / older firmware)
         for path in [
