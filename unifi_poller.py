@@ -20,6 +20,7 @@ Settings (stored in service_settings DB table):
 """
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -372,6 +373,13 @@ async def run_unifi_poller():
                           last_poll=datetime.now(timezone.utc).isoformat())
             logger.warning("UniFi poll failed: %s", exc)
 
+        try:
+            diff_result = await snapshot_and_diff()
+            if diff_result.get("has_changes"):
+                logger.info("UniFi config changes detected: %d items", len(diff_result["changes"]))
+        except Exception as exc:
+            logger.warning("UniFi snapshot_and_diff failed: %s", exc)
+
 
 # ── On-demand operations ──────────────────────────────────────────────────────
 
@@ -387,6 +395,97 @@ async def fetch_config_snapshot() -> dict:
     except Exception as exc:
         logger.warning("Config snapshot failed: %s", exc)
         return {}
+
+
+async def snapshot_and_diff() -> dict:
+    """
+    Fetch a fresh UniFi config snapshot, diff it against the previous one,
+    store results in DB, and return a summary dict.
+    """
+    from database import SessionLocal, UnifiConfigSnapshot, UnifiConfigChange
+
+    config = await fetch_config_snapshot()
+    if not config:
+        return {"snapshot_id": None, "changes": [], "has_changes": False, "error": "fetch returned empty"}
+
+    db = SessionLocal()
+    try:
+        # Load previous snapshot
+        prev_row = db.query(UnifiConfigSnapshot).order_by(UnifiConfigSnapshot.taken_at.desc()).first()
+        prev_config = json.loads(prev_row.config_json) if prev_row else {}
+
+        # --- Section-by-section diff ---
+        SECTIONS = [
+            "firewall_rules", "firewall_groups", "port_forwards", "networks",
+            "wifi_networks", "traffic_rules", "devices", "static_routes",
+        ]
+
+        all_changes = []
+
+        def _key(item: dict) -> str:
+            return str(item.get("_id") or item.get("id") or item.get("name") or
+                       item.get("ssid") or item.get("hostname") or "")
+
+        for section in SECTIONS:
+            new_items = config.get(section, []) or []
+            old_items = prev_config.get(section, []) or []
+
+            # Only diff list sections
+            if not isinstance(new_items, list) or not isinstance(old_items, list):
+                continue
+
+            old_by_key = {_key(i): i for i in old_items if _key(i)}
+            new_by_key = {_key(i): i for i in new_items if _key(i)}
+
+            for k, item in new_by_key.items():
+                if k not in old_by_key:
+                    all_changes.append({
+                        "section": section, "change_type": "added",
+                        "item_name": k, "before": None, "after": item,
+                    })
+                elif item != old_by_key[k]:
+                    all_changes.append({
+                        "section": section, "change_type": "modified",
+                        "item_name": k, "before": old_by_key[k], "after": item,
+                    })
+            for k, item in old_by_key.items():
+                if k not in new_by_key:
+                    all_changes.append({
+                        "section": section, "change_type": "removed",
+                        "item_name": k, "before": item, "after": None,
+                    })
+
+        has_changes = len(all_changes) > 0
+
+        # Store snapshot
+        snap = UnifiConfigSnapshot(
+            config_json=json.dumps(config),
+            changes_json=json.dumps(all_changes) if all_changes else None,
+            has_changes=has_changes,
+        )
+        db.add(snap)
+        db.flush()  # get snap.id
+
+        # Store individual change rows
+        for ch in all_changes:
+            db.add(UnifiConfigChange(
+                section=ch["section"],
+                change_type=ch["change_type"],
+                item_name=ch["item_name"][:256] if ch["item_name"] else None,
+                before_json=json.dumps(ch["before"]) if ch["before"] is not None else None,
+                after_json=json.dumps(ch["after"]) if ch["after"] is not None else None,
+            ))
+
+        db.commit()
+        logger.info("UniFi snapshot stored (id=%d, changes=%d)", snap.id, len(all_changes))
+        return {"snapshot_id": snap.id, "changes": all_changes, "has_changes": has_changes}
+
+    except Exception as exc:
+        logger.error("snapshot_and_diff error: %s", exc)
+        db.rollback()
+        return {"snapshot_id": None, "changes": [], "has_changes": False, "error": str(exc)}
+    finally:
+        db.close()
 
 
 def get_stats() -> dict:

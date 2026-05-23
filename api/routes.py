@@ -1842,6 +1842,92 @@ async def unifi_dpi(
     ]
 
 
+# ===================== UniFi Change Detection =====================
+
+@router.get("/unifi/changes", tags=["unifi"])
+async def unifi_config_changes(
+    hours: int = Query(168, ge=1, le=8760),
+    limit: int = Query(50, ge=1, le=500),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Recent UniFi config changes detected by snapshot diffing."""
+    import json as _json
+    from database import UnifiConfigChange
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    changes = (
+        db.query(UnifiConfigChange)
+        .filter(UnifiConfigChange.detected_at >= since)
+        .order_by(UnifiConfigChange.detected_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id":          c.id,
+            "detected_at": c.detected_at,
+            "section":     c.section,
+            "change_type": c.change_type,
+            "item_name":   c.item_name,
+            "before":      _json.loads(c.before_json) if c.before_json else None,
+            "after":       _json.loads(c.after_json)  if c.after_json  else None,
+        }
+        for c in changes
+    ]
+
+
+@router.get("/unifi/snapshots", tags=["unifi"])
+async def unifi_config_snapshots(
+    limit: int = Query(10, ge=1, le=100),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Recent UniFi config snapshots with change counts."""
+    import json as _json
+    from database import UnifiConfigSnapshot
+    snaps = (
+        db.query(UnifiConfigSnapshot)
+        .order_by(UnifiConfigSnapshot.taken_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "id":           s.id,
+            "taken_at":     s.taken_at,
+            "has_changes":  s.has_changes,
+            "change_count": len(_json.loads(s.changes_json)) if s.changes_json else 0,
+        }
+        for s in snaps
+    ]
+
+
+@router.post("/ai/posture-review", tags=["ai"])
+async def ai_posture_review(
+    body: dict,
+    db: Session = Depends(get_db),
+    current: User = Depends(require_write),
+):
+    """Run an AI security posture review against the live UniFi config + recent high-severity logs."""
+    from ai_analysis import analyze_logs
+    from unifi_poller import fetch_config_snapshot
+
+    # Gather high-severity logs from the last 24 h
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+    entries, _ = query_logs(db, since=since, severity_max=3, limit=500)
+
+    agent = body.get("agent", "siem_cti") if body else "siem_cti"
+
+    result = await analyze_logs(
+        entries,
+        agent=agent,
+        focus="security posture and configuration hardening",
+        hours=24,
+        include_unifi_config=True,
+    )
+    return result
+
+
 # ===================== Investigation =====================
 
 @router.get("/investigation/{ip}", tags=["investigation"])

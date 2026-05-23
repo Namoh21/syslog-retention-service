@@ -322,6 +322,26 @@ class DpiRecord(Base):
     rx_bytes     = Column(Integer,     nullable=True, default=0)
 
 
+class UnifiConfigSnapshot(Base):
+    __tablename__ = "unifi_config_snapshots"
+    id           = Column(Integer, primary_key=True)
+    taken_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    config_json  = Column(Text, nullable=False)   # full JSON snapshot
+    changes_json = Column(Text, nullable=True)    # diff from previous snapshot (JSON)
+    has_changes  = Column(Boolean, default=False, index=True)
+
+
+class UnifiConfigChange(Base):
+    __tablename__ = "unifi_config_changes"
+    id          = Column(Integer, primary_key=True)
+    detected_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    section     = Column(String(64),  nullable=False)   # firewall_rules, port_forwards, etc.
+    change_type = Column(String(16),  nullable=False)   # added, removed, modified
+    item_name   = Column(String(256), nullable=True)
+    before_json = Column(Text, nullable=True)
+    after_json  = Column(Text, nullable=True)
+
+
 class CustomAgent(Base):
     __tablename__ = "custom_agents"
     id         = Column(Integer, primary_key=True)
@@ -516,6 +536,36 @@ def _migrate_dpi_tables():
             conn.commit()
 
 
+def _migrate_unifi_change_tables():
+    """Create unifi_config_snapshots and unifi_config_changes tables if they don't exist."""
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "unifi_config_snapshots" not in existing:
+            conn.execute(text("""
+                CREATE TABLE unifi_config_snapshots (
+                    id INTEGER PRIMARY KEY,
+                    taken_at DATETIME,
+                    config_json TEXT NOT NULL,
+                    changes_json TEXT,
+                    has_changes BOOLEAN DEFAULT 0
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_unifi_snapshots_taken_at ON unifi_config_snapshots(taken_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_unifi_snapshots_has_changes ON unifi_config_snapshots(has_changes)"))
+        if "unifi_config_changes" not in existing:
+            conn.execute(text("""
+                CREATE TABLE unifi_config_changes (
+                    id INTEGER PRIMARY KEY,
+                    detected_at DATETIME,
+                    section VARCHAR(64) NOT NULL,
+                    change_type VARCHAR(16) NOT NULL,
+                    item_name VARCHAR(256),
+                    before_json TEXT,
+                    after_json TEXT
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_unifi_changes_detected_at ON unifi_config_changes(detected_at)"))
+        conn.commit()
+
+
 def _migrate_agent_tables():
     with engine.connect() as conn:
         existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
@@ -592,6 +642,7 @@ def init_db():
     _migrate_ai_tables()
     _migrate_dpi_tables()
     _migrate_agent_tables()
+    _migrate_unifi_change_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

@@ -399,6 +399,7 @@
       <li><a onclick="showPage('rulehits')" data-page="rulehits" title="See which firewall rules are triggering most frequently"><span class="nav-icon">&#x1F6E1;</span> Rule Hits</a></li>
       <li><a onclick="showPage('trafficmatrix')" data-page="trafficmatrix" title="Visual map of connections between devices on your network"><span class="nav-icon">&#x1F5A7;</span> Traffic Matrix</a></li>
       <li><a onclick="showPage('netflow')" data-page="netflow" title="IP flow data from NetFlow v5/v9/IPFIX exporters (UDM Pro)"><span class="nav-icon">&#x1F4CA;</span> NetFlow</a></li>
+      <li><a onclick="showPage('unifiConfig')" data-page="unifiConfig" title="Live UniFi network configuration — firewall rules, VLANs, port forwards"><span class="nav-icon">&#x1F4F6;</span> Network Config</a></li>
       <li><a onclick="showPage('simulate')" data-page="simulate" title="Test a KQL rule against your logs before creating an alert"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
       <li><a onclick="showPage('policygaps')" data-page="policygaps" title="Find traffic that reaches your devices without being explicitly blocked"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
       <li><a onclick="showPage('alertrules')" data-page="alertrules" title="Configure automated alerts triggered by log patterns"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
@@ -614,6 +615,7 @@ function showPage(name) {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
     investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
     simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts',
+    unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
   };
@@ -624,6 +626,7 @@ function showPage(name) {
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
     dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules,
+    unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
   pages[name]?.();
@@ -5529,6 +5532,282 @@ document.addEventListener('mousedown', e => {
     _qbHideHist();
   }
 });
+
+// ── Network Config (UniFi) ───────────────────────────────────────────────────
+
+let _ucActiveTab = 'firewall';
+
+function ucShowTab(name) {
+  _ucActiveTab = name;
+  document.querySelectorAll('.uc-tab').forEach(t =>
+    t.classList.toggle('active', t.dataset.tab === name));
+  document.querySelectorAll('.uc-panel').forEach(p =>
+    p.style.display = p.dataset.panel === name ? '' : 'none');
+}
+
+async function unifiConfig() {
+  render(`<div class="page-header"><h1>&#x1F4F6; Network Config</h1></div><div class="card"><div class="spinner"></div> Loading UniFi configuration...</div>`);
+  const [cfgRes, changesRes] = await Promise.all([
+    apiFetch('/api/unifi/config').catch(e => ({error: String(e)})),
+    apiFetch('/api/unifi/changes?hours=168&limit=50').catch(() => []),
+  ]);
+  const cfg     = cfgRes;
+  const changes = Array.isArray(changesRes) ? changesRes : [];
+
+  const fw    = cfg.firewall_rules  || [];
+  const pf    = cfg.port_forwards   || [];
+  const nets  = cfg.networks        || [];
+  const wlans = cfg.wifi_networks   || [];
+  const ips   = cfg.ips_settings    || {};
+  const devs  = cfg.devices         || [];
+  const routes= cfg.static_routes   || [];
+
+  // ── Firewall rules table ──
+  function fwRow(r) {
+    const action = (r.action||'').toUpperCase();
+    const badge  = action === 'ACCEPT'  ? `<span style="background:#1a5c2e;color:#6ef09a;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">ALLOW</span>`
+                 : action === 'DROP' || action === 'REJECT' ? `<span style="background:#5c1a1a;color:#f06e6e;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700">BLOCK</span>`
+                 : `<span style="background:var(--border);color:var(--muted);border-radius:4px;padding:2px 7px;font-size:11px">${esc(action||'?')}</span>`;
+    const enabled = r.enabled !== false
+      ? `<span style="color:#6ef09a;font-size:12px">&#x25CF; on</span>`
+      : `<span style="color:var(--muted);font-size:12px">&#x25CB; off</span>`;
+    const src  = esc(r.src_address  || r.src_firewallgroup_id  || r.src_networkconf_id  || 'any');
+    const dst  = esc(r.dst_address  || r.dst_firewallgroup_id  || r.dst_networkconf_id  || 'any');
+    const proto= esc(r.protocol ? r.protocol.toUpperCase() : 'any');
+    const port = r.dst_port ? esc(String(r.dst_port)) : '';
+    const pp   = proto + (port ? ':'+port : '');
+    return `<tr>
+      <td>${badge}</td>
+      <td style="color:var(--muted);font-size:11px">${esc(r.ruleset||'')}</td>
+      <td style="color:var(--muted)">${r.rule_index ?? ''}</td>
+      <td>${esc(r.name||'')}</td>
+      <td><code>${src}</code></td>
+      <td><code>${dst}</code></td>
+      <td style="color:var(--muted);font-size:12px">${pp}</td>
+      <td>${enabled}</td>
+    </tr>`;
+  }
+
+  const fwHtml = fw.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No firewall rules found.</div>`
+    : `<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>Action</th><th>Ruleset</th><th>#</th><th>Name</th><th>Source</th><th>Destination</th><th>Proto/Port</th><th>Enabled</th>
+      </tr></thead><tbody>${fw.map(fwRow).join('')}</tbody></table></div>`;
+
+  // ── Port forwards table ──
+  function pfRow(r) {
+    const enabled = r.enabled !== false
+      ? `<span style="color:#6ef09a;font-size:12px">&#x25CF; on</span>`
+      : `<span style="color:var(--muted);font-size:12px">&#x25CB; off</span>`;
+    const fwd = esc((r.fwd||r.dest_ip||'?') + ':' + (r.fwd_port||r.dest_port||'?'));
+    return `<tr style="border-left:3px solid #e07b39">
+      <td style="color:var(--muted)">${esc((r.proto||r.protocol||'tcp').toUpperCase())}</td>
+      <td>${esc(String(r.dst_port||r.port||''))}</td>
+      <td><code>${fwd}</code></td>
+      <td>${esc(r.name||'')}</td>
+      <td style="color:var(--muted);font-size:11px"><code>${esc(r.src||r.src_filter||'any')}</code></td>
+      <td>${enabled}</td>
+    </tr>`;
+  }
+  const pfHtml = pf.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No port forwards configured.</div>`
+    : `<div style="color:#e07b39;font-size:12px;margin-bottom:8px">&#x26A0; Port forwards expose services to the internet. Review regularly.</div>
+       <div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>Protocol</th><th>Ext Port</th><th>Forward To</th><th>Name</th><th>Source Filter</th><th>Enabled</th>
+      </tr></thead><tbody>${pf.map(pfRow).join('')}</tbody></table></div>`;
+
+  // ── Networks / VLANs table ──
+  function netRow(n) {
+    const dhcp = n.dhcpd_enabled ? `<span style="color:#6ef09a;font-size:11px">DHCP on</span>` : `<span style="color:var(--muted);font-size:11px">static</span>`;
+    return `<tr>
+      <td>${esc(n.name||'')}</td>
+      <td style="font-weight:600">${n.vlan !== undefined ? esc(String(n.vlan)) : '—'}</td>
+      <td><code>${esc(n.ip_subnet||n.subnet||'')}</code></td>
+      <td style="color:var(--muted)">${esc(n.purpose||n.networkgroup||'')}</td>
+      <td>${dhcp}</td>
+    </tr>`;
+  }
+  const netsHtml = nets.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No networks found.</div>`
+    : `<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>Name</th><th>VLAN ID</th><th>Subnet</th><th>Purpose</th><th>DHCP</th>
+      </tr></thead><tbody>${nets.map(netRow).join('')}</tbody></table></div>`;
+
+  // ── WiFi table ──
+  function wlanRow(w) {
+    const sec  = esc(w.security||w.wpa_mode||'open');
+    const vlan = w.vlan !== undefined ? String(w.vlan) : '—';
+    const en   = w.enabled !== false
+      ? `<span style="color:#6ef09a;font-size:12px">&#x25CF; on</span>`
+      : `<span style="color:var(--muted);font-size:12px">&#x25CB; off</span>`;
+    return `<tr><td>${esc(w.name||w.ssid||'')}</td><td style="color:var(--muted)">${sec}</td><td>${vlan}</td><td>${en}</td></tr>`;
+  }
+  const wifiHtml = wlans.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No WiFi networks found.</div>`
+    : `<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>SSID</th><th>Security</th><th>VLAN</th><th>Enabled</th>
+      </tr></thead><tbody>${wlans.map(wlanRow).join('')}</tbody></table></div>`;
+
+  // ── IPS section ──
+  const ipsEnabled = ips.enabled ? `<span style="color:#6ef09a;font-weight:700">Enabled</span>` : `<span style="color:#f06e6e;font-weight:700">Disabled</span>`;
+  const ipsMode    = esc(ips.ips_mode || ips.mode || '—');
+  const ipsSupp    = Array.isArray(ips.suppressed_categories) ? ips.suppressed_categories.map(c => `<span style="background:var(--border);border-radius:4px;padding:1px 6px;font-size:11px;margin-right:4px">${esc(c)}</span>`).join('') : '—';
+  const ipsHtml = `<div style="padding:4px 0">
+    <div style="margin-bottom:8px"><strong>Status:</strong> ${ipsEnabled} &nbsp; <strong>Mode:</strong> ${ipsMode}</div>
+    <div><strong>Suppressed categories:</strong> ${ipsSupp || 'none'}</div>
+  </div>`;
+
+  // ── Devices table ──
+  function devRow(d) {
+    return `<tr>
+      <td style="color:var(--muted)">${esc(d.type||'')}</td>
+      <td>${esc(d.name||'')}</td>
+      <td><code>${esc(d.ip||'')}</code></td>
+      <td style="color:var(--muted)">${esc(d.model||'')}</td>
+      <td style="font-size:11px;color:var(--muted)">${esc(d.version||'')}</td>
+    </tr>`;
+  }
+  const devsHtml = devs.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No devices found.</div>`
+    : `<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>Type</th><th>Name</th><th>IP</th><th>Model</th><th>Firmware</th>
+      </tr></thead><tbody>${devs.map(devRow).join('')}</tbody></table></div>`;
+
+  // ── Routes table ──
+  function routeRow(r) {
+    return `<tr>
+      <td><code>${esc(r.dst_network||r.prefix||'')}</code></td>
+      <td><code>${esc(r.gateway||r.nexthop||'')}</code></td>
+      <td style="color:var(--muted)">${esc(r.interface||r.intf||'')}</td>
+      <td style="color:var(--muted)">${esc(r.name||'')}</td>
+    </tr>`;
+  }
+  const routesHtml = routes.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No static routes configured.</div>`
+    : `<div style="overflow-x:auto"><table class="log-table"><thead><tr>
+        <th>Destination</th><th>Gateway</th><th>Interface</th><th>Name</th>
+      </tr></thead><tbody>${routes.map(routeRow).join('')}</tbody></table></div>`;
+
+  // ── Change history tab ──
+  const SECTION_LABELS = {
+    firewall_rules:'Firewall', firewall_groups:'FW Groups', port_forwards:'Port Fwd',
+    networks:'Networks', wifi_networks:'WiFi', traffic_rules:'Traffic', devices:'Devices', static_routes:'Routes',
+  };
+  const CT_COLORS = { added:'#6ef09a', removed:'#f06e6e', modified:'#f0c040' };
+  function changeRow(c) {
+    const sl   = SECTION_LABELS[c.section] || esc(c.section);
+    const sBg  = 'background:var(--border);border-radius:4px;padding:2px 7px;font-size:11px';
+    const ctCol= CT_COLORS[c.change_type] || 'var(--muted)';
+    const ctBg = `color:${ctCol};font-weight:700;font-size:11px`;
+    let diffHtml = '';
+    if (c.before || c.after) {
+      const bid = 'cdiff-'+c.id;
+      const before = c.before ? JSON.stringify(c.before, null, 2) : '';
+      const after  = c.after  ? JSON.stringify(c.after,  null, 2) : '';
+      diffHtml = `
+        <details style="margin-top:4px"><summary style="font-size:11px;cursor:pointer;color:var(--muted)">Show diff</summary>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px;font-size:11px">
+          ${before ? `<div><div style="color:var(--muted);margin-bottom:2px">Before</div><pre style="overflow:auto;max-height:160px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px">${esc(before)}</pre></div>` : ''}
+          ${after  ? `<div><div style="color:var(--muted);margin-bottom:2px">After</div><pre  style="overflow:auto;max-height:160px;background:var(--bg);border:1px solid var(--border);border-radius:4px;padding:8px">${esc(after)}</pre></div>` : ''}
+        </div></details>`;
+    }
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span style="color:var(--muted);font-size:11px">${fmtDate(c.detected_at)}</span>
+        <span style="${sBg}">${sl}</span>
+        <span style="${ctBg}">${esc(c.change_type.toUpperCase())}</span>
+        <span style="font-size:13px">${esc(c.item_name||'')}</span>
+      </div>
+      ${diffHtml}
+    </div>`;
+  }
+  const changesHtml = changes.length === 0
+    ? `<div style="color:var(--muted);padding:16px">No changes detected in the last 7 days.</div>`
+    : changes.map(changeRow).join('');
+
+  const errorBanner = cfg.error
+    ? `<div class="alert alert-warn" style="margin-bottom:16px"><strong>Error loading config:</strong> ${esc(cfg.error)}</div>` : '';
+
+  render(`
+    <div class="page-header">
+      <h1>&#x1F4F6; Network Config</h1>
+      <p>Live UniFi network configuration — firewall rules, VLANs, port forwards, IPS, and more.</p>
+    </div>
+    ${errorBanner}
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;gap:8px">
+        Configuration
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="unifiConfig()">&#x1F504; Refresh</button>
+        <button class="btn btn-primary btn-sm" onclick="runPostureReview()">&#x1F916; AI Posture Review</button>
+      </div>
+
+      <div class="ai-tabs" style="margin-bottom:0">
+        <div class="ai-tab uc-tab active" data-tab="firewall" onclick="ucShowTab('firewall')">Firewall Rules <span style="font-size:11px;color:var(--muted)">(${fw.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="portfwd"   onclick="ucShowTab('portfwd')">Port Forwards <span style="font-size:11px;color:${pf.length?'#e07b39':'var(--muted)'}">(${pf.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="networks"  onclick="ucShowTab('networks')">Networks/VLANs <span style="font-size:11px;color:var(--muted)">(${nets.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="wifi"      onclick="ucShowTab('wifi')">WiFi <span style="font-size:11px;color:var(--muted)">(${wlans.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="ips"       onclick="ucShowTab('ips')">IPS</div>
+        <div class="ai-tab uc-tab" data-tab="devices"   onclick="ucShowTab('devices')">Devices <span style="font-size:11px;color:var(--muted)">(${devs.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="routes"    onclick="ucShowTab('routes')">Routes <span style="font-size:11px;color:var(--muted)">(${routes.length})</span></div>
+        <div class="ai-tab uc-tab" data-tab="changes"   onclick="ucShowTab('changes')">Change History <span style="font-size:11px;color:${changes.length?'#f0c040':'var(--muted)'}">(${changes.length})</span></div>
+      </div>
+
+      <div class="uc-panel" data-panel="firewall"  style="">${fwHtml}</div>
+      <div class="uc-panel" data-panel="portfwd"   style="display:none">${pfHtml}</div>
+      <div class="uc-panel" data-panel="networks"  style="display:none">${netsHtml}</div>
+      <div class="uc-panel" data-panel="wifi"      style="display:none">${wifiHtml}</div>
+      <div class="uc-panel" data-panel="ips"       style="display:none">${ipsHtml}</div>
+      <div class="uc-panel" data-panel="devices"   style="display:none">${devsHtml}</div>
+      <div class="uc-panel" data-panel="routes"    style="display:none">${routesHtml}</div>
+      <div class="uc-panel" data-panel="changes"   style="display:none">${changesHtml}</div>
+    </div>
+  `);
+}
+
+async function runPostureReview() {
+  // Show inline agent selector
+  const agentChoice = await new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9000;display:flex;align-items:center;justify-content:center';
+    backdrop.innerHTML = `
+      <div class="card" style="max-width:380px;width:100%;padding:24px">
+        <div class="card-title" style="margin-bottom:16px">&#x1F916; AI Posture Review</div>
+        <p style="font-size:13px;color:var(--muted);margin-bottom:16px">
+          The AI will review your live UniFi configuration against recent high-severity logs and flag security gaps, misconfigurations, and hardening opportunities.
+        </p>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:6px">Analysis agent</label>
+        <select id="posture-agent-sel" style="width:100%;margin-bottom:16px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px">
+          <option value="siem_cti">CTI — Cyber Threat Intelligence</option>
+          <option value="nre">NRE — Network Reliability Engineering</option>
+        </select>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn btn-ghost" onclick="this.closest('[style*=fixed]').remove();window._postureResolve(null)">Cancel</button>
+          <button class="btn btn-primary" onclick="window._postureResolve(document.getElementById('posture-agent-sel').value);this.closest('[style*=fixed]').remove()">Run Review</button>
+        </div>
+      </div>`;
+    window._postureResolve = resolve;
+    document.body.appendChild(backdrop);
+  });
+  if (!agentChoice) return;
+
+  // Navigate to AI tab and show spinner
+  showPage('ai');
+  const out = document.getElementById('ai-output');
+  if (out) {
+    out.innerHTML = `<div style="padding:24px;text-align:center"><div class="spinner"></div><div style="margin-top:12px;color:var(--muted)">Running AI posture review…</div></div>`;
+  }
+
+  try {
+    const result = await apiFetch('/api/ai/posture-review', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({agent: agentChoice}),
+    });
+    if (out) renderAnalysis(result, out);
+  } catch(e) {
+    if (out) out.innerHTML = `<div class="alert alert-warn"><strong>Posture review failed:</strong> ${esc(String(e))}</div>`;
+  }
+}
 </script>
 </body>
 </html>
