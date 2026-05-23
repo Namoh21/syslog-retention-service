@@ -128,7 +128,6 @@ class UniFiClient:
 
     async def get_system_info(self) -> dict:
         """Controller version info — used to verify connectivity."""
-        # Try modern UniFi OS path first, then legacy
         for path in [
             "/proxy/network/api/s/default/stat/sysinfo",
             "/api/s/default/stat/sysinfo",
@@ -141,6 +140,20 @@ class UniFiClient:
                 last_exc = exc
                 logger.debug("sysinfo %s failed: %s", path, exc)
         raise last_exc  # type: ignore[possibly-unbound]
+
+    async def get_sites(self) -> list[dict]:
+        """List all sites: [{"name": "default", "desc": "Home"}, ...]"""
+        for path in ["/proxy/network/api/self/sites", "/api/self/sites"]:
+            try:
+                data = await self._request("GET", path)
+                return [
+                    {"name": s.get("name", ""), "desc": s.get("desc", s.get("name", ""))}
+                    for s in data.get("data", [])
+                    if s.get("name")
+                ]
+            except Exception as exc:
+                logger.debug("sites %s failed: %s", path, exc)
+        return []
 
     async def get_dpi_stats(self) -> list[dict]:
         """Per-client DPI breakdown: app name, category, traffic bytes."""
@@ -340,12 +353,18 @@ async def test_connection(url: str = "", api_key: str = "",
                 "error": "No credentials found — enter an API key or username/password and save (or enter them in the form before testing)"}
 
     try:
-        client = UniFiClient(url, api_key=api_key, username=username,
-                             password=password, site=site)
+        client  = UniFiClient(url, api_key=api_key, username=username,
+                              password=password, site=site)
         info    = await client.get_system_info()
         version = (info.get("version") or info.get("sw_ver") or
                    info.get("ubnt_device_type") or "unknown")
-        return {"ok": True, "version": version, "site": site,
-                "hostname": info.get("hostname", "")}
+        sites   = await client.get_sites()
+        return {
+            "ok":       True,
+            "version":  version,
+            "hostname": info.get("hostname", ""),
+            "site":     site,
+            "sites":    sites,   # [{"name": "default", "desc": "Home"}, ...]
+        }
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

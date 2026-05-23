@@ -3622,8 +3622,10 @@ async function unifiLoadStatus() {
           <div class="help-tip">Local address of your UDM Pro</div>
         </div>
         <div class="form-group">
-          <label>Site</label>
-          <input id="unifi-site" value="${esc(s?.site||'default')}" style="width:120px" />
+          <label>Site <button class="btn btn-ghost btn-sm" style="margin-left:6px;padding:1px 8px;font-size:11px" onclick="unifiLoadSites()" title="Load sites from controller">&#x1F504; Load</button></label>
+          <select id="unifi-site" style="width:200px">
+            <option value="${esc(s?.site||'default')}">${esc(s?.site||'default')}</option>
+          </select>
         </div>
         <div class="form-group">
           <label>Poll interval (seconds)</label>
@@ -3699,9 +3701,33 @@ async function unifiTestConn() {
   };
   const r = await apiFetch('/api/unifi/test', { method:'POST', body:JSON.stringify(body) }).catch(e => ({ok:false,error:e.message}));
   if (r.ok) {
-    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Connected — UniFi ${esc(r.version||'?')}${r.hostname?' ('+esc(r.hostname)+')':''} · site: ${esc(r.site||'?')}</div>`;
+    const siteCount = r.sites?.length || 0;
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Connected — UniFi ${esc(r.version||'?')}${r.hostname?' · '+esc(r.hostname):''} · ${siteCount} site${siteCount!==1?'s':''} found</div>`;
+    // Populate site dropdown from response
+    if (r.sites?.length) _unifiPopulateSites(r.sites, r.site);
   } else {
     if (msg) msg.innerHTML = `<div class="alert alert-warn">&#x2718; ${esc(r.error||'Connection failed')}</div>`;
+  }
+}
+
+function _unifiPopulateSites(sites, currentSite) {
+  const sel = document.getElementById('unifi-site');
+  if (!sel || !sites?.length) return;
+  const cur = currentSite || sel.value || 'default';
+  sel.innerHTML = sites.map(s =>
+    `<option value="${esc(s.name)}"${s.name===cur?' selected':''}>${esc(s.desc||s.name)} (${esc(s.name)})</option>`
+  ).join('');
+}
+
+async function unifiLoadSites() {
+  const msg = document.getElementById('unifi-msg');
+  if (msg) msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Loading sites...</div>';
+  const sites = await apiFetch('/api/unifi/sites').catch(() => []);
+  if (sites?.length) {
+    _unifiPopulateSites(sites, null);
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; ${sites.length} site${sites.length!==1?'s':''} loaded — select yours below</div>`;
+  } else {
+    if (msg) msg.innerHTML = '<div class="alert alert-warn">No sites returned — test the connection first</div>';
   }
 }
 

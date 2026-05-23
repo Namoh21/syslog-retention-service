@@ -1753,6 +1753,21 @@ async def unifi_save_settings(
     return {"message": f"UniFi settings saved: {', '.join(changed)}"}
 
 
+@router.get("/unifi/sites", tags=["unifi"])
+async def unifi_sites(_: User = Depends(get_current_user)):
+    """List all UniFi sites available on the configured controller."""
+    from unifi_poller import UniFiClient, _load_credentials
+    url, api_key, username, password, site = _load_credentials()
+    if not url:
+        return []
+    try:
+        client = UniFiClient(url, api_key=api_key, username=username,
+                             password=password, site=site)
+        return await client.get_sites()
+    except Exception as exc:
+        return []
+
+
 @router.get("/unifi/debug", tags=["unifi"])
 async def unifi_debug(
     path: str = Query("/proxy/network/api/s/default/stat/dpi"),
