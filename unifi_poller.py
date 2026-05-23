@@ -251,7 +251,7 @@ class UniFiClient:
                 # API key may be rejected; session cookie auth fallback handled automatically
                 data = await self._request("POST", path, json={}, params=v2_params,
                                            allow_session_fallback=True)
-                rows = data.get("data", data if isinstance(data, list) else [])
+                rows = data if isinstance(data, list) else data.get("data", [])
                 logger.info("DPI v2 response keys: %s | row count: %d | sample: %s",
                             list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                             len(rows), rows[:2] if rows else rows)
