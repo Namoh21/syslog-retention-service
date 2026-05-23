@@ -242,14 +242,13 @@ class UniFiClient:
         start_ms = now_ms - 86_400_000  # 24 h
         v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
 
-        # Try app-traffic-rate with appId=868 (Netflix) to see if per-app filtering works
-        app_params = {**v2_params, "appId": 868}
         v2_candidates = [
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {}, app_params),
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {}, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/applications", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/app-usage", None, v2_params),
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"appIds": [868, 1, 2]}, v2_params),
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"groupBy": "app"}, v2_params),
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"type": "application"}, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/fingerprint-client-dpi", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/stat/app", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/stat/sessions", None, None),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/client-traffic", None, v2_params),
         ]
         for method, path, body, params in v2_candidates:
             try:
