@@ -3688,9 +3688,18 @@ async function unifiSaveSettings() {
 async function unifiTestConn() {
   const msg = document.getElementById('unifi-msg');
   if (msg) msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Testing connection...</div>';
-  const r = await apiFetch('/api/unifi/test', { method:'POST' }).catch(e => ({ok:false,error:e.message}));
+  // Pass current form values so user can test before saving
+  const apiKeyVal = document.getElementById('unifi-apikey')?.value || '';
+  const body = {
+    url:      document.getElementById('unifi-url')?.value?.trim() || '',
+    site:     document.getElementById('unifi-site')?.value?.trim() || 'default',
+    api_key:  (apiKeyVal && !apiKeyVal.startsWith('•')) ? apiKeyVal.trim() : '',
+    username: document.getElementById('unifi-user')?.value?.trim() || '',
+    password: document.getElementById('unifi-pass')?.value || '',
+  };
+  const r = await apiFetch('/api/unifi/test', { method:'POST', body:JSON.stringify(body) }).catch(e => ({ok:false,error:e.message}));
   if (r.ok) {
-    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Connected — UniFi v${esc(r.version||'?')} · site: ${esc(r.site||'?')}</div>`;
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Connected — UniFi ${esc(r.version||'?')}${r.hostname?' ('+esc(r.hostname)+')':''} · site: ${esc(r.site||'?')}</div>`;
   } else {
     if (msg) msg.innerHTML = `<div class="alert alert-warn">&#x2718; ${esc(r.error||'Connection failed')}</div>`;
   }

@@ -3,17 +3,16 @@ UniFi Network Application API poller.
 
 Periodically fetches DPI (Deep Packet Inspection) data from a local UDM Pro
 controller and stores per-client application/category records in the database.
-This data appears in the log viewer alongside syslog entries — domain, category,
-and traffic volume per client.
 
 Authentication:
   - API key (preferred): Settings → System → Control Plane → API in UniFi UI
-  - Username/password: falls back to cookie-based session if no key is set
+    Header: X-API-KEY (UniFi OS 3.x+) — NOT Authorization: Bearer
+  - Username/password: cookie + X-CSRF-Token session (fallback)
 
 Settings (stored in service_settings DB table):
   unifi_enabled       true/false
-  unifi_url           https://192.168.1.1  (UDM Pro local address)
-  unifi_api_key       Bearer token from UniFi UI  (preferred)
+  unifi_url           https://10.10.100.1  (UDM Pro local address)
+  unifi_api_key       API key from UniFi UI
   unifi_username      fallback username
   unifi_password      fallback password (stored encrypted)
   unifi_site          default
@@ -22,88 +21,157 @@ Settings (stored in service_settings DB table):
 
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger("unifi_poller")
 
-_poller_task: Optional[asyncio.Task] = None
 _stats = {
-    "last_poll": None,
-    "last_status": "not started",
+    "last_poll":     None,
+    "last_status":   "not started",
     "records_stored": 0,
-    "errors": 0,
-    "clients_seen": 0,
+    "errors":        0,
+    "clients_seen":  0,
 }
 
 
 # ── UniFi API client ──────────────────────────────────────────────────────────
 
 class UniFiClient:
-    def __init__(self, base_url: str, api_key: str = "", username: str = "",
-                 password: str = "", site: str = "default"):
+    """
+    Async client for the UniFi Network Application REST API.
+
+    Auth priority:
+      1. API key  → X-API-KEY header (UDM OS 3.x / Network App 8+)
+      2. Username/password → cookie session + X-CSRF-Token
+    """
+
+    def __init__(self, base_url: str, api_key: str = "",
+                 username: str = "", password: str = "", site: str = "default"):
         self.base_url = base_url.rstrip("/")
-        self.api_key  = api_key
+        self.api_key  = (api_key or "").strip()
         self.username = username
         self.password = password
         self.site     = site or "default"
-        self._cookies: dict = {}
+        self._session_cookies: dict = {}
+        self._csrf_token: str = ""
 
-    async def _get(self, path: str) -> dict:
+    # ── Low-level request ─────────────────────────────────────────────────────
+
+    async def _request(self, method: str, path: str, json=None) -> dict:
         import httpx
-        headers = {"Accept": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
 
-        async with httpx.AsyncClient(verify=False, timeout=30.0,
-                                     cookies=self._cookies) as client:
-            r = await client.get(f"{self.base_url}{path}", headers=headers)
+        # Build auth headers — prefer API key
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if self.api_key:
+            # UniFi OS 3.x uses X-API-KEY, not Authorization: Bearer
+            headers["X-API-KEY"] = self.api_key
+        if self._csrf_token:
+            headers["X-CSRF-Token"] = self._csrf_token
+
+        url = f"{self.base_url}{path}"
+        async with httpx.AsyncClient(
+            verify=False, timeout=30.0, cookies=self._session_cookies,
+            follow_redirects=True,
+        ) as client:
+            r = await client.request(method, url, headers=headers, json=json)
+
+            # 401 with API key → wrong key or wrong header name, surface clearly
+            if r.status_code == 401 and self.api_key:
+                raise RuntimeError(
+                    f"API key authentication failed (401). "
+                    f"Verify the key in UniFi → Settings → System → Control Plane → API. "
+                    f"URL tried: {url}"
+                )
+
+            # 401 without API key → attempt session login
             if r.status_code == 401 and not self.api_key:
                 await self._login(client)
-                r = await client.get(f"{self.base_url}{path}", headers=headers)
+                headers["X-CSRF-Token"] = self._csrf_token
+                r = await client.request(method, url, headers=headers, json=json,
+                                         cookies=self._session_cookies)
+
             r.raise_for_status()
             return r.json()
 
     async def _login(self, client) -> None:
+        """Obtain a session cookie + CSRF token via username/password."""
         import httpx
-        payload = {"username": self.username, "password": self.password}
-        # Try modern UniFi OS endpoint first, fall back to legacy
+        payload = {"username": self.username, "password": self.password,
+                   "remember": False, "strict": True}
+
+        # UDM Pro (UniFi OS): /api/auth/login
+        # Legacy controller:  /api/login
         for path in ["/api/auth/login", "/api/login"]:
             try:
-                r = await client.post(f"{self.base_url}{path}", json=payload,
-                                      headers={"Content-Type": "application/json"})
+                r = await client.post(
+                    f"{self.base_url}{path}", json=payload,
+                    headers={"Content-Type": "application/json"},
+                )
                 if r.status_code in (200, 201):
-                    self._cookies = dict(r.cookies)
-                    logger.info("UniFi login OK via %s", path)
+                    self._session_cookies = dict(r.cookies)
+                    # UniFi OS returns CSRF token in X-CSRF-Token header
+                    self._csrf_token = r.headers.get("X-CSRF-Token", "")
+                    logger.info("UniFi session login OK via %s (CSRF=%s)",
+                                path, bool(self._csrf_token))
                     return
-            except Exception:
-                continue
-        raise RuntimeError("UniFi login failed — check username/password")
+                logger.debug("Login attempt %s → HTTP %d", path, r.status_code)
+            except Exception as exc:
+                logger.debug("Login attempt %s failed: %s", path, exc)
 
-    async def get_dpi_stats(self) -> list[dict]:
-        """Returns per-client DPI records: {mac, ip, name, app_proto, cat_name, tx_bytes, rx_bytes}."""
-        data = await self._get(f"/proxy/network/api/s/{self.site}/stat/dpi")
-        return data.get("data", [])
+        raise RuntimeError(
+            "UniFi login failed — check username/password. "
+            "If 2FA is enabled, use an API key instead."
+        )
 
-    async def get_clients(self) -> list[dict]:
-        """Active client list with hostname, IP, MAC."""
-        data = await self._get(f"/proxy/network/api/s/{self.site}/stat/sta")
-        return data.get("data", [])
+    # ── API helpers ───────────────────────────────────────────────────────────
 
     async def get_system_info(self) -> dict:
-        """Controller info — used to verify connectivity."""
-        try:
-            data = await self._get("/proxy/network/api/s/default/stat/sysinfo")
-            return data.get("data", [{}])[0]
-        except Exception:
-            data = await self._get("/api/s/default/stat/sysinfo")
-            return data.get("data", [{}])[0]
+        """Controller version info — used to verify connectivity."""
+        # Try modern UniFi OS path first, then legacy
+        for path in [
+            "/proxy/network/api/s/default/stat/sysinfo",
+            "/api/s/default/stat/sysinfo",
+        ]:
+            try:
+                data = await self._request("GET", path)
+                rows = data.get("data", [{}])
+                return rows[0] if rows else {}
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("sysinfo %s failed: %s", path, exc)
+        raise last_exc  # type: ignore[possibly-unbound]
+
+    async def get_dpi_stats(self) -> list[dict]:
+        """Per-client DPI breakdown: app name, category, traffic bytes."""
+        for path in [
+            f"/proxy/network/api/s/{self.site}/stat/dpi",
+            f"/api/s/{self.site}/stat/dpi",
+        ]:
+            try:
+                data = await self._request("GET", path)
+                return data.get("data", [])
+            except Exception as exc:
+                logger.debug("dpi %s failed: %s", path, exc)
+        return []
+
+    async def get_clients(self) -> list[dict]:
+        """Active client list — provides hostname + IP per MAC."""
+        for path in [
+            f"/proxy/network/api/s/{self.site}/stat/sta",
+            f"/api/s/{self.site}/stat/sta",
+        ]:
+            try:
+                data = await self._request("GET", path)
+                return data.get("data", [])
+            except Exception as exc:
+                logger.debug("clients %s failed: %s", path, exc)
+        return []
 
 
 # ── DPI record storage ────────────────────────────────────────────────────────
 
 def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
-    """Persist DPI stats as DpiRecord rows. Returns count stored."""
     from database import DpiRecord, SessionLocal
     if not records:
         return 0
@@ -112,17 +180,16 @@ def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
     now = datetime.now(timezone.utc)
     try:
         for r in records:
-            mac      = r.get("mac", "")
-            cat      = r.get("cat_name") or r.get("cat") or ""
-            app      = r.get("app_proto") or r.get("app") or ""
-            tx       = int(r.get("tx_bytes", 0) or 0)
-            rx       = int(r.get("rx_bytes", 0) or 0)
+            mac = r.get("mac", "")
+            cat = r.get("cat_name") or r.get("cat") or ""
+            app = r.get("app_proto") or r.get("app") or ""
+            tx  = int(r.get("tx_bytes", 0) or 0)
+            rx  = int(r.get("rx_bytes", 0) or 0)
             if not (cat or app) or (tx + rx) == 0:
                 continue
             client   = clients_by_mac.get(mac, {})
             src_ip   = client.get("ip") or r.get("ip") or None
             hostname = client.get("hostname") or client.get("name") or None
-
             db.add(DpiRecord(
                 polled_at=now,
                 mac_address=mac or None,
@@ -143,9 +210,10 @@ def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
     return count
 
 
-# ── Poll loop ─────────────────────────────────────────────────────────────────
+# ── Credential resolution ─────────────────────────────────────────────────────
 
-async def _poll_once() -> int:
+def _load_credentials() -> tuple[str, str, str, str, str]:
+    """Returns (url, api_key, username, password, site) from DB settings."""
     from database import get_service_setting, decrypt_value
     url      = get_service_setting("unifi_url") or ""
     api_key  = get_service_setting("unifi_api_key") or ""
@@ -153,15 +221,23 @@ async def _poll_once() -> int:
     enc_pass = get_service_setting("unifi_password") or ""
     password = decrypt_value(enc_pass) if enc_pass else ""
     site     = get_service_setting("unifi_site") or "default"
+    return url, api_key, username, password, site
 
+
+# ── Poll loop ─────────────────────────────────────────────────────────────────
+
+async def _poll_once(url="", api_key="", username="", password="",
+                     site="default") -> int:
+    """Execute one poll cycle. If credentials are empty, loads from DB."""
+    if not url:
+        url, api_key, username, password, site = _load_credentials()
     if not url:
         raise ValueError("unifi_url not configured")
     if not api_key and not (username and password):
-        raise ValueError("unifi_api_key or username+password required")
+        raise ValueError("Configure an API key or username+password in Service Settings → UniFi")
 
     client = UniFiClient(url, api_key=api_key, username=username,
                          password=password, site=site)
-
     clients = await client.get_clients()
     clients_by_mac = {c.get("mac", ""): c for c in clients if c.get("mac")}
     _stats["clients_seen"] = len(clients_by_mac)
@@ -172,7 +248,7 @@ async def _poll_once() -> int:
 
 
 async def run_unifi_poller():
-    """Background task — polls UniFi controller on configured interval."""
+    """Background task — polls on configured interval when enabled."""
     from database import get_service_setting
     logger.info("UniFi poller started")
     while True:
@@ -189,57 +265,67 @@ async def run_unifi_poller():
 
         try:
             stored = await _poll_once()
-            _stats["last_poll"]      = datetime.now(timezone.utc).isoformat()
-            _stats["last_status"]    = f"OK — {stored} DPI records stored"
+            _stats.update(last_poll=datetime.now(timezone.utc).isoformat(),
+                          last_status=f"OK — {stored} DPI records stored",
+                          errors=0)
             _stats["records_stored"] += stored
-            _stats["errors"]         = 0
-            logger.info("UniFi poll: %d DPI records stored, %d clients seen",
+            logger.info("UniFi poll: %d DPI records, %d clients",
                         stored, _stats["clients_seen"])
         except Exception as exc:
-            _stats["errors"]      += 1
-            _stats["last_status"]  = f"Error: {exc}"
-            _stats["last_poll"]    = datetime.now(timezone.utc).isoformat()
+            _stats["errors"] += 1
+            _stats.update(last_status=f"Error: {exc}",
+                          last_poll=datetime.now(timezone.utc).isoformat())
             logger.warning("UniFi poll failed: %s", exc)
 
+
+# ── On-demand operations ──────────────────────────────────────────────────────
 
 def get_stats() -> dict:
     return dict(_stats)
 
 
 async def poll_now() -> dict:
-    """Force an immediate poll regardless of schedule. Returns stats."""
     try:
         stored = await _poll_once()
-        _stats["last_poll"]      = datetime.now(timezone.utc).isoformat()
-        _stats["last_status"]    = f"OK — {stored} DPI records stored"
+        _stats.update(last_poll=datetime.now(timezone.utc).isoformat(),
+                      last_status=f"OK — {stored} DPI records stored", errors=0)
         _stats["records_stored"] += stored
-        _stats["errors"]         = 0
         return {"ok": True, "stored": stored, "clients": _stats["clients_seen"]}
     except Exception as exc:
-        _stats["errors"]      += 1
-        _stats["last_status"]  = f"Error: {exc}"
-        _stats["last_poll"]    = datetime.now(timezone.utc).isoformat()
+        _stats["errors"] += 1
+        _stats.update(last_status=f"Error: {exc}",
+                      last_poll=datetime.now(timezone.utc).isoformat())
         return {"ok": False, "error": str(exc)}
 
 
-async def test_connection() -> dict:
-    """Test UniFi API connectivity without storing data."""
-    from database import get_service_setting, decrypt_value
-    url      = get_service_setting("unifi_url") or ""
-    api_key  = get_service_setting("unifi_api_key") or ""
-    username = get_service_setting("unifi_username") or ""
-    enc_pass = get_service_setting("unifi_password") or ""
-    password = decrypt_value(enc_pass) if enc_pass else ""
-    site     = get_service_setting("unifi_site") or "default"
+async def test_connection(url: str = "", api_key: str = "",
+                          username: str = "", password: str = "",
+                          site: str = "default") -> dict:
+    """
+    Test connectivity. If credentials are passed directly (from the UI form
+    before saving), uses them. Otherwise falls back to DB settings.
+    """
+    if not url:
+        db_url, db_key, db_user, db_pass, db_site = _load_credentials()
+        url      = url      or db_url
+        api_key  = api_key  or db_key
+        username = username or db_user
+        password = password or db_pass
+        site     = site     or db_site
 
     if not url:
-        return {"ok": False, "error": "unifi_url not configured"}
+        return {"ok": False, "error": "Controller URL not configured"}
+    if not api_key and not (username and password):
+        return {"ok": False,
+                "error": "Provide an API key or username+password"}
 
     try:
         client = UniFiClient(url, api_key=api_key, username=username,
                              password=password, site=site)
-        info = await client.get_system_info()
-        version = info.get("version") or info.get("sw_ver") or "unknown"
-        return {"ok": True, "version": version, "site": site}
+        info    = await client.get_system_info()
+        version = (info.get("version") or info.get("sw_ver") or
+                   info.get("ubnt_device_type") or "unknown")
+        return {"ok": True, "version": version, "site": site,
+                "hostname": info.get("hostname", "")}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}

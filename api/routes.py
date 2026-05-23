@@ -1711,9 +1711,19 @@ async def unifi_status(
 
 
 @router.post("/unifi/test", tags=["unifi"])
-async def unifi_test(_: User = Depends(get_current_user)):
+async def unifi_test(body: dict = None, _: User = Depends(get_current_user)):
     from unifi_poller import test_connection
-    return await test_connection()
+    from database import decrypt_value
+    b = body or {}
+    # Decrypt password if it came from DB (already encrypted) vs form (plain)
+    raw_pass = b.get("password", "")
+    return await test_connection(
+        url=b.get("url", ""),
+        api_key=b.get("api_key", ""),
+        username=b.get("username", ""),
+        password=raw_pass,
+        site=b.get("site", "default"),
+    )
 
 
 @router.post("/unifi/poll", tags=["unifi"])
