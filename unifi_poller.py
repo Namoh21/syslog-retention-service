@@ -242,37 +242,19 @@ class UniFiClient:
         start_ms = now_ms - 86_400_000  # 24 h
         v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
 
-        v2_candidates = [
-            # v2 variants
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/traffic-stats", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/dpi-stats", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/app-stats", None, v2_params),
-            # v1 DPI report endpoints (hourly rollup with per-app breakdown)
-            ("POST", f"/proxy/network/api/s/{self.site}/stat/report/hourly.dpi", {"attrs": ["tx_bytes", "rx_bytes"]}, None),
-            ("POST", f"/proxy/network/api/s/{self.site}/stat/report/5minutes.dpi", {"attrs": ["tx_bytes", "rx_bytes"]}, None),
-            # v1 per-app stats
-            ("GET",  f"/proxy/network/api/s/{self.site}/rest/dpigroup", None, None),
-            ("GET",  f"/proxy/network/api/s/{self.site}/stat/stadpi", None, None),
-        ]
-        for method, path, body, params in v2_candidates:
-            try:
-                data = await self._request(method, path, json=body, params=params,
-                                           allow_session_fallback=True)
-                rows = data if isinstance(data, list) else data.get("data", [])
-                sample_keys = list(rows[0].keys()) if rows else []
-                logger.info("DPI probe %s %s body=%s → %d rows, keys: %s",
-                            method, path, body, len(rows), sample_keys)
-                has_app = any(k in sample_keys for k in (
-                    "appId", "app_id", "application", "appName", "app_name",
-                    "name", "category", "cat", "dpiId",
-                ))
-                if rows and has_app:
-                    logger.info("DPI v2: using %s %s (%d records)", method, path, len(rows))
-                    for r in rows:
-                        r.setdefault("_v2", True)
-                    return rows
-            except Exception as exc:
-                logger.warning("DPI probe %s %s failed: %s", method, path, exc)
+        # UniFi 10.x app-traffic-rate returns aggregate bandwidth time-series only
+        # (no per-app names). Per-app DPI data is not available via local API.
+        # DNS-based domain enrichment in netflow_listener covers the domain/category use case.
+        try:
+            data = await self._request("POST",
+                                       f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate",
+                                       json={}, params=v2_params, allow_session_fallback=True)
+            rows = data if isinstance(data, list) else data.get("data", [])
+            if rows:
+                logger.debug("UniFi bandwidth snapshot: %d intervals fetched", len(rows))
+            # No per-app names in this data — skip storage, return empty
+        except Exception as exc:
+            logger.debug("app-traffic-rate failed: %s", exc)
 
         # Legacy v1 per-client DPI (UniFi Network App < 8 / older firmware)
         for path in [

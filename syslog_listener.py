@@ -140,6 +140,14 @@ def _store(entry: SyslogEntry) -> None:
     db = SessionLocal()
     try:
         db.add(entry)
+        # Populate DNS cache from dnsmasq reply lines: "reply domain.com is 1.2.3.4"
+        if entry.event_type == "dns_response" and entry.domain and entry.dst_ip:
+            from database import DnsCache
+            db.add(DnsCache(
+                domain=entry.domain.lower().rstrip("."),
+                resolved_ip=entry.dst_ip,
+                client_ip=entry.src_ip,
+            ))
         db.commit()
     except Exception as exc:
         logger.error("DB write error: %s", exc)

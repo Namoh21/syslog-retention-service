@@ -377,6 +377,18 @@ class NetFlowRecord(Base):
     tos         = Column(Integer)
     src_as      = Column(Integer)                  # BGP AS number
     dst_as      = Column(Integer)
+    domain      = Column(String(255), nullable=True, index=True)  # resolved from DNS cache
+
+
+class DnsCache(Base):
+    """DNS query/response cache — domain↔IP mappings from dnsmasq syslog events."""
+    __tablename__ = "dns_cache"
+
+    id          = Column(Integer, primary_key=True)
+    recorded_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    domain      = Column(String(255), nullable=False, index=True)
+    resolved_ip = Column(String(45),  nullable=False, index=True)
+    client_ip   = Column(String(45),  nullable=True)
 
 
 class IpReputationCache(Base):
@@ -412,6 +424,33 @@ def _migrate_db():
         # easily confused with src_ip which is the traffic source inside the log message)
         if "source_ip" in existing and "log_source_ip" not in existing:
             conn.execute(text("ALTER TABLE syslog_entries RENAME COLUMN source_ip TO log_source_ip"))
+
+        # netflow_records.domain — DNS-enriched destination domain
+        nf_cols = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(netflow_records)")).fetchall()
+        }
+        if "domain" not in nf_cols:
+            conn.execute(text("ALTER TABLE netflow_records ADD COLUMN domain VARCHAR(255)"))
+
+        # dns_cache table — populated from dnsmasq syslog dns_response events
+        tables = {
+            row[0] for row in conn.execute(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            ).fetchall()
+        }
+        if "dns_cache" not in tables:
+            conn.execute(text("""
+                CREATE TABLE dns_cache (
+                    id INTEGER PRIMARY KEY,
+                    recorded_at DATETIME,
+                    domain VARCHAR(255) NOT NULL,
+                    resolved_ip VARCHAR(45) NOT NULL,
+                    client_ip VARCHAR(45)
+                )"""))
+            conn.execute(text("CREATE INDEX ix_dns_cache_resolved_ip ON dns_cache (resolved_ip)"))
+            conn.execute(text("CREATE INDEX ix_dns_cache_domain ON dns_cache (domain)"))
+            conn.execute(text("CREATE INDEX ix_dns_cache_recorded_at ON dns_cache (recorded_at)"))
 
         # users.token_version — added v1.2 for JWT revocation
         user_cols = {
@@ -1009,6 +1048,10 @@ def purge_old_entries(db: Session) -> int:
 
     # Prune DPI records — keep same window as syslog
     db.query(DpiRecord).filter(DpiRecord.polled_at < cutoff).delete()
+
+    # Prune DNS cache — keep 24 hours (IPs change; stale entries cause wrong enrichment)
+    dns_cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    db.query(DnsCache).filter(DnsCache.recorded_at < dns_cutoff).delete()
 
     db.commit()
     return deleted

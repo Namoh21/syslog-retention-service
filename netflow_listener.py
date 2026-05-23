@@ -96,9 +96,21 @@ def _store(records: list[dict], source_ip: str) -> None:
     if not records:
         return
     try:
-        from database import SessionLocal, NetFlowRecord
+        from database import SessionLocal, NetFlowRecord, DnsCache
         db = SessionLocal()
         try:
+            # Batch DNS lookup: dst_ip → domain
+            dst_ips = {r["dst_ip"] for r in records if r.get("dst_ip")}
+            dns_map: dict[str, str] = {}
+            if dst_ips:
+                rows = (
+                    db.query(DnsCache.resolved_ip, DnsCache.domain)
+                    .filter(DnsCache.resolved_ip.in_(dst_ips))
+                    .all()
+                )
+                for row in rows:
+                    dns_map[row.resolved_ip] = row.domain
+
             db.bulk_insert_mappings(NetFlowRecord, [
                 {
                     "received_at": r.get("received_at", datetime.now(timezone.utc)),
@@ -117,6 +129,7 @@ def _store(records: list[dict], source_ip: str) -> None:
                     "tos":         r.get("tos"),
                     "src_as":      r.get("src_as"),
                     "dst_as":      r.get("dst_as"),
+                    "domain":      dns_map.get(r.get("dst_ip", "")),
                 }
                 for r in records
             ])
