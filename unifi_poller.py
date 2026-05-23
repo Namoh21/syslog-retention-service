@@ -302,22 +302,24 @@ async def test_connection(url: str = "", api_key: str = "",
                           username: str = "", password: str = "",
                           site: str = "default") -> dict:
     """
-    Test connectivity. If credentials are passed directly (from the UI form
-    before saving), uses them. Otherwise falls back to DB settings.
+    Test connectivity. Always loads DB settings as the base, then overlays
+    any non-empty values passed directly from the UI form. This means:
+    - User can test before saving (new values override DB)
+    - Placeholder bullets in the UI (empty api_key sent) → DB key used
     """
-    if not url:
-        db_url, db_key, db_user, db_pass, db_site = _load_credentials()
-        url      = url      or db_url
-        api_key  = api_key  or db_key
-        username = username or db_user
-        password = password or db_pass
-        site     = site     or db_site
+    db_url, db_key, db_user, db_pass, db_site = _load_credentials()
+    # Overlay: form value wins if non-empty, otherwise use DB value
+    url      = url.strip()      or db_url
+    api_key  = api_key.strip()  or db_key
+    username = username.strip() or db_user
+    password = password         or db_pass
+    site     = site.strip()     or db_site
 
     if not url:
-        return {"ok": False, "error": "Controller URL not configured"}
+        return {"ok": False, "error": "Controller URL not configured — save settings first"}
     if not api_key and not (username and password):
         return {"ok": False,
-                "error": "Provide an API key or username+password"}
+                "error": "No credentials found — enter an API key or username/password and save (or enter them in the form before testing)"}
 
     try:
         client = UniFiClient(url, api_key=api_key, username=username,
