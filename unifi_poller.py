@@ -59,13 +59,13 @@ class UniFiClient:
 
     # ── Low-level request ─────────────────────────────────────────────────────
 
-    async def _request(self, method: str, path: str, json=None) -> dict:
+    async def _request(self, method: str, path: str, json=None, params=None,
+                       allow_session_fallback: bool = False) -> dict:
         import httpx
 
         # Build auth headers — prefer API key
         headers: dict[str, str] = {"Accept": "application/json"}
         if self.api_key:
-            # UniFi OS 3.x uses X-API-KEY, not Authorization: Bearer
             headers["X-API-KEY"] = self.api_key
         if self._csrf_token:
             headers["X-CSRF-Token"] = self._csrf_token
@@ -75,22 +75,28 @@ class UniFiClient:
             verify=False, timeout=30.0, cookies=self._session_cookies,
             follow_redirects=True,
         ) as client:
-            r = await client.request(method, url, headers=headers, json=json)
+            r = await client.request(method, url, headers=headers, json=json, params=params)
 
-            # 401 with API key → wrong key or wrong header name, surface clearly
-            if r.status_code == 401 and self.api_key:
-                raise RuntimeError(
-                    f"API key authentication failed (401). "
-                    f"Verify the key in UniFi → Settings → System → Control Plane → API. "
-                    f"URL tried: {url}"
-                )
-
-            # 401 without API key → attempt session login
-            if r.status_code == 401 and not self.api_key:
-                await self._login(client)
-                headers["X-CSRF-Token"] = self._csrf_token
-                r = await client.request(method, url, headers=headers, json=json,
-                                         cookies=self._session_cookies)
+            if r.status_code == 401:
+                if self.api_key and allow_session_fallback and self.username and self.password:
+                    # v2 endpoints don't accept X-API-KEY — try session cookie auth
+                    logger.debug("API key rejected by %s, falling back to session auth", path)
+                    headers.pop("X-API-KEY", None)
+                    await self._login(client)
+                    headers["X-CSRF-Token"] = self._csrf_token
+                    r = await client.request(method, url, headers=headers, json=json,
+                                             params=params, cookies=self._session_cookies)
+                elif self.api_key and not allow_session_fallback:
+                    raise RuntimeError(
+                        f"API key authentication failed (401). "
+                        f"Verify the key in UniFi → Settings → System → Control Plane → API. "
+                        f"URL tried: {url}"
+                    )
+                elif not self.api_key:
+                    await self._login(client)
+                    headers["X-CSRF-Token"] = self._csrf_token
+                    r = await client.request(method, url, headers=headers, json=json,
+                                             params=params, cookies=self._session_cookies)
 
             r.raise_for_status()
             return r.json()
@@ -222,16 +228,52 @@ class UniFiClient:
         }
 
     async def get_dpi_stats(self) -> list[dict]:
-        """Per-client DPI breakdown: app name, category, traffic bytes."""
+        """
+        Application traffic breakdown from UniFi Network Application.
+
+        UniFi 10.x (Network App 8+) moved DPI data to the v2 app-traffic-rate endpoint.
+        The v2 endpoint returns aggregated per-application data (not per-client).
+        Falls back to legacy v1 per-client DPI endpoints for older controllers.
+        """
+        import time as _time
+
+        # v2: POST with millisecond time window (last 24 hours)
+        now_ms   = int(_time.time() * 1000)
+        start_ms = now_ms - 86_400_000  # 24 h
+        v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
+
+        for path in [
+            f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate",
+            f"/v2/api/site/{self.site}/app-traffic-rate",
+        ]:
+            try:
+                # v2 endpoints require session cookie auth; API key falls back automatically
+                data = await self._request("POST", path, params=v2_params,
+                                           allow_session_fallback=True)
+                rows = data.get("data", data if isinstance(data, list) else [])
+                if rows:
+                    logger.info("DPI v2: got %d app-traffic records from %s", len(rows), path)
+                    # Tag rows so _store_dpi_records knows the format
+                    for r in rows:
+                        r.setdefault("_v2", True)
+                    return rows
+                logger.debug("DPI v2 %s returned empty, trying next", path)
+            except Exception as exc:
+                logger.debug("DPI v2 %s failed: %s", path, exc)
+
+        # Legacy v1 per-client DPI (UniFi Network App < 8 / older firmware)
         for path in [
             f"/proxy/network/api/s/{self.site}/stat/dpi",
             f"/api/s/{self.site}/stat/dpi",
         ]:
             try:
                 data = await self._request("GET", path)
-                return data.get("data", [])
+                rows = data.get("data", [])
+                if rows:
+                    logger.info("DPI v1: got %d records from %s", len(rows), path)
+                return rows
             except Exception as exc:
-                logger.debug("dpi %s failed: %s", path, exc)
+                logger.debug("DPI v1 %s failed: %s", path, exc)
         return []
 
     async def get_clients(self) -> list[dict]:
@@ -253,39 +295,47 @@ class UniFiClient:
 def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
     from database import DpiRecord, SessionLocal
     if not records:
-        logger.info("DPI: API returned 0 records — check that Deep Packet Inspection "
-                    "is enabled in UniFi → Settings → Traffic Management → DPI")
+        logger.info("DPI: API returned 0 records — check that Traffic Identification "
+                    "(Device and Traffic) is enabled in UniFi → Settings → Security")
         return 0
 
-    # Log a sample so we can see the actual field names in the response
-    if records:
-        logger.info("DPI sample record keys: %s", list(records[0].keys()))
-        logger.info("DPI sample record: %s", {k: v for k, v in records[0].items()
-                                               if k in ("mac","cat","cat_name","app",
-                                                        "app_proto","tx_bytes","rx_bytes",
-                                                        "type","name")})
+    logger.info("DPI sample record keys: %s", list(records[0].keys()))
 
     db = SessionLocal()
     count = 0
     now = datetime.now(timezone.utc)
     try:
         for r in records:
-            mac = r.get("mac", "")
-            # Try all known field name variants across firmware versions
-            cat = (r.get("cat_name") or r.get("cat") or
-                   r.get("category") or r.get("category_name") or "")
-            app = (r.get("app_proto") or r.get("app") or
-                   r.get("application") or r.get("name") or r.get("type") or "")
-            tx  = int(r.get("tx_bytes", 0) or 0)
-            rx  = int(r.get("rx_bytes", 0) or 0)
+            is_v2 = r.get("_v2", False)
 
-            # Store even if bytes are 0 as long as we have a category or app name
+            if is_v2:
+                # v2 app-traffic-rate response fields (aggregated, no per-client MAC)
+                # Observed fields: application, category, txBytes/tx_bytes, rxBytes/rx_bytes
+                app = (r.get("application") or r.get("appName") or
+                       r.get("app_name") or r.get("name") or "")
+                cat = (r.get("category") or r.get("categoryName") or
+                       r.get("cat_name") or r.get("cat") or "")
+                tx  = int(r.get("txBytes") or r.get("tx_bytes") or 0)
+                rx  = int(r.get("rxBytes") or r.get("rx_bytes") or 0)
+                mac = None
+                src_ip = None
+                hostname = None
+            else:
+                # v1 per-client DPI fields
+                mac = r.get("mac", "")
+                cat = (r.get("cat_name") or r.get("cat") or
+                       r.get("category") or r.get("category_name") or "")
+                app = (r.get("app_proto") or r.get("app") or
+                       r.get("application") or r.get("name") or r.get("type") or "")
+                tx  = int(r.get("tx_bytes", 0) or 0)
+                rx  = int(r.get("rx_bytes", 0) or 0)
+                client   = clients_by_mac.get(mac, {})
+                src_ip   = client.get("ip") or r.get("ip") or None
+                hostname = client.get("hostname") or client.get("name") or None
+
             if not (cat or app):
                 continue
 
-            client   = clients_by_mac.get(mac, {})
-            src_ip   = client.get("ip") or r.get("ip") or None
-            hostname = client.get("hostname") or client.get("name") or None
             db.add(DpiRecord(
                 polled_at=now,
                 mac_address=mac or None,
