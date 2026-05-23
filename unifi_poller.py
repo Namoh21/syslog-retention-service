@@ -242,12 +242,14 @@ class UniFiClient:
         start_ms = now_ms - 86_400_000  # 24 h
         v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
 
-        # Try several v2 endpoint candidates — probe each and log the response structure
+        # Try app-traffic-rate with appId=868 (Netflix) to see if per-app filtering works
+        app_params = {**v2_params, "appId": 868}
         v2_candidates = [
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {}, app_params),
             ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {}, v2_params),
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/traffic-identification", {}, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/traffic-identification/summary", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/dpi", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/applications", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/app-usage", None, v2_params),
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"appIds": [868, 1, 2]}, v2_params),
         ]
         for method, path, body, params in v2_candidates:
             try:
@@ -255,9 +257,8 @@ class UniFiClient:
                                            allow_session_fallback=True)
                 rows = data if isinstance(data, list) else data.get("data", [])
                 sample_keys = list(rows[0].keys()) if rows else []
-                logger.info("DPI probe %s %s → %d rows, keys: %s",
-                            method, path, len(rows), sample_keys)
-                # Only use this endpoint if records have an app name or ID field
+                logger.info("DPI probe %s %s body=%s → %d rows, keys: %s",
+                            method, path, body, len(rows), sample_keys)
                 has_app = any(k in sample_keys for k in (
                     "appId", "app_id", "application", "appName", "app_name",
                     "name", "category", "cat", "dpiId",
