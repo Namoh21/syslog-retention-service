@@ -1753,6 +1753,31 @@ async def unifi_save_settings(
     return {"message": f"UniFi settings saved: {', '.join(changed)}"}
 
 
+@router.get("/unifi/debug", tags=["unifi"])
+async def unifi_debug(
+    path: str = Query("/proxy/network/api/s/default/stat/dpi"),
+    _: User = Depends(get_current_user),
+):
+    """Return raw JSON from any UniFi API path — for diagnostics."""
+    from unifi_poller import UniFiClient, _load_credentials
+    url, api_key, username, password, site = _load_credentials()
+    if not url:
+        return {"error": "unifi_url not configured"}
+    client = UniFiClient(url, api_key=api_key, username=username,
+                         password=password, site=site)
+    try:
+        data = await client._request("GET", path)
+        rows = data.get("data", [])
+        return {
+            "path": path,
+            "total": len(rows),
+            "sample": rows[:3] if rows else [],
+            "keys": list(rows[0].keys()) if rows else [],
+        }
+    except Exception as exc:
+        return {"error": str(exc), "path": path}
+
+
 @router.get("/unifi/dpi", tags=["unifi"])
 async def unifi_dpi(
     hours: int = Query(24, ge=1, le=168),
