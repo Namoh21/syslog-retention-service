@@ -242,27 +242,33 @@ class UniFiClient:
         start_ms = now_ms - 86_400_000  # 24 h
         v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
 
-        for path in [
-            f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate",
-            f"/v2/api/site/{self.site}/app-traffic-rate",
-        ]:
+        # Try several v2 endpoint candidates — probe each and log the response structure
+        v2_candidates = [
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {}, v2_params),
+            ("POST", f"/proxy/network/v2/api/site/{self.site}/traffic-identification", {}, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/traffic-identification/summary", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/dpi", None, v2_params),
+        ]
+        for method, path, body, params in v2_candidates:
             try:
-                # v2 endpoint requires an empty JSON body ({}) + query params
-                # API key may be rejected; session cookie auth fallback handled automatically
-                data = await self._request("POST", path, json={}, params=v2_params,
+                data = await self._request(method, path, json=body, params=params,
                                            allow_session_fallback=True)
                 rows = data if isinstance(data, list) else data.get("data", [])
-                logger.info("DPI v2 response keys: %s | row count: %d | sample: %s",
-                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
-                            len(rows), rows[:2] if rows else rows)
-                if rows:
-                    logger.info("DPI v2: got %d app-traffic records from %s", len(rows), path)
+                sample_keys = list(rows[0].keys()) if rows else []
+                logger.info("DPI probe %s %s → %d rows, keys: %s",
+                            method, path, len(rows), sample_keys)
+                # Only use this endpoint if records have an app name or ID field
+                has_app = any(k in sample_keys for k in (
+                    "appId", "app_id", "application", "appName", "app_name",
+                    "name", "category", "cat", "dpiId",
+                ))
+                if rows and has_app:
+                    logger.info("DPI v2: using %s %s (%d records)", method, path, len(rows))
                     for r in rows:
                         r.setdefault("_v2", True)
                     return rows
-                logger.info("DPI v2 %s returned 200 but empty data, trying next", path)
             except Exception as exc:
-                logger.warning("DPI v2 %s failed: %s", path, exc)
+                logger.warning("DPI probe %s %s failed: %s", method, path, exc)
 
         # Legacy v1 per-client DPI (UniFi Network App < 8 / older firmware)
         for path in [
