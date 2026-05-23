@@ -252,13 +252,15 @@ class UniFiClient:
                 data = await self._request("POST", path, json={}, params=v2_params,
                                            allow_session_fallback=True)
                 rows = data.get("data", data if isinstance(data, list) else [])
+                logger.info("DPI v2 response keys: %s | row count: %d | sample: %s",
+                            list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                            len(rows), rows[:2] if rows else rows)
                 if rows:
                     logger.info("DPI v2: got %d app-traffic records from %s", len(rows), path)
-                    # Tag rows so _store_dpi_records knows the format
                     for r in rows:
                         r.setdefault("_v2", True)
                     return rows
-                logger.debug("DPI v2 %s returned empty, trying next", path)
+                logger.info("DPI v2 %s returned 200 but empty data, trying next", path)
             except Exception as exc:
                 logger.debug("DPI v2 %s failed: %s", path, exc)
 
