@@ -307,6 +307,21 @@ class AIContextEntry(Base):
     updated_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class DpiRecord(Base):
+    """Per-client DPI record fetched from the UniFi Network Application API."""
+    __tablename__ = "dpi_records"
+
+    id           = Column(Integer, primary_key=True)
+    polled_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    mac_address  = Column(String(17),  nullable=True, index=True)
+    src_ip       = Column(String(45),  nullable=True, index=True)
+    hostname     = Column(String(255), nullable=True)
+    app_name     = Column(String(128), nullable=True)   # e.g. "Netflix", "YouTube"
+    url_category = Column(String(128), nullable=True)   # e.g. "Streaming", "Social"
+    tx_bytes     = Column(Integer,     nullable=True, default=0)
+    rx_bytes     = Column(Integer,     nullable=True, default=0)
+
+
 class CustomAgent(Base):
     __tablename__ = "custom_agents"
     id         = Column(Integer, primary_key=True)
@@ -478,6 +493,29 @@ def _migrate_ai_tables():
         conn.commit()
 
 
+def _migrate_dpi_tables():
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "dpi_records" not in existing:
+            conn.execute(text("""
+                CREATE TABLE dpi_records (
+                    id INTEGER PRIMARY KEY,
+                    polled_at DATETIME,
+                    mac_address VARCHAR(17),
+                    src_ip VARCHAR(45),
+                    hostname VARCHAR(255),
+                    app_name VARCHAR(128),
+                    url_category VARCHAR(128),
+                    tx_bytes INTEGER DEFAULT 0,
+                    rx_bytes INTEGER DEFAULT 0
+                )
+            """))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dpi_polled_at ON dpi_records(polled_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dpi_src_ip ON dpi_records(src_ip)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_dpi_mac ON dpi_records(mac_address)"))
+            conn.commit()
+
+
 def _migrate_agent_tables():
     with engine.connect() as conn:
         existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
@@ -552,6 +590,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
     _migrate_ai_tables()
+    _migrate_dpi_tables()
     _migrate_agent_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()

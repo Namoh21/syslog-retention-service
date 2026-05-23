@@ -3586,8 +3586,126 @@ async function loadSvcConfig() {
 
       <button class="btn btn-primary" onclick="saveSvcConfig()">Save Configuration</button>
       <div id="svc-config-msg" style="margin-top:12px"></div>
+
+      <hr class="divider" style="margin:20px 0" />
+      <div style="font-size:13px;font-weight:600;margin-bottom:4px">&#x1F4F6; UniFi Network Application — DPI Poller</div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
+        Polls the UniFi controller API for per-client DPI data (application names + categories).
+        Results appear in the log viewer Domain/Category columns and the DPI dashboard.
+        Requires a local UDM Pro running the Network Application.
+      </div>
+      <div id="unifi-settings-panel"><div class="spinner"></div></div>
     `;
+    unifiLoadStatus();
   } catch(e) { out.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function unifiLoadStatus() {
+  const panel = document.getElementById('unifi-settings-panel');
+  if (!panel) return;
+  const s = await apiFetch('/api/unifi/status').catch(() => null);
+  const enabled = s?.enabled || false;
+  const stats   = s?.stats || {};
+  panel.innerHTML = `
+    <div style="display:grid;gap:12px;margin-bottom:12px">
+      <div class="form-group">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="unifi-enabled" ${enabled?'checked':''} />
+          <span style="font-size:13px;font-weight:600">Enable UniFi DPI polling</span>
+        </label>
+        <div class="help-tip">Polls the UniFi controller every N seconds and stores app/category data.</div>
+      </div>
+      <div class="form-row" style="flex-wrap:wrap;gap:12px">
+        <div class="form-group">
+          <label>Controller URL</label>
+          <input id="unifi-url" value="${esc(s?.url||'https://192.168.1.1')}" style="width:260px" placeholder="https://192.168.1.1" />
+          <div class="help-tip">Local address of your UDM Pro</div>
+        </div>
+        <div class="form-group">
+          <label>Site</label>
+          <input id="unifi-site" value="${esc(s?.site||'default')}" style="width:120px" />
+        </div>
+        <div class="form-group">
+          <label>Poll interval (seconds)</label>
+          <input type="number" id="unifi-interval" value="${s?.poll_interval||300}" min="60" max="3600" style="width:120px" />
+        </div>
+      </div>
+      <div class="form-row" style="flex-wrap:wrap;gap:12px">
+        <div class="form-group" style="flex:1">
+          <label>API Key <span style="font-weight:400;color:var(--muted)">(Settings → System → Control Plane → API)</span></label>
+          <input id="unifi-apikey" type="password" value="${s?.has_api_key?'••••••••••':'  '}" style="width:100%" placeholder="Paste API key (leave blank to use username/password)" />
+        </div>
+      </div>
+      <div class="form-row" style="flex-wrap:wrap;gap:12px">
+        <div class="form-group">
+          <label>Username <span style="font-weight:400;color:var(--muted)">(fallback if no API key)</span></label>
+          <input id="unifi-user" value="" style="width:200px" placeholder="admin" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="unifi-pass" type="password" value="" style="width:200px" placeholder="Leave blank to keep existing" />
+        </div>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+      <button class="btn btn-primary btn-sm" onclick="unifiSaveSettings()">&#x1F4BE; Save</button>
+      <button class="btn btn-ghost btn-sm" onclick="unifiTestConn()">&#x1F50C; Test Connection</button>
+      <button class="btn btn-ghost btn-sm" onclick="unifiPollNow()">&#x25B6; Poll Now</button>
+    </div>
+    <div id="unifi-msg" style="margin-bottom:10px"></div>
+    ${stats.last_poll ? `
+      <div style="font-size:12px;color:var(--muted)">
+        Last poll: ${fmtDate(stats.last_poll)} &nbsp;|&nbsp;
+        Status: <span style="${stats.last_status?.startsWith('OK')?'color:#3fb950':'color:#e74c3c'}">${esc(stats.last_status||'')}</span> &nbsp;|&nbsp;
+        Total records: ${(stats.records_stored||0).toLocaleString()} &nbsp;|&nbsp;
+        Clients seen: ${stats.clients_seen||0}
+      </div>` : '<div style="font-size:12px;color:var(--muted)">No polls yet.</div>'}
+  `;
+}
+
+async function unifiSaveSettings() {
+  const msg = document.getElementById('unifi-msg');
+  const apiKeyVal = document.getElementById('unifi-apikey')?.value || '';
+  const body = {
+    unifi_enabled:       document.getElementById('unifi-enabled')?.checked ? 'true' : 'false',
+    unifi_url:           document.getElementById('unifi-url')?.value?.trim() || '',
+    unifi_site:          document.getElementById('unifi-site')?.value?.trim() || 'default',
+    unifi_poll_interval: document.getElementById('unifi-interval')?.value || '300',
+  };
+  // Only send API key if it was changed (doesn't start with bullets)
+  if (apiKeyVal && !apiKeyVal.startsWith('•')) body.unifi_api_key = apiKeyVal.trim();
+  const user = document.getElementById('unifi-user')?.value?.trim();
+  if (user) body.unifi_username = user;
+  const pass = document.getElementById('unifi-pass')?.value;
+  if (pass) body.unifi_password = pass;
+  try {
+    await apiFetch('/api/unifi/settings', { method:'POST', body:JSON.stringify(body) });
+    if (msg) msg.innerHTML = '<div class="alert alert-ok">UniFi settings saved.</div>';
+    setTimeout(unifiLoadStatus, 1000);
+  } catch(e) { if (msg) msg.innerHTML = `<div class="alert alert-warn">${e.message}</div>`; }
+}
+
+async function unifiTestConn() {
+  const msg = document.getElementById('unifi-msg');
+  if (msg) msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Testing connection...</div>';
+  const r = await apiFetch('/api/unifi/test', { method:'POST' }).catch(e => ({ok:false,error:e.message}));
+  if (r.ok) {
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Connected — UniFi v${esc(r.version||'?')} · site: ${esc(r.site||'?')}</div>`;
+  } else {
+    if (msg) msg.innerHTML = `<div class="alert alert-warn">&#x2718; ${esc(r.error||'Connection failed')}</div>`;
+  }
+}
+
+async function unifiPollNow() {
+  const msg = document.getElementById('unifi-msg');
+  if (msg) msg.innerHTML = '<div class="alert alert-info"><span class="spinner"></span> Polling UniFi controller...</div>';
+  const r = await apiFetch('/api/unifi/poll', { method:'POST' }).catch(e => ({ok:false,error:e.message}));
+  if (r.ok) {
+    if (msg) msg.innerHTML = `<div class="alert alert-ok">&#x2714; Stored ${r.stored} DPI records from ${r.clients} clients.</div>`;
+    unifiLoadStatus();
+  } else {
+    if (msg) msg.innerHTML = `<div class="alert alert-warn">&#x2718; ${esc(r.error||'Poll failed')}</div>`;
+  }
 }
 
 async function saveSvcConfig() {

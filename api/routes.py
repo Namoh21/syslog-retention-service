@@ -1689,6 +1689,95 @@ async def update_service_config(
     return {"message": "Service configuration saved."}
 
 
+# ===================== UniFi DPI Poller =====================
+
+@router.get("/unifi/status", tags=["unifi"])
+async def unifi_status(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    from unifi_poller import get_stats
+    from database import get_service_setting
+    gss = lambda k: get_service_setting(k, db=db)
+    return {
+        "enabled":       (gss("unifi_enabled") or "false").lower() == "true",
+        "url":           gss("unifi_url") or "",
+        "site":          gss("unifi_site") or "default",
+        "has_api_key":   bool(gss("unifi_api_key")),
+        "has_password":  bool(gss("unifi_password")),
+        "poll_interval": int(gss("unifi_poll_interval") or 300),
+        "stats":         get_stats(),
+    }
+
+
+@router.post("/unifi/test", tags=["unifi"])
+async def unifi_test(_: User = Depends(get_current_user)):
+    from unifi_poller import test_connection
+    return await test_connection()
+
+
+@router.post("/unifi/poll", tags=["unifi"])
+async def unifi_poll_now(_: User = Depends(require_write)):
+    from unifi_poller import poll_now
+    return await poll_now()
+
+
+@router.post("/unifi/settings", tags=["unifi"])
+async def unifi_save_settings(
+    body: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_write),
+):
+    from database import set_service_setting, encrypt_value
+    from fastapi import Request
+    changed = []
+    for key in ("unifi_enabled", "unifi_url", "unifi_api_key", "unifi_username",
+                "unifi_site", "unifi_poll_interval"):
+        if key in body:
+            set_service_setting(key, str(body[key]), db)
+            changed.append(key)
+    if "unifi_password" in body and body["unifi_password"]:
+        set_service_setting("unifi_password", encrypt_value(str(body["unifi_password"])), db)
+        changed.append("unifi_password")
+    db.commit()
+    return {"message": f"UniFi settings saved: {', '.join(changed)}"}
+
+
+@router.get("/unifi/dpi", tags=["unifi"])
+async def unifi_dpi(
+    hours: int = Query(24, ge=1, le=168),
+    src_ip: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    limit: int = Query(500, ge=1, le=5000),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Recent DPI records from UniFi — app name, category, traffic volume per client."""
+    from database import DpiRecord
+    from sqlalchemy import func as sqlfunc
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(DpiRecord).filter(DpiRecord.polled_at >= since)
+    if src_ip:
+        q = q.filter(DpiRecord.src_ip == src_ip)
+    if category:
+        q = q.filter(DpiRecord.url_category.ilike(f"%{category}%"))
+    records = q.order_by(DpiRecord.polled_at.desc()).limit(limit).all()
+    return [
+        {
+            "id":           r.id,
+            "polled_at":    r.polled_at,
+            "mac_address":  r.mac_address,
+            "src_ip":       r.src_ip,
+            "hostname":     r.hostname,
+            "app_name":     r.app_name,
+            "url_category": r.url_category,
+            "tx_bytes":     r.tx_bytes,
+            "rx_bytes":     r.rx_bytes,
+        }
+        for r in records
+    ]
+
+
 # ===================== Investigation =====================
 
 @router.get("/investigation/{ip}", tags=["investigation"])

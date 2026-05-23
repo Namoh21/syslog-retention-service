@@ -134,8 +134,10 @@ async def lifespan(app: FastAPI):
             logger.warning("NetFlow listener failed (port %d): %s", _nf_port, exc)
 
     from alert_engine import run_alert_engine
+    from unifi_poller import run_unifi_poller
     _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))
     _background_tasks.append(asyncio.create_task(run_alert_engine(), name="alert_engine"))
+    _background_tasks.append(asyncio.create_task(run_unifi_poller(), name="unifi_poller"))
     logger.info(
         "Web console: http://%s:%d",
         "localhost" if settings.api_host == "0.0.0.0" else settings.api_host,
