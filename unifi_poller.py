@@ -243,12 +243,16 @@ class UniFiClient:
         v2_params = {"start": start_ms, "end": now_ms, "includeUnidentified": "true"}
 
         v2_candidates = [
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"groupBy": "app"}, v2_params),
-            ("POST", f"/proxy/network/v2/api/site/{self.site}/app-traffic-rate", {"type": "application"}, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/fingerprint-client-dpi", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/stat/app", None, v2_params),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/stat/sessions", None, None),
-            ("GET",  f"/proxy/network/v2/api/site/{self.site}/client-traffic", None, v2_params),
+            # v2 variants
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/traffic-stats", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/dpi-stats", None, v2_params),
+            ("GET",  f"/proxy/network/v2/api/site/{self.site}/app-stats", None, v2_params),
+            # v1 DPI report endpoints (hourly rollup with per-app breakdown)
+            ("POST", f"/proxy/network/api/s/{self.site}/stat/report/hourly.dpi", {"attrs": ["tx_bytes", "rx_bytes"]}, None),
+            ("POST", f"/proxy/network/api/s/{self.site}/stat/report/5minutes.dpi", {"attrs": ["tx_bytes", "rx_bytes"]}, None),
+            # v1 per-app stats
+            ("GET",  f"/proxy/network/api/s/{self.site}/rest/dpigroup", None, None),
+            ("GET",  f"/proxy/network/api/s/{self.site}/stat/stadpi", None, None),
         ]
         for method, path, body, params in v2_candidates:
             try:
