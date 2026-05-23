@@ -174,19 +174,36 @@ class UniFiClient:
 def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
     from database import DpiRecord, SessionLocal
     if not records:
+        logger.info("DPI: API returned 0 records — check that Deep Packet Inspection "
+                    "is enabled in UniFi → Settings → Traffic Management → DPI")
         return 0
+
+    # Log a sample so we can see the actual field names in the response
+    if records:
+        logger.info("DPI sample record keys: %s", list(records[0].keys()))
+        logger.info("DPI sample record: %s", {k: v for k, v in records[0].items()
+                                               if k in ("mac","cat","cat_name","app",
+                                                        "app_proto","tx_bytes","rx_bytes",
+                                                        "type","name")})
+
     db = SessionLocal()
     count = 0
     now = datetime.now(timezone.utc)
     try:
         for r in records:
             mac = r.get("mac", "")
-            cat = r.get("cat_name") or r.get("cat") or ""
-            app = r.get("app_proto") or r.get("app") or ""
+            # Try all known field name variants across firmware versions
+            cat = (r.get("cat_name") or r.get("cat") or
+                   r.get("category") or r.get("category_name") or "")
+            app = (r.get("app_proto") or r.get("app") or
+                   r.get("application") or r.get("name") or r.get("type") or "")
             tx  = int(r.get("tx_bytes", 0) or 0)
             rx  = int(r.get("rx_bytes", 0) or 0)
-            if not (cat or app) or (tx + rx) == 0:
+
+            # Store even if bytes are 0 as long as we have a category or app name
+            if not (cat or app):
                 continue
+
             client   = clients_by_mac.get(mac, {})
             src_ip   = client.get("ip") or r.get("ip") or None
             hostname = client.get("hostname") or client.get("name") or None
@@ -195,13 +212,14 @@ def _store_dpi_records(records: list[dict], clients_by_mac: dict) -> int:
                 mac_address=mac or None,
                 src_ip=src_ip,
                 hostname=hostname,
-                app_name=app[:128] if app else None,
-                url_category=cat[:128] if cat else None,
+                app_name=str(app)[:128] if app else None,
+                url_category=str(cat)[:128] if cat else None,
                 tx_bytes=tx,
                 rx_bytes=rx,
             ))
             count += 1
         db.commit()
+        logger.info("DPI: stored %d / %d records", count, len(records))
     except Exception as exc:
         logger.error("DPI store error: %s", exc)
         db.rollback()
