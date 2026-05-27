@@ -356,6 +356,25 @@ class CustomAgent(Base):
                         onupdate=lambda: datetime.now(timezone.utc))
 
 
+class CustomParser(Base):
+    """AI-registered log source parsers stored as JSON pattern rules.
+
+    app_keywords: JSON list[str] — any substring that gates this parser
+    patterns:     JSON list[dict] — {regex, event_type, action?, fields?}
+                  fields maps NormalizedFields attribute names → 1-based group index
+    created_by:   "ai_agent" when registered autonomously, username otherwise
+    """
+    __tablename__ = "custom_parsers"
+    id           = Column(Integer, primary_key=True)
+    name         = Column(String(128), unique=True, nullable=False)
+    description  = Column(Text, default="")
+    app_keywords = Column(Text, nullable=False)
+    patterns     = Column(Text, nullable=False)
+    enabled      = Column(Boolean, default=True)
+    created_at   = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_by   = Column(String(128), default="ai_agent")
+
+
 class NetFlowRecord(Base):
     """A single IP flow record received from the NetFlow exporter (UDM Pro)."""
     __tablename__ = "netflow_records"
@@ -625,6 +644,26 @@ def _migrate_agent_tables():
             conn.commit()
 
 
+def _migrate_custom_parsers():
+    """Create custom_parsers table for AI-registered log source parsers."""
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "custom_parsers" not in existing:
+            conn.execute(text("""
+                CREATE TABLE custom_parsers (
+                    id INTEGER PRIMARY KEY,
+                    name VARCHAR(128) UNIQUE NOT NULL,
+                    description TEXT DEFAULT '',
+                    app_keywords TEXT NOT NULL,
+                    patterns TEXT NOT NULL,
+                    enabled BOOLEAN DEFAULT 1,
+                    created_at DATETIME,
+                    created_by VARCHAR(128) DEFAULT 'ai_agent'
+                )
+            """))
+            conn.commit()
+
+
 def _migrate_secret_key_to_keystore():
     """
     On first run (or after upgrade), move SECRET_KEY from .env into the OS
@@ -682,6 +721,7 @@ def init_db():
     _migrate_dpi_tables()
     _migrate_agent_tables()
     _migrate_unifi_change_tables()
+    _migrate_custom_parsers()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

@@ -133,6 +133,29 @@ async def lifespan(app: FastAPI):
         except OSError as exc:
             logger.warning("NetFlow listener failed (port %d): %s", _nf_port, exc)
 
+    # Load any AI-registered custom parsers persisted from a previous run
+    try:
+        import json as _json
+        from database import CustomParser
+        from normalizer import load_custom_parsers
+        _cp_db = SessionLocal()
+        try:
+            _rows = _cp_db.query(CustomParser).filter_by(enabled=True).all()
+            if _rows:
+                load_custom_parsers([
+                    {
+                        "app_keywords": _json.loads(r.app_keywords),
+                        "patterns":     _json.loads(r.patterns),
+                        "enabled":      True,
+                    }
+                    for r in _rows
+                ])
+                logger.info("Loaded %d custom parser(s) from DB", len(_rows))
+        finally:
+            _cp_db.close()
+    except Exception as exc:
+        logger.warning("Could not load custom parsers on startup: %s", exc)
+
     from alert_engine import run_alert_engine
     from unifi_poller import run_unifi_poller
     _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))

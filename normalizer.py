@@ -14,12 +14,21 @@ Supported event types:
   dns_query / dns_response         — dnsmasq DNS
   threat_block                     — Unifi Threat Management
   port_scan                        — scan detection
+  nas_login / nas_login_fail /
+  nas_logout                       — ASUSTOR ADM authentication
+  nas_autoblock                    — ASUSTOR auto-block
+  nas_drive_event                  — ASUSTOR drive inserted/removed/SMART
+  nas_volume_event                 — ASUSTOR RAID/volume status
+  nas_file_access                  — ASUSTOR SMB share connection
+  nas_backup                       — ASUSTOR backup task result
+  nas_system                       — other ASUSTOR ADM events
   connection                       — generic allow/deny connection log
   system                           — OS/service events
   unknown                          — no pattern matched
 """
 import json
 import re
+import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -500,6 +509,175 @@ def _parse_scan(msg: str) -> Optional[NormalizedFields]:
     )
 
 
+# ── ASUSTOR ADM (AS5304T and compatible NAS devices) ─────────────────────────
+# ADM service names that identify ASUSTOR-origin syslog messages.
+_NAS_APP_KW = re.compile(
+    r"\b(adm_session|nas_disks?|nas_volume|nas_system|auto_block|nas_backup)\b",
+    re.IGNORECASE,
+)
+# ADM login/logout — "User [admin] logged in from [192.168.1.50]."
+_NAS_LOGIN_OK   = re.compile(r"User\s+\[([^\]]+)\]\s+logged\s+in\s+from\s+\[([0-9.]+)\]",   re.IGNORECASE)
+_NAS_LOGIN_FAIL = re.compile(r"User\s+\[([^\]]+)\]\s+login\s+failed\s+from\s+\[([0-9.]+)\]", re.IGNORECASE)
+_NAS_LOGOUT     = re.compile(r"User\s+\[([^\]]+)\]\s+logged\s+out\s+from\s+\[([0-9.]+)\]",   re.IGNORECASE)
+# ADM auto-block — "IP [192.168.1.100] has been auto-blocked due to..."
+_NAS_AUTOBLOCK  = re.compile(r"IP\s+\[([0-9.]+)\]\s+has\s+been\s+auto[-\s]?block",           re.IGNORECASE)
+# ADM drive events — "Drive [1] has been removed."
+_NAS_DRIVE      = re.compile(r"Drive\s+\[(\d+)\]\s+has\s+been\s+(\w+)",                       re.IGNORECASE)
+# ADM SMART — "SMART test result for Drive [1]: PASSED."
+_NAS_SMART      = re.compile(r"SMART\s+test\s+result\s+for\s+Drive\s+\[(\d+)\]:\s+(\w+)",    re.IGNORECASE)
+# ADM volume/RAID — "Volume [1] status changed to [Degraded]."
+_NAS_VOLUME     = re.compile(r"Volume\s+\[([^\]]+)\]\s+status\s+changed\s+to\s+\[([^\]]+)\]", re.IGNORECASE)
+# Samba share connect — "connect to service sharename initially as user admin (ip 192.168.1.50)"
+_NAS_SMB        = re.compile(
+    r"connect\s+to\s+service\s+(\S+)\s+initially\s+as\s+user\s+(\S+)\s+\(ip\s+([0-9.]+)\)",
+    re.IGNORECASE,
+)
+# ADM backup — "Backup task [My Backup] completed successfully." / "...failed."
+_NAS_BACKUP     = re.compile(
+    r"Backup\s+task\s+\[([^\]]+)\]\s+(completed\s+successfully|failed)",
+    re.IGNORECASE,
+)
+
+
+def _parse_nas(msg: str) -> Optional[NormalizedFields]:
+    if not _NAS_APP_KW.search(msg):
+        return None
+
+    m = _NAS_LOGIN_FAIL.search(msg)
+    if m:
+        return NormalizedFields(event_type="nas_login_fail", user=m.group(1), src_ip=m.group(2), action="BLOCK")
+
+    m = _NAS_LOGIN_OK.search(msg)
+    if m:
+        return NormalizedFields(event_type="nas_login", user=m.group(1), src_ip=m.group(2), action="ALLOW")
+
+    m = _NAS_LOGOUT.search(msg)
+    if m:
+        return NormalizedFields(event_type="nas_logout", user=m.group(1), src_ip=m.group(2), action="ALLOW")
+
+    m = _NAS_AUTOBLOCK.search(msg)
+    if m:
+        return NormalizedFields(event_type="nas_autoblock", src_ip=m.group(1), action="BLOCK")
+
+    # Check SMART before generic drive so the more specific pattern wins
+    m = _NAS_SMART.search(msg)
+    if m:
+        passed = m.group(2).lower() == "passed"
+        return NormalizedFields(
+            event_type="nas_drive_event",
+            action="ALLOW" if passed else "ALERT",
+            extra={"drive": m.group(1), "smart": m.group(2).lower()},
+        )
+
+    m = _NAS_DRIVE.search(msg)
+    if m:
+        status = m.group(2).lower()
+        return NormalizedFields(
+            event_type="nas_drive_event",
+            action="ALERT" if status in ("removed", "failed") else "ALLOW",
+            extra={"drive": m.group(1), "status": status},
+        )
+
+    m = _NAS_VOLUME.search(msg)
+    if m:
+        status = m.group(2).lower()
+        return NormalizedFields(
+            event_type="nas_volume_event",
+            action="ALLOW" if status in ("normal", "healthy") else "ALERT",
+            extra={"volume": m.group(1), "status": status},
+        )
+
+    m = _NAS_SMB.search(msg)
+    if m:
+        return NormalizedFields(
+            event_type="nas_file_access",
+            rule_name=m.group(1),
+            user=m.group(2),
+            src_ip=m.group(3),
+            action="ALLOW",
+            protocol="SMB",
+        )
+
+    m = _NAS_BACKUP.search(msg)
+    if m:
+        success = "completed" in m.group(2).lower()
+        return NormalizedFields(
+            event_type="nas_backup",
+            action="ALLOW" if success else "ALERT",
+            extra={"task": m.group(1), "result": "success" if success else "failed"},
+        )
+
+    return NormalizedFields(event_type="nas_system")
+
+
+# ── AI-registered dynamic parsers ─────────────────────────────────────────────
+# The AI agent can register new log source parsers at runtime via the
+# register_log_source tool. Patterns are stored in the DB and compiled into
+# this in-memory cache. Call load_custom_parsers() on startup and after any
+# DB write to keep the cache current.
+
+_custom_lock: threading.Lock = threading.Lock()
+_custom_cache: list[dict] = []
+
+
+def load_custom_parsers(parsers: list[dict]) -> None:
+    """Compile and hot-reload custom parsers from DB records.
+
+    Each entry in `parsers` must have:
+      app_keywords: list[str]   — any one must be present to try this parser
+      patterns:     list[dict]  — {regex, event_type, action?, fields?}
+        fields maps NormalizedFields attribute names to 1-based capture group index
+    """
+    compiled: list[dict] = []
+    for p in parsers:
+        if not p.get("enabled", True):
+            continue
+        try:
+            kw_re = re.compile(
+                "|".join(re.escape(k) for k in p["app_keywords"] if k),
+                re.IGNORECASE,
+            )
+            rules: list[dict] = []
+            for rule in p.get("patterns", []):
+                rules.append({
+                    "re":         re.compile(rule["regex"], re.IGNORECASE),
+                    "event_type": rule["event_type"],
+                    "action":     rule.get("action"),
+                    "fields":     {k: int(v) for k, v in rule.get("fields", {}).items()},
+                })
+            if rules:
+                compiled.append({"kw": kw_re, "rules": rules})
+        except re.error:
+            continue
+    with _custom_lock:
+        _custom_cache[:] = compiled
+
+
+def _parse_custom(msg: str) -> Optional[NormalizedFields]:
+    with _custom_lock:
+        snapshot = list(_custom_cache)
+    for parser in snapshot:
+        if not parser["kw"].search(msg):
+            continue
+        for rule in parser["rules"]:
+            m = rule["re"].search(msg)
+            if not m:
+                continue
+            groups = m.groups()
+            kwargs: dict = {"event_type": rule["event_type"]}
+            if rule["action"]:
+                kwargs["action"] = rule["action"]
+            for field_name, idx in rule["fields"].items():
+                try:
+                    val = groups[idx - 1]
+                    if val is not None:
+                        kwargs[field_name] = val
+                except IndexError:
+                    pass
+            return NormalizedFields(**kwargs)
+    return None
+
+
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 _PARSERS = [
@@ -508,10 +686,12 @@ _PARSERS = [
     _parse_threat,
     _parse_content_filter,
     _parse_dhcp,
+    _parse_nas,       # ASUSTOR ADM — before auth to catch ADM login format first
     _parse_auth,
     _parse_vpn,
     _parse_dns,
     _parse_scan,
+    _parse_custom,    # AI-registered sources — checked last before unknown fallback
 ]
 
 
