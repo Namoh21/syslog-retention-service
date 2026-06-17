@@ -3916,3 +3916,273 @@ def delete_custom_parser(
                 request.client.host if request.client else "")
     db.commit()
     return {"deleted": True, "name": name}
+
+
+# ===================== System / Update =====================
+
+# Update job store — same pattern as _analysis_jobs
+# job_id -> {status, log, error, started_at}
+_update_jobs: dict = {}
+
+
+def _new_update_job_id() -> str:
+    return secrets.token_urlsafe(16)
+
+
+@router.get("/system/info", tags=["system"])
+async def system_info(db: Session = Depends(get_db)):
+    """System health info — no auth required (for external health checks)."""
+    import subprocess as _sp
+    import sys as _sys
+    from pathlib import Path as _Path
+    from main import get_service_uptime
+
+    install_dir = _Path(__file__).parent.parent
+
+    def _git(*args):
+        try:
+            return _sp.check_output(
+                ["git", *args], cwd=str(install_dir),
+                stderr=_sp.DEVNULL, timeout=5,
+            ).decode().strip()
+        except Exception:
+            return None
+
+    # DB size
+    db_size_mb = 0.0
+    try:
+        from database import _resolved_db_path
+        db_path_obj = _Path(_resolved_db_path)
+        if db_path_obj.exists():
+            db_size_mb = round(db_path_obj.stat().st_size / 1_048_576, 2)
+    except Exception:
+        pass
+
+    # Log count
+    log_count = 0
+    try:
+        log_count = db.query(SyslogEntry).count()
+    except Exception:
+        pass
+
+    return {
+        "version": _git("describe", "--tags", "--always") or "unknown",
+        "commit": _git("rev-parse", "--short", "HEAD") or "unknown",
+        "branch": _git("rev-parse", "--abbrev-ref", "HEAD") or "unknown",
+        "python_version": _sys.version.split()[0],
+        "uptime_seconds": round(get_service_uptime()),
+        "db_size_mb": db_size_mb,
+        "log_count": log_count,
+    }
+
+
+@router.get("/system/update/check", tags=["system"])
+async def system_update_check(_: User = Depends(require_admin)):
+    """Check whether a newer commit is available on origin/main."""
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    install_dir = _Path(__file__).parent.parent
+    token_file = install_dir / ".git-token"
+
+    if not token_file.exists():
+        return {"update_available": False, "error": "no_token"}
+
+    token = token_file.read_text().strip()
+    repo_url = f"https://{token}@github.com/Namoh21/Namoh-SIEM-AISoc.git"
+
+    def _git(*args, url_arg=False):
+        cmd = ["git", "-C", str(install_dir)]
+        if url_arg:
+            cmd += [*args, url_arg]
+        else:
+            cmd += list(args)
+        r = _sp.run(cmd, capture_output=True, text=True, timeout=20)
+        return r.stdout.strip()
+
+    try:
+        # Fetch silently using token
+        _sp.run(
+            ["git", "-C", str(install_dir), "fetch", repo_url, "main:refs/remotes/origin/main"],
+            capture_output=True, timeout=30,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"git fetch failed: {exc}")
+
+    current = _git("rev-parse", "--short", "HEAD")
+    latest = _git("rev-parse", "--short", "origin/main")
+
+    behind_output = _git("rev-list", "--count", f"HEAD..origin/main")
+    try:
+        commits_behind = int(behind_output)
+    except ValueError:
+        commits_behind = 0
+
+    changelog = []
+    if commits_behind > 0:
+        log_out = _git("log", "--oneline", "HEAD..origin/main")
+        changelog = [line for line in log_out.splitlines() if line]
+
+    return {
+        "update_available": commits_behind > 0,
+        "current_commit": current,
+        "latest_commit": latest,
+        "commits_behind": commits_behind,
+        "changelog": changelog,
+    }
+
+
+@router.post("/system/update/apply", tags=["system"])
+async def system_update_apply(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Start a background update: git pull + pip install + service restart."""
+    import asyncio as _asyncio
+    import logging as _log
+    import os as _os
+    import signal as _signal
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    _logger = _log.getLogger("routes.update")
+    install_dir = _Path(__file__).parent.parent
+    token_file = install_dir / ".git-token"
+
+    job_id = _new_update_job_id()
+    _update_jobs[job_id] = {
+        "status": "running",
+        "log": "",
+        "error": None,
+        "started_at": datetime.now(timezone.utc).timestamp(),
+    }
+
+    write_audit(db, admin.username, "system.update.apply",
+                "Web update triggered", request.client.host if request.client else "")
+    db.commit()
+
+    def _append_log(msg: str):
+        _update_jobs[job_id]["log"] += msg + "\n"
+        _logger.info("update[%s] %s", job_id, msg)
+
+    async def _run_update():
+        await _asyncio.sleep(0.5)  # let HTTP response reach the client
+        try:
+            # ── git pull ─────────────────────────────────────────────────────
+            if token_file.exists():
+                token = token_file.read_text().strip()
+                pull_url = f"https://{token}@github.com/Namoh21/Namoh-SIEM-AISoc.git"
+            else:
+                pull_url = "origin"
+            _append_log("Running git pull...")
+            r = await _asyncio.to_thread(
+                _sp.run,
+                ["git", "-C", str(install_dir), "pull", pull_url, "main"],
+                capture_output=True, text=True, timeout=120,
+            )
+            _append_log(r.stdout.strip() or "(no output)")
+            if r.returncode != 0:
+                raise RuntimeError(f"git pull failed: {r.stderr.strip()}")
+
+            # ── pip install ───────────────────────────────────────────────────
+            req = str(install_dir / "requirements-linux.txt")
+            if not _Path(req).exists():
+                req = str(install_dir / "requirements.txt")
+            pip = str(install_dir / "venv" / "bin" / "pip")
+            if not _Path(pip).exists():
+                pip = str(install_dir / ".venv" / "bin" / "pip")
+            _append_log("Installing requirements...")
+            r2 = await _asyncio.to_thread(
+                _sp.run,
+                [pip, "install", "-r", req, "-q", "--no-cache-dir"],
+                capture_output=True, text=True, timeout=600,
+            )
+            _append_log(r2.stdout.strip() or "pip install complete.")
+            if r2.returncode != 0:
+                _append_log(f"pip warning: {r2.stderr.strip()}")
+
+            # ── restart ───────────────────────────────────────────────────────
+            _append_log("Restarting service...")
+            rs = await _asyncio.to_thread(
+                _sp.run,
+                ["sudo", "systemctl", "restart", "namoh-siem"],
+                capture_output=True, text=True, timeout=20,
+            )
+            if rs.returncode != 0:
+                _append_log("sudo systemctl restart failed — sending SIGTERM for auto-restart")
+                _os.kill(_os.getpid(), _signal.SIGTERM)
+            else:
+                _append_log("Service restart initiated.")
+
+            _update_jobs[job_id]["status"] = "complete"
+        except Exception as exc:
+            _update_jobs[job_id]["status"] = "failed"
+            _update_jobs[job_id]["error"] = str(exc)
+            _append_log(f"ERROR: {exc}")
+
+    _asyncio.create_task(_run_update())
+    return {"status": "started", "job_id": job_id}
+
+
+@router.get("/system/update/status/{job_id}", tags=["system"])
+async def system_update_status(job_id: str, _: User = Depends(require_admin)):
+    """Poll background update job status."""
+    job = _update_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Update job not found or expired.")
+    return {
+        "status": job["status"],
+        "log": job["log"],
+        "error": job.get("error"),
+    }
+
+
+@router.get("/system/logs", tags=["system"])
+async def system_logs(_: User = Depends(require_admin)):
+    """Return last 200 lines of the service journal (or log file fallback)."""
+    import subprocess as _sp
+    from pathlib import Path as _Path
+
+    lines: list[str] = []
+    try:
+        r = _sp.run(
+            ["journalctl", "-u", "namoh-siem", "--no-pager", "-n", "200", "--output=short"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0 and r.stdout.strip():
+            lines = r.stdout.splitlines()
+    except Exception:
+        pass
+
+    # Fallback: try old service name
+    if not lines:
+        try:
+            r2 = _sp.run(
+                ["journalctl", "-u", "syslog-siem", "--no-pager", "-n", "200", "--output=short"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r2.returncode == 0 and r2.stdout.strip():
+                lines = r2.stdout.splitlines()
+        except Exception:
+            pass
+
+    # Fallback: read log file
+    if not lines:
+        for log_path in [
+            "/var/log/syslog-siem/service.log",
+            "/opt/namoh-siem/data/service.log",
+        ]:
+            p = _Path(log_path)
+            if p.exists():
+                try:
+                    all_lines = p.read_text(errors="replace").splitlines()
+                    lines = all_lines[-200:]
+                    break
+                except Exception:
+                    pass
+
+    if not lines:
+        lines = ["(No log output available. Check journalctl manually.)"]
+
+    return {"lines": lines}

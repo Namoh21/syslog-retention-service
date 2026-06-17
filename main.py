@@ -6,11 +6,20 @@ import logging
 import os
 import stat
 import sys
+import time as _time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from pathlib import Path
 from time import time
 from typing import Callable
+
+# ── Service start time (used by /api/system/info uptime calculation) ──────────
+_SERVICE_START_TIME: float = _time.time()
+
+
+def get_service_uptime() -> float:
+    """Return seconds elapsed since service start."""
+    return _time.time() - _SERVICE_START_TIME
 
 if sys.version_info < (3, 10):
     print(

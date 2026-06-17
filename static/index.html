@@ -413,6 +413,8 @@
       <li><a onclick="showPage('users')" data-page="users" title="Manage who can access the web console"><span class="nav-icon">&#x1F464;</span> Users</a></li>
       <li><a onclick="showPage('apikeys')" data-page="apikeys" title="Generate API keys for external integrations and Claude Projects"><span class="nav-icon">&#x1F511;</span> API Keys</a></li>
       <li><a onclick="showPage('auditlog')" data-page="auditlog" title="Log of all admin actions and authentication events"><span class="nav-icon">&#x1F4DC;</span> Audit Log</a></li>
+      <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">System</li>
+      <li><a onclick="showPage('systemPage')" data-page="systemPage" title="System info, updates, and service logs"><span class="nav-icon">&#x2699;&#xFE0F;</span> System</a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Help</li>
       <li><a onclick="showPage('setup')" data-page="setup" title="Step-by-step guide to configuring your UDM Pro and this service"><span class="nav-icon">&#x2139;&#xFE0F;</span> Setup Guide</a></li>
     </ul>
@@ -622,16 +624,20 @@ function showPage(name) {
     unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
+    systemPage:'System',
   };
   document.title = pageTitles[name] ? `${pageTitles[name]} — SIEM Console` : 'SIEM Console';
   if (name !== 'logs' && _liveRefreshTimer) { clearInterval(_liveRefreshTimer); _liveRefreshTimer = null; }
   if (name !== 'trafficmatrix' && _netGraph) { _netGraph.stop(); _netGraph = null; }
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
+  // Stop system page timers when navigating away
+  if (name !== 'systemPage') { _stopSystemTimers(); }
   const pages = {
     dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel, investigations, incidents,
     unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
+    systemPage,
   };
   pages[name]?.();
 }
@@ -7068,6 +7074,215 @@ async function incLoadDash() {
     if (el2) el2.innerHTML = `<div style="color:var(--danger);padding:20px;">Error: ${e}</div>`;
   }
 }
+
+// ── System page ───────────────────────────────────────────────────────────────
+let _sysInfoTimer = null;
+let _sysLogsTimer = null;
+let _sysUpdatePollTimer = null;
+
+function _stopSystemTimers() {
+  if (_sysInfoTimer)   { clearInterval(_sysInfoTimer);   _sysInfoTimer   = null; }
+  if (_sysLogsTimer)   { clearInterval(_sysLogsTimer);   _sysLogsTimer   = null; }
+  if (_sysUpdatePollTimer) { clearInterval(_sysUpdatePollTimer); _sysUpdatePollTimer = null; }
+}
+
+function _fmtUptime(s) {
+  s = Math.floor(s);
+  const d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600),
+        m = Math.floor((s % 3600) / 60), sec = s % 60;
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m ${sec}s`;
+  if (m > 0) return `${m}m ${sec}s`;
+  return `${sec}s`;
+}
+
+async function systemPage() {
+  _stopSystemTimers();
+  render(`
+    <div class="page-header">
+      <h1>&#x2699;&#xFE0F; System</h1>
+      <p>Service information, updates, and logs.</p>
+    </div>
+    <div class="ai-tabs" id="sys-tabs">
+      <div class="ai-tab active" onclick="sysTab('info')"   id="sys-tab-info">Info</div>
+      <div class="ai-tab"        onclick="sysTab('updates')" id="sys-tab-updates">Updates</div>
+      <div class="ai-tab"        onclick="sysTab('logs')"    id="sys-tab-logs">Logs</div>
+    </div>
+    <div id="sys-tab-content"></div>
+  `);
+  sysTab('info');
+}
+
+function sysTab(name) {
+  _stopSystemTimers();
+  document.querySelectorAll('#sys-tabs .ai-tab').forEach(t => t.classList.remove('active'));
+  const el = document.getElementById('sys-tab-' + name);
+  if (el) el.classList.add('active');
+  if (name === 'info')    _sysTabInfo();
+  if (name === 'updates') _sysTabUpdates();
+  if (name === 'logs')    _sysTabLogs();
+}
+
+// ── Info tab ─────────────────────────────────────────────────────────────────
+async function _loadSysInfo() {
+  const c = document.getElementById('sys-info-content');
+  if (!c) return;
+  try {
+    const d = await apiFetch('/api/system/info');
+    if (!d) return;
+    c.innerHTML = `
+      <div class="stat-grid">
+        <div class="stat"><div class="val" style="font-size:18px;font-family:monospace">${esc(d.version)}</div><div class="lbl">Version</div></div>
+        <div class="stat"><div class="val" style="font-size:18px;font-family:monospace">${esc(d.commit)}</div><div class="lbl">Git Commit</div></div>
+        <div class="stat"><div class="val" style="font-size:18px;font-family:monospace">${esc(d.branch)}</div><div class="lbl">Branch</div></div>
+        <div class="stat"><div class="val" style="font-size:18px;font-family:monospace">${esc(d.python_version)}</div><div class="lbl">Python Version</div></div>
+        <div class="stat"><div class="val" style="font-size:18px">${_fmtUptime(d.uptime_seconds)}</div><div class="lbl">Uptime</div></div>
+        <div class="stat"><div class="val">${d.db_size_mb} MB</div><div class="lbl">Database Size</div></div>
+        <div class="stat"><div class="val">${(d.log_count||0).toLocaleString()}</div><div class="lbl">Total Log Entries</div></div>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-top:4px;">Auto-refreshes every 30 seconds.</p>`;
+  } catch(e) {
+    if (c) c.innerHTML = `<div class="alert alert-warn">Failed to load system info: ${esc(e.message)}</div>`;
+  }
+}
+
+function _sysTabInfo() {
+  const cont = document.getElementById('sys-tab-content');
+  if (!cont) return;
+  cont.innerHTML = `<div id="sys-info-content"><div style="color:var(--muted);padding:20px"><span class="spinner"></span> Loading...</div></div>`;
+  _loadSysInfo();
+  _sysInfoTimer = setInterval(_loadSysInfo, 30000);
+}
+
+// ── Updates tab ───────────────────────────────────────────────────────────────
+function _sysTabUpdates() {
+  const cont = document.getElementById('sys-tab-content');
+  if (!cont) return;
+  cont.innerHTML = `
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F504;</span> Software Updates</div>
+      <div class="alert alert-warn" style="margin-bottom:14px;">
+        The service will restart automatically during an update. You will be disconnected briefly.
+      </div>
+      <div id="sys-update-token-warn" class="hidden alert alert-warn" style="margin-bottom:14px;">
+        No GitHub token configured. Add your PAT to <code>/opt/namoh-siem/.git-token</code> to enable updates.
+      </div>
+      <button class="btn btn-ghost" id="sys-check-btn" onclick="_sysCheckUpdate()">&#x1F50D; Check for Updates</button>
+      <div id="sys-update-result" style="margin-top:16px;"></div>
+    </div>
+    <div class="card hidden" id="sys-apply-card">
+      <div class="card-title"><span class="icon">&#x1F4E6;</span> Apply Update</div>
+      <button class="btn btn-success" id="sys-apply-btn" onclick="_sysApplyUpdate()">&#x2B06; Apply Update &amp; Restart</button>
+      <div id="sys-apply-result" style="margin-top:14px;"></div>
+    </div>`;
+}
+
+async function _sysCheckUpdate() {
+  const btn = document.getElementById('sys-check-btn');
+  const res = document.getElementById('sys-update-result');
+  const applyCard = document.getElementById('sys-apply-card');
+  const tokenWarn = document.getElementById('sys-update-token-warn');
+  if (!btn || !res) return;
+  btn.disabled = true; btn.textContent = 'Checking...';
+  res.innerHTML = '<span class="spinner"></span> Fetching from GitHub...';
+  try {
+    const d = await apiFetch('/api/system/update/check');
+    if (!d) return;
+    if (d.error === 'no_token') {
+      tokenWarn.classList.remove('hidden');
+      res.innerHTML = '';
+      applyCard && applyCard.classList.add('hidden');
+    } else if (d.update_available) {
+      tokenWarn.classList.add('hidden');
+      let changeHtml = '';
+      if (d.changelog && d.changelog.length) {
+        changeHtml = '<ul style="margin:8px 0 0 16px;font-size:12px;font-family:monospace;color:var(--text);">' +
+          d.changelog.map(l => `<li style="margin-bottom:3px">${esc(l)}</li>`).join('') + '</ul>';
+      }
+      res.innerHTML = `
+        <div class="alert alert-ok" style="margin-bottom:10px;">
+          &#x2714; Update available — <strong>${d.commits_behind}</strong> commit${d.commits_behind!==1?'s':''} behind
+          &nbsp;&nbsp;<span style="font-family:monospace;font-size:11px;color:var(--muted)">${esc(d.current_commit)} &rarr; ${esc(d.latest_commit)}</span>
+        </div>
+        ${changeHtml ? '<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">Changelog:</div>' + changeHtml : ''}`;
+      applyCard && applyCard.classList.remove('hidden');
+    } else {
+      tokenWarn.classList.add('hidden');
+      res.innerHTML = `<div class="alert alert-info">&#x2713; Already up to date (${esc(d.current_commit)}).</div>`;
+      applyCard && applyCard.classList.add('hidden');
+    }
+  } catch(e) {
+    res.innerHTML = `<div class="alert alert-warn">Check failed: ${esc(e.message)}</div>`;
+  }
+  btn.disabled = false; btn.textContent = '🔍 Check for Updates';
+}
+
+async function _sysApplyUpdate() {
+  const btn = document.getElementById('sys-apply-btn');
+  const res = document.getElementById('sys-apply-result');
+  if (!btn || !res) return;
+  if (!confirm('Apply update and restart the service now?')) return;
+  btn.disabled = true; btn.textContent = 'Starting update...';
+  res.innerHTML = '<span class="spinner"></span> Initiating update...';
+  try {
+    const d = await apiFetch('/api/system/update/apply', {method:'POST'});
+    if (!d) return;
+    const jobId = d.job_id;
+    res.innerHTML = `<div style="margin-bottom:8px;color:var(--muted);font-size:13px;">Update in progress — job <code>${esc(jobId)}</code></div>
+      <pre id="sys-update-log" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px;font-size:11px;font-family:monospace;color:var(--accent2);white-space:pre-wrap;max-height:300px;overflow-y:auto;"></pre>`;
+    _sysUpdatePollTimer = setInterval(async () => {
+      try {
+        const s = await apiFetch(`/api/system/update/status/${jobId}`);
+        const logEl = document.getElementById('sys-update-log');
+        if (s && logEl) {
+          logEl.textContent = s.log || '';
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+        if (!s || s.status === 'complete' || s.status === 'failed') {
+          clearInterval(_sysUpdatePollTimer); _sysUpdatePollTimer = null;
+          if (s && s.status === 'failed') {
+            res.insertAdjacentHTML('afterbegin', `<div class="alert alert-warn" style="margin-bottom:8px;">Update failed: ${esc(s.error||'')}</div>`);
+          } else if (s && s.status === 'complete') {
+            res.insertAdjacentHTML('afterbegin', `<div class="alert alert-ok" style="margin-bottom:8px;">Update complete! Service is restarting...</div>`);
+          }
+        }
+      } catch(e) { /* service may be restarting */ }
+    }, 2000);
+  } catch(e) {
+    res.innerHTML = `<div class="alert alert-warn">Failed to start update: ${esc(e.message)}</div>`;
+    btn.disabled = false; btn.textContent = '⬆ Apply Update & Restart';
+  }
+}
+
+// ── Logs tab ──────────────────────────────────────────────────────────────────
+async function _loadSysLogs() {
+  const logEl = document.getElementById('sys-log-output');
+  if (!logEl) return;
+  try {
+    const d = await apiFetch('/api/system/logs');
+    if (!d) return;
+    logEl.textContent = (d.lines || []).join('\n');
+    logEl.scrollTop = logEl.scrollHeight;
+  } catch(e) {
+    if (logEl) logEl.textContent = 'Error loading logs: ' + e.message;
+  }
+}
+
+function _sysTabLogs() {
+  const cont = document.getElementById('sys-tab-content');
+  if (!cont) return;
+  cont.innerHTML = `
+    <div class="card">
+      <div class="card-title"><span class="icon">&#x1F4CB;</span> Service Logs
+        <button class="btn btn-ghost btn-sm" style="margin-left:auto" onclick="_loadSysLogs()">&#x21BB; Refresh</button>
+      </div>
+      <p style="font-size:11px;color:var(--muted);margin-bottom:10px;">Last 200 lines from journalctl. Auto-refreshes every 10s.</p>
+      <pre id="sys-log-output" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:14px;font-size:11px;font-family:monospace;color:var(--accent2);white-space:pre-wrap;max-height:500px;overflow-y:auto;line-height:1.6;">(loading...)</pre>
+    </div>`;
+  _loadSysLogs();
+  _sysLogsTimer = setInterval(_loadSysLogs, 10000);
+}
+
 
 </script>
 </body>
