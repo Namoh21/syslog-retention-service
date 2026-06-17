@@ -42,7 +42,7 @@ from auth import (
 )
 from config import settings
 from database import (
-    ApiKey, AuditLog, RetentionPolicy, SyslogEntry, User,
+    ApiKey, AuditLog, CustomParser, RetentionPolicy, SyslogEntry, User,
     get_db, get_stats, purge_old_entries, query_logs, query_logs_for_export,
     write_audit, SEVERITY_NAMES, FACILITY_NAMES,
 )
@@ -3311,3 +3311,82 @@ async def detection_dry_run(
             for e in rows
         ],
     }
+
+
+# ── Custom parser management (AI-registered log sources) ─────────────────────
+
+def _reload_custom_parsers(db: Session) -> None:
+    """Reload the normalizer's in-memory custom parser cache from the DB."""
+    import json as _json
+    from normalizer import load_custom_parsers
+    rows = db.query(CustomParser).filter_by(enabled=True).all()
+    load_custom_parsers([
+        {
+            "app_keywords": _json.loads(r.app_keywords),
+            "patterns":     _json.loads(r.patterns),
+            "enabled":      True,
+        }
+        for r in rows
+    ])
+
+
+@router.get("/admin/parsers", dependencies=[Depends(require_admin)])
+def list_custom_parsers(db: Session = Depends(get_db)):
+    """List all AI-registered and manually created custom log source parsers."""
+    import json as _json
+    rows = db.query(CustomParser).order_by(CustomParser.created_at.desc()).all()
+    return [
+        {
+            "id":            r.id,
+            "name":          r.name,
+            "description":   r.description,
+            "enabled":       r.enabled,
+            "created_by":    r.created_by,
+            "created_at":    r.created_at.isoformat() if r.created_at else None,
+            "pattern_count": len(_json.loads(r.patterns)),
+            "app_keywords":  _json.loads(r.app_keywords),
+        }
+        for r in rows
+    ]
+
+
+@router.patch("/admin/parsers/{parser_id}/toggle", dependencies=[Depends(require_admin)])
+def toggle_custom_parser(
+    request: Request,
+    parser_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Enable or disable a custom parser. Change takes effect immediately."""
+    row = db.query(CustomParser).filter_by(id=parser_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Parser not found")
+    row.enabled = not row.enabled
+    db.commit()
+    _reload_custom_parsers(db)
+    write_audit(db, admin.username, "parsers.toggle",
+                f"Parser '{row.name}' {'enabled' if row.enabled else 'disabled'}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"id": row.id, "name": row.name, "enabled": row.enabled}
+
+
+@router.delete("/admin/parsers/{parser_id}", dependencies=[Depends(require_admin)])
+def delete_custom_parser(
+    request: Request,
+    parser_id: int,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    """Permanently delete a custom parser."""
+    row = db.query(CustomParser).filter_by(id=parser_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Parser not found")
+    name = row.name
+    db.delete(row)
+    db.commit()
+    _reload_custom_parsers(db)
+    write_audit(db, admin.username, "parsers.delete", f"Parser '{name}' deleted",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"deleted": True, "name": name}

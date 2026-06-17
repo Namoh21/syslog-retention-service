@@ -2,7 +2,9 @@
 AI-powered analysis of syslog data.
 Supports Anthropic (Claude) and local OpenAI-compatible LLMs (Ollama, LM Studio).
 """
+import json as _json
 import logging
+import re as _re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -1068,23 +1070,174 @@ def _save_analysis(db, result: dict, focus: str, hours: float) -> "AIAnalysis | 
         return None
 
 
+# ── register_log_source tool ─────────────────────────────────────────────────
+# Offered to Claude when unknown-event-type entries are present in the batch.
+# Claude can call this to register a new normalizer that takes effect immediately.
+
+_REGISTER_PARSER_TOOL = {
+    "name": "register_log_source",
+    "description": (
+        "Register a new syslog normalizer when you identify event_type='unknown' messages "
+        "that belong to a recognizable device or application (e.g. a NAS, UPS, printer, "
+        "camera system, or network appliance). The parser is stored in the database and "
+        "activates immediately for all future log normalization — no code deployment needed."
+    ),
+    "input_schema": {
+        "type": "object",
+        "required": ["name", "app_keywords", "patterns"],
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Unique snake_case identifier, e.g. 'synology_dsm', 'hp_printer'",
+            },
+            "description": {
+                "type": "string",
+                "description": "Human-readable description of the device or application",
+            },
+            "app_keywords": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": (
+                    "Substrings that identify this source in a syslog message. "
+                    "At least one must be present for the parser to run. "
+                    "Use app-name values from the log lines you observed."
+                ),
+            },
+            "patterns": {
+                "type": "array",
+                "description": "Ordered list of regex rules. First match wins.",
+                "items": {
+                    "type": "object",
+                    "required": ["regex", "event_type"],
+                    "properties": {
+                        "regex": {
+                            "type": "string",
+                            "description": "Python regex with capture groups matching the message body",
+                        },
+                        "event_type": {
+                            "type": "string",
+                            "description": "Normalized event type, e.g. 'ups_power_fail', 'printer_job'",
+                        },
+                        "action": {
+                            "type": "string",
+                            "enum": ["ALLOW", "BLOCK", "ALERT"],
+                            "description": "Optional action to assign",
+                        },
+                        "fields": {
+                            "type": "object",
+                            "description": (
+                                "Maps NormalizedFields attribute names to 1-based capture group "
+                                "indices. Valid names: src_ip, dst_ip, src_port, dst_port, "
+                                "protocol, user, hostname, domain, mac_address, rule_name, url_category"
+                            ),
+                            "additionalProperties": {"type": "integer"},
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+
+
+async def _execute_register_parser(tool_input: dict, db) -> str:
+    """Execute the register_log_source tool call: validate, persist, hot-reload."""
+    from database import CustomParser
+    from normalizer import load_custom_parsers
+
+    for p in tool_input.get("patterns", []):
+        try:
+            _re.compile(p["regex"])
+        except _re.error as exc:
+            return f"Invalid regex '{p['regex']}': {exc}"
+
+    record = CustomParser(
+        name=tool_input["name"],
+        description=tool_input.get("description", ""),
+        app_keywords=_json.dumps(tool_input["app_keywords"]),
+        patterns=_json.dumps(tool_input["patterns"]),
+        enabled=True,
+        created_by="ai_agent",
+    )
+    try:
+        db.merge(record)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        return f"Database error saving parser '{tool_input['name']}': {exc}"
+
+    # Hot-reload all enabled parsers so the new one is active immediately
+    try:
+        from database import CustomParser as _CP
+        all_enabled = db.query(_CP).filter_by(enabled=True).all()
+        load_custom_parsers([
+            {
+                "app_keywords": _json.loads(r.app_keywords),
+                "patterns":     _json.loads(r.patterns),
+                "enabled":      True,
+            }
+            for r in all_enabled
+        ])
+    except Exception as exc:
+        logger.warning("Custom parser hot-reload failed: %s", exc)
+
+    n_patterns = len(tool_input["patterns"])
+    logger.info("AI registered new log source parser '%s' with %d pattern(s)", tool_input["name"], n_patterns)
+    return (
+        f"Parser '{tool_input['name']}' registered with {n_patterns} pattern(s). "
+        f"Active immediately for all incoming logs."
+    )
+
+
 # ── LLM callers ───────────────────────────────────────────────────────────────
 
-async def _call_anthropic(api_key: str, model: str, user_message: str, agent_cfg: dict) -> str:
+async def _call_anthropic(api_key: str, model: str, user_message: str, agent_cfg: dict, *, db=None, enable_tools: bool = False) -> str:
     client = anthropic.AsyncAnthropic(api_key=api_key)
-    logger.info("Calling Anthropic API — model=%s agent=%s", model, agent_cfg.get("schema"))
+    logger.info("Calling Anthropic API — model=%s agent=%s tools=%s", model, agent_cfg.get("schema"), enable_tools)
+
+    messages = [{"role": "user", "content": user_message}]
+    tools = [_REGISTER_PARSER_TOOL] if enable_tools else anthropic.NOT_GIVEN
+
     try:
-        response = await client.messages.create(
-            model=model,
-            max_tokens=8192,
-            system=agent_cfg["system"],
-            messages=[{"role": "user", "content": user_message}],
-            timeout=120.0,
-        )
-        text = response.content[0].text
-        logger.info("Anthropic response received — %d chars, stop_reason=%s",
-                    len(text), response.stop_reason)
-        return text
+        for _iteration in range(5):  # cap tool-use iterations
+            response = await client.messages.create(
+                model=model,
+                max_tokens=8192,
+                system=agent_cfg["system"],
+                messages=messages,
+                tools=tools,
+                timeout=120.0,
+            )
+            logger.info("Anthropic response — stop_reason=%s iteration=%d", response.stop_reason, _iteration)
+
+            if response.stop_reason != "tool_use":
+                text = next((b.text for b in response.content if hasattr(b, "text")), "")
+                logger.info("Anthropic final response — %d chars", len(text))
+                return text
+
+            # Process tool calls
+            tool_results = []
+            for block in response.content:
+                if block.type != "tool_use":
+                    continue
+                if block.name == "register_log_source" and db is not None:
+                    result_text = await _execute_register_parser(block.input, db)
+                else:
+                    result_text = f"Tool '{block.name}' is not available in this context."
+                tool_results.append({
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": result_text,
+                })
+                logger.info("Tool '%s' executed: %s", block.name, result_text[:120])
+
+            messages.append({"role": "assistant", "content": response.content})
+            messages.append({"role": "user", "content": tool_results})
+
+        # Exhausted iterations without a final text response
+        logger.warning("Anthropic tool loop exhausted without final response")
+        return ""
+
     except anthropic.RateLimitError:
         raise
     except anthropic.AuthenticationError as exc:
@@ -1520,6 +1673,8 @@ async def analyze_logs(
     logger.info("Starting analysis — provider=%s entries=%d hours=%s focus=%s",
                 ai_provider, len(entries), hours, focus_safe)
 
+    has_unknown = any(getattr(e, "event_type", None) == "unknown" for e in entries)
+
     if is_local:
         base_url = get_service_setting("ai_local_url") or ""
         model    = get_service_setting("ai_local_model") or "llama3.2"
@@ -1537,23 +1692,40 @@ async def analyze_logs(
             return {"error": "Anthropic API key not configured. Add it in Settings > AI Configuration.",
                     "log_count": len(entries)}
         model = get_service_setting("claude_model") or settings.claude_model or "claude-sonnet-4-6"
+        # Open a persistent DB session for tool execution (parser registration)
+        tool_db = SessionLocal() if has_unknown else None
         try:
-            raw_text = await _call_anthropic(api_key, model, user_message, agent_cfg)
+            raw_text = await _call_anthropic(
+                api_key, model, user_message, agent_cfg,
+                db=tool_db,
+                enable_tools=has_unknown,
+            )
         except anthropic.RateLimitError:
             logger.warning("Anthropic rate limit hit")
+            if tool_db:
+                tool_db.close()
             return {"error": ("Rate limit reached. Try a shorter time window or reduce "
                               "'Max logs per AI analysis' in Settings → Service Configuration. "
                               "Wait 60 seconds and try again."),
                     "log_count": len(entries)}
         except anthropic.AuthenticationError:
+            if tool_db:
+                tool_db.close()
             return {"error": "Anthropic API key is invalid or expired. Update it in Service Settings.",
                     "log_count": len(entries)}
         except anthropic.NotFoundError:
+            if tool_db:
+                tool_db.close()
             return {"error": f"Model '{model}' not found. Update the Claude model in Service Settings.",
                     "log_count": len(entries)}
         except anthropic.APIError as exc:
             logger.error("Anthropic API error: %s", exc)
+            if tool_db:
+                tool_db.close()
             return {"error": f"Anthropic API error: {exc}", "log_count": len(entries)}
+        finally:
+            if tool_db:
+                tool_db.close()
 
     logger.info("Raw response (first 500 chars): %s", raw_text[:500])
     analysis = _extract_json(raw_text)
