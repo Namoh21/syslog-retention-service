@@ -173,6 +173,8 @@ async def lifespan(app: FastAPI):
     _background_tasks.append(asyncio.create_task(run_detection_engine(), name="detection_engine"))
     _background_tasks.append(asyncio.create_task(run_threat_intel_poller(), name="threat_intel_poller"))
     _background_tasks.append(asyncio.create_task(run_ioc_matcher(), name="ioc_matcher"))
+    from agent_investigator import run_investigation_watcher
+    _background_tasks.append(asyncio.create_task(run_investigation_watcher(), name="investigation_watcher"))
     logger.info(
         "Web console: http://%s:%d",
         "localhost" if settings.api_host == "0.0.0.0" else settings.api_host,

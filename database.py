@@ -520,6 +520,36 @@ class IocMatch(Base):
     __table_args__ = (Index("ix_ioc_matches_indicator_matched", "indicator_id", "matched_at"),)
 
 
+class Investigation(Base):
+    __tablename__ = "investigations"
+    id            = Column(Integer, primary_key=True, index=True)
+    trigger_type  = Column(String(32), nullable=False)   # detection_match|alert|ioc_match|manual
+    trigger_id    = Column(Integer, nullable=True, index=True)
+    title         = Column(String(256), nullable=False)
+    status        = Column(String(32), nullable=False, default="running", index=True)  # running|complete|failed|cancelled
+    verdict       = Column(String(32), nullable=True)    # true_positive|false_positive|inconclusive
+    severity      = Column(String(16), nullable=True, index=True)
+    summary       = Column(Text, nullable=True)          # AI-generated narrative
+    mitre_techniques_json = Column(Text, nullable=True)  # confirmed techniques
+    entities_json = Column(Text, nullable=True)          # {ips:[], domains:[], users:[], hosts:[]}
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    completed_at  = Column(DateTime(timezone=True), nullable=True)
+    model_used    = Column(String(64), nullable=True)
+
+
+class InvestigationStep(Base):
+    __tablename__ = "investigation_steps"
+    id            = Column(Integer, primary_key=True, index=True)
+    investigation_id = Column(Integer, nullable=False, index=True)
+    step_number   = Column(Integer, nullable=False)
+    tool_name     = Column(String(64), nullable=False)   # query_logs|enrich_ip|lookup_ioc|get_netflow|search_dns
+    tool_input_json  = Column(Text, nullable=False)
+    tool_output_json = Column(Text, nullable=True)
+    reasoning     = Column(Text, nullable=True)          # AI reasoning for this step
+    duration_ms   = Column(Integer, nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
 def _migrate_db():
     """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:
@@ -872,6 +902,48 @@ def _migrate_secret_key_to_keystore():
         )
 
 
+def _migrate_investigation_tables():
+    """Create Phase 3 investigation tables if they don't exist yet."""
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "investigations" not in existing:
+            conn.execute(text("""
+                CREATE TABLE investigations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    trigger_type VARCHAR(32) NOT NULL,
+                    trigger_id INTEGER,
+                    title VARCHAR(256) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'running',
+                    verdict VARCHAR(32),
+                    severity VARCHAR(16),
+                    summary TEXT,
+                    mitre_techniques_json TEXT,
+                    entities_json TEXT,
+                    created_at DATETIME,
+                    completed_at DATETIME,
+                    model_used VARCHAR(64)
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigations_status ON investigations(status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigations_trigger_id ON investigations(trigger_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigations_severity ON investigations(severity)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_investigations_created_at ON investigations(created_at)"))
+        if "investigation_steps" not in existing:
+            conn.execute(text("""
+                CREATE TABLE investigation_steps (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    investigation_id INTEGER NOT NULL,
+                    step_number INTEGER NOT NULL,
+                    tool_name VARCHAR(64) NOT NULL,
+                    tool_input_json TEXT NOT NULL,
+                    tool_output_json TEXT,
+                    reasoning TEXT,
+                    duration_ms INTEGER,
+                    created_at DATETIME
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_inv_steps_investigation_id ON investigation_steps(investigation_id)"))
+        conn.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
@@ -881,6 +953,7 @@ def init_db():
     _migrate_unifi_change_tables()
     _migrate_custom_parsers()
     _migrate_threat_intel_tables()
+    _migrate_investigation_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

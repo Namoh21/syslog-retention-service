@@ -468,7 +468,23 @@ def _run_rules_sync(last_id: int) -> tuple[int, list[dict]]:
                 db.flush()
 
                 if match_ids and rule.severity in ("critical", "high"):
-                    notifications.append({"rule": rule, "entries": rows[:5], "match_ids": match_ids})
+                    last_match = (
+                        db.query(DetectionMatch)
+                        .filter_by(rule_id=rule.id)
+                        .order_by(DetectionMatch.id.desc())
+                        .first()
+                    )
+                    # Best-effort: get a representative matched value for the title
+                    matched_value = ""
+                    if rows:
+                        matched_value = getattr(rows[-1], "src_ip", "") or getattr(rows[-1], "hostname", "") or ""
+                    notifications.append({
+                        "rule": rule,
+                        "entries": rows[:5],
+                        "match_ids": match_ids,
+                        "last_match_id": last_match.id if last_match else None,
+                        "matched_value": matched_value,
+                    })
 
             except Exception as exc:
                 logger.warning("Rule %s evaluation error: %s", rule.rule_id, exc)
@@ -501,6 +517,26 @@ async def run_detection_engine():
                     await _notify_match(n["rule"], n["entries"], n["match_ids"])
                 except Exception as exc:
                     logger.warning("Notification failed for rule %s: %s", n["rule"].rule_id, exc)
+                try:
+                    from agent_investigator import maybe_auto_investigate
+                    from database import SessionLocal as _SL
+                    _inv_db = _SL()
+                    try:
+                        rule = n["rule"]
+                        mv = n.get("matched_value", "")
+                        await maybe_auto_investigate(
+                            trigger_type="detection_match",
+                            trigger_id=n.get("last_match_id") or 0,
+                            title=f"{rule.name}" + (f" — {mv}" if mv else ""),
+                            severity=rule.severity,
+                            context={"rule_id": rule.rule_id, "match_count": len(n["match_ids"])},
+                            db=_inv_db,
+                        )
+                    finally:
+                        _inv_db.close()
+                except Exception as exc:
+                    logger.warning("Auto-investigate trigger failed for rule %s: %s",
+                                   n["rule"].rule_id, exc)
 
         except Exception as exc:
             logger.error("Detection engine cycle error: %s", exc, exc_info=True)

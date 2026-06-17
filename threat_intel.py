@@ -580,6 +580,29 @@ async def run_ioc_matcher():
                         if ind:
                             await _notify_ioc_match(m, ind)
                             m.notified = True
+                            # Auto-investigate high/critical IOC matches
+                            try:
+                                from agent_investigator import maybe_auto_investigate
+                                from database import SessionLocal as _SL
+                                _inv_db = _SL()
+                                try:
+                                    await maybe_auto_investigate(
+                                        trigger_type="ioc_match",
+                                        trigger_id=m.id,
+                                        title=f"IOC Match: {m.matched_value} ({ind.indicator_type})",
+                                        severity=m.severity,
+                                        context={
+                                            "matched_field": m.matched_field,
+                                            "matched_value": m.matched_value,
+                                            "indicator_type": ind.indicator_type,
+                                            "source_ref": ind.source_ref or "",
+                                        },
+                                        db=_inv_db,
+                                    )
+                                finally:
+                                    _inv_db.close()
+                            except Exception as inv_exc:
+                                logger.warning("Auto-investigate failed for IOC match %d: %s", m.id, inv_exc)
                 if notify_queue:
                     db.commit()
 

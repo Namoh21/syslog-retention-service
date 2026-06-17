@@ -3371,6 +3371,254 @@ def toggle_custom_parser(
     return {"id": row.id, "name": row.name, "enabled": row.enabled}
 
 
+# ===================== AI Investigations (Phase 3) =====================
+
+@router.get("/investigations/stats", tags=["investigations"])
+async def investigation_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Investigation, InvestigationStep
+    from sqlalchemy import func as sqlfunc
+    now = datetime.now(timezone.utc)
+    today = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    total = db.query(sqlfunc.count(Investigation.id)).scalar() or 0
+    running = db.query(sqlfunc.count(Investigation.id)).filter_by(status="running").scalar() or 0
+    completed_today = (
+        db.query(sqlfunc.count(Investigation.id))
+        .filter(Investigation.status == "complete", Investigation.completed_at >= today)
+        .scalar() or 0
+    )
+    by_verdict = (
+        db.query(Investigation.verdict, sqlfunc.count(Investigation.id))
+        .filter(Investigation.status == "complete", Investigation.verdict.isnot(None))
+        .group_by(Investigation.verdict)
+        .all()
+    )
+    verdict_map = {v: c for v, c in by_verdict}
+    by_status = (
+        db.query(Investigation.status, sqlfunc.count(Investigation.id))
+        .group_by(Investigation.status)
+        .all()
+    )
+    # Avg duration for completed
+    durations = (
+        db.query(Investigation.created_at, Investigation.completed_at)
+        .filter(Investigation.status == "complete", Investigation.completed_at.isnot(None))
+        .limit(100)
+        .all()
+    )
+    avg_duration_s = None
+    if durations:
+        diffs = []
+        for cr, co in durations:
+            if cr and co:
+                cr_tz = cr.replace(tzinfo=timezone.utc) if cr.tzinfo is None else cr
+                co_tz = co.replace(tzinfo=timezone.utc) if co.tzinfo is None else co
+                diffs.append((co_tz - cr_tz).total_seconds())
+        if diffs:
+            avg_duration_s = sum(diffs) / len(diffs)
+    by_model = (
+        db.query(Investigation.model_used, sqlfunc.count(Investigation.id))
+        .filter(Investigation.model_used.isnot(None))
+        .group_by(Investigation.model_used)
+        .all()
+    )
+    return {
+        "total": total,
+        "running": running,
+        "completed_today": completed_today,
+        "true_positives": verdict_map.get("true_positive", 0),
+        "false_positives": verdict_map.get("false_positive", 0),
+        "inconclusive": verdict_map.get("inconclusive", 0),
+        "by_status": {s: c for s, c in by_status},
+        "avg_duration_seconds": avg_duration_s,
+        "by_model": {m: c for m, c in by_model},
+    }
+
+
+@router.get("/investigations", tags=["investigations"])
+async def list_investigations(
+    status: Optional[str] = Query(None),
+    verdict: Optional[str] = Query(None),
+    trigger_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Investigation
+    q = db.query(Investigation)
+    if status:
+        q = q.filter(Investigation.status == status)
+    if verdict:
+        q = q.filter(Investigation.verdict == verdict)
+    if trigger_type:
+        q = q.filter(Investigation.trigger_type == trigger_type)
+    if severity:
+        q = q.filter(Investigation.severity == severity)
+    if since:
+        q = q.filter(Investigation.created_at >= since)
+    total = q.count()
+    rows = q.order_by(Investigation.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "investigations": [
+            {
+                "id": r.id,
+                "trigger_type": r.trigger_type,
+                "trigger_id": r.trigger_id,
+                "title": r.title,
+                "status": r.status,
+                "verdict": r.verdict,
+                "severity": r.severity,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
+                "model_used": r.model_used,
+                "duration_seconds": (
+                    (r.completed_at - r.created_at).total_seconds()
+                    if r.completed_at and r.created_at else None
+                ),
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.post("/investigations", status_code=201, tags=["investigations"])
+async def create_investigation(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    from database import Investigation, SessionLocal
+    from agent_investigator import run_investigation
+    title = str(body.get("title", "Manual Investigation"))[:256]
+    trigger_type = str(body.get("trigger_type", "manual"))
+    trigger_id = body.get("trigger_id")
+    severity = str(body.get("severity", "medium"))
+    context = body.get("context", {})
+    if not isinstance(context, dict):
+        context = {}
+    inv = Investigation(
+        trigger_type=trigger_type,
+        trigger_id=trigger_id,
+        title=title,
+        status="running",
+        severity=severity,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(inv)
+    db.commit()
+    db.refresh(inv)
+    inv_id = inv.id
+
+    import asyncio as _asyncio
+    async def _bg():
+        bg_db = SessionLocal()
+        try:
+            await run_investigation(inv_id, context, bg_db)
+        finally:
+            bg_db.close()
+    _asyncio.create_task(_bg())
+
+    return {"id": inv_id, "status": "running", "title": title}
+
+
+@router.get("/investigations/{inv_id}", tags=["investigations"])
+async def get_investigation(
+    inv_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Investigation, InvestigationStep
+    inv = db.query(Investigation).filter_by(id=inv_id).first()
+    if not inv:
+        raise HTTPException(404, "Investigation not found")
+    steps = (
+        db.query(InvestigationStep)
+        .filter_by(investigation_id=inv_id)
+        .order_by(InvestigationStep.step_number)
+        .all()
+    )
+    return {
+        "id": inv.id,
+        "trigger_type": inv.trigger_type,
+        "trigger_id": inv.trigger_id,
+        "title": inv.title,
+        "status": inv.status,
+        "verdict": inv.verdict,
+        "severity": inv.severity,
+        "summary": inv.summary,
+        "mitre_techniques": json.loads(inv.mitre_techniques_json or "[]"),
+        "entities": json.loads(inv.entities_json or "{}"),
+        "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "completed_at": inv.completed_at.isoformat() if inv.completed_at else None,
+        "model_used": inv.model_used,
+        "duration_seconds": (
+            (inv.completed_at - inv.created_at).total_seconds()
+            if inv.completed_at and inv.created_at else None
+        ),
+        "steps": [
+            {
+                "id": s.id,
+                "step_number": s.step_number,
+                "tool_name": s.tool_name,
+                "tool_input": json.loads(s.tool_input_json or "{}"),
+                "tool_output": json.loads(s.tool_output_json or "{}") if s.tool_output_json else None,
+                "reasoning": s.reasoning,
+                "duration_ms": s.duration_ms,
+                "created_at": s.created_at.isoformat() if s.created_at else None,
+            }
+            for s in steps
+        ],
+    }
+
+
+@router.delete("/investigations/{inv_id}/cancel", tags=["investigations"])
+async def cancel_investigation(
+    inv_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    from database import Investigation
+    inv = db.query(Investigation).filter_by(id=inv_id).first()
+    if not inv:
+        raise HTTPException(404, "Investigation not found")
+    if inv.status != "running":
+        raise HTTPException(400, f"Investigation is not running (status={inv.status})")
+    inv.status = "cancelled"
+    inv.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"id": inv_id, "status": "cancelled"}
+
+
+@router.get("/settings/auto-investigate", tags=["investigations"])
+async def get_auto_investigate(_: User = Depends(get_current_user)):
+    from database import get_service_setting
+    val = get_service_setting("auto_investigate")
+    # Default: disabled (empty string or not set = disabled; "1" = enabled)
+    return {"enabled": val == "1"}
+
+
+@router.post("/settings/auto-investigate", tags=["investigations"])
+async def set_auto_investigate(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    from database import set_service_setting
+    enabled = bool(body.get("enabled", False))
+    set_service_setting("auto_investigate", "1" if enabled else "0", db)
+    db.commit()
+    return {"enabled": enabled}
+
+
 @router.delete("/admin/parsers/{parser_id}", dependencies=[Depends(require_admin)])
 def delete_custom_parser(
     request: Request,

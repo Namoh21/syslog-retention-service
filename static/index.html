@@ -405,6 +405,7 @@
       <li><a onclick="showPage('alertrules')" data-page="alertrules" title="Configure automated alerts triggered by log patterns"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li><a onclick="showPage('detections')" data-page="detections" title="Detection Engine rules and matches with MITRE ATT&amp;CK mapping"><span class="nav-icon">&#x1F6E1;</span> Detections <span id="nav-det-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li><a onclick="showPage('threatintel')" data-page="threatintel" title="Threat Intelligence feeds, indicators, and IOC matches"><span class="nav-icon">&#x1F9E0;</span> Threat Intel <span id="nav-ti-badge" class="nav-badge" style="display:none">0</span></a></li>
+      <li><a onclick="showPage('investigations')" data-page="investigations" title="AI Agent investigations — automated ReAct analysis of security alerts"><span class="nav-icon">&#x1F575;&#xFE0F;</span> Investigations <span id="nav-inv-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings" title="AI provider, API keys, NetFlow, and display settings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention" title="Control how long logs are kept and storage limits"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
@@ -616,7 +617,7 @@ function showPage(name) {
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
     investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
-    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections', threatintel:'Threat Intel',
+    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections', threatintel:'Threat Intel', investigations:'Investigations',
     unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
@@ -627,7 +628,7 @@ function showPage(name) {
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
-    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel,
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel, investigations,
     unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
@@ -6433,6 +6434,260 @@ async function tiAckMatch(matchId, btn) {
     btn.outerHTML = '<span style="color:var(--muted);font-size:11px;">&#x2713; Acked</span>';
     tiLoadStats();
   } catch(e) { _tiToast('Failed: ' + e, 'error'); }
+}
+
+// ── Investigations page ───────────────────────────────────────────────────────
+
+function _invVerdictBadge(verdict) {
+  if (!verdict) return '<span style="color:var(--muted);font-size:11px;">—</span>';
+  const colors = {malicious:'#e74c3c', suspicious:'#e67e22', benign:'#27ae60', inconclusive:'#7f8c8d',
+                  true_positive:'#e74c3c', false_positive:'#27ae60'};
+  const c = colors[verdict] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${c}22;color:${c}">${verdict}</span>`;
+}
+
+function _invStatusBadge(status) {
+  const colors = {pending:'#7f8c8d', running:'#3498db', complete:'#27ae60', failed:'#e74c3c', cancelled:'#7f8c8d'};
+  const c = colors[status] || '#7f8c8d';
+  const spinner = status === 'running' ? '<span style="display:inline-block;width:8px;height:8px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:4px;"></span>' : '';
+  return `<span style="display:inline-flex;align-items:center;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${c}22;color:${c}">${spinner}${status}</span>`;
+}
+
+function _invTriggerBadge(type) {
+  const colors = {detection_match:'#9b59b6', ioc_match:'#e74c3c', alert_event:'#e67e22', manual:'#3498db'};
+  const c = colors[type] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;background:${c}22;color:${c}">${type||'?'}</span>`;
+}
+
+async function investigations() {
+  render(`
+    <div class="page-header">
+      <h1>&#x1F575;&#xFE0F; Investigations</h1>
+      <p>AI agent investigations — automated ReAct analysis of security alerts using Claude tool-use.</p>
+    </div>
+    <div id="inv-stats-bar" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px;margin-bottom:20px;"></div>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:16px;flex-wrap:wrap;">
+      <select id="inv-filter-status" onchange="invLoad()" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+        <option value="">All statuses</option>
+        <option value="pending">Pending</option>
+        <option value="running">Running</option>
+        <option value="complete">Complete</option>
+        <option value="failed">Failed</option>
+        <option value="cancelled">Cancelled</option>
+      </select>
+      <select id="inv-filter-verdict" onchange="invLoad()" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+        <option value="">All verdicts</option>
+        <option value="malicious">Malicious</option>
+        <option value="suspicious">Suspicious</option>
+        <option value="benign">Benign</option>
+        <option value="inconclusive">Inconclusive</option>
+        <option value="true_positive">True Positive</option>
+        <option value="false_positive">False Positive</option>
+      </select>
+      <select id="inv-filter-trigger" onchange="invLoad()" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+        <option value="">All trigger types</option>
+        <option value="detection_match">Detection Match</option>
+        <option value="ioc_match">IOC Match</option>
+        <option value="alert_event">Alert Event</option>
+        <option value="manual">Manual</option>
+      </select>
+      <button onclick="invShowNewModal()" style="margin-left:auto;padding:7px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:13px;font-weight:600;">+ New Investigation</button>
+      <button onclick="invLoad()" style="padding:7px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:13px;">&#x21BB; Refresh</button>
+    </div>
+    <div id="inv-list">
+      <div class="card" style="text-align:center;padding:40px;color:var(--muted);">Loading investigations...</div>
+    </div>
+    <div id="inv-modal" style="display:none;position:fixed;inset:0;background:#0008;z-index:1000;display:none;align-items:center;justify-content:center;">
+      <div style="background:var(--surface);border-radius:var(--radius);padding:28px;max-width:500px;width:90%;box-shadow:0 8px 32px #0004;">
+        <h3 style="margin:0 0 16px">&#x2795; New Investigation</h3>
+        <div style="margin-bottom:12px;">
+          <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Trigger Type</label>
+          <select id="inv-new-trigger" style="width:100%;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+            <option value="manual">Manual</option>
+            <option value="detection_match">Detection Match</option>
+            <option value="ioc_match">IOC Match</option>
+            <option value="alert_event">Alert Event</option>
+          </select>
+        </div>
+        <div style="margin-bottom:16px;">
+          <label style="font-size:13px;font-weight:600;display:block;margin-bottom:6px;">Description / Context</label>
+          <textarea id="inv-new-desc" rows="4" placeholder="Describe what to investigate, e.g. Investigate IP 1.2.3.4 seen in multiple failed logins..." style="width:100%;padding:8px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;resize:vertical;box-sizing:border-box;"></textarea>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button onclick="document.getElementById('inv-modal').style.display='none'" style="padding:8px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:13px;">Cancel</button>
+          <button onclick="invSubmitNew()" style="padding:8px 16px;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:13px;font-weight:600;">Start Investigation</button>
+        </div>
+      </div>
+    </div>
+  `);
+  invLoadStats();
+  invLoad();
+}
+
+async function invLoadStats() {
+  try {
+    const s = await apiFetch('/api/investigations/stats');
+    const bar = document.getElementById('inv-stats-bar');
+    if (!bar) return;
+    const bs = s.by_status || {};
+    const avgDur = s.avg_duration_seconds ? Math.round(s.avg_duration_seconds)+'s' : '—';
+    const cards = [
+      {label:'Total', val:s.total||0, color:'var(--accent)'},
+      {label:'Running', val:bs.running||0, color:'#3498db'},
+      {label:'Complete', val:bs.complete||0, color:'#27ae60'},
+      {label:'Failed', val:bs.failed||0, color:'#e74c3c'},
+      {label:'True Positives', val:s.true_positives||0, color:'#e74c3c'},
+      {label:'Avg Duration', val:avgDur, color:'#9b59b6'},
+    ];
+    bar.innerHTML = cards.map(c => `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;text-align:center;">
+        <div style="font-size:22px;font-weight:700;color:${c.color}">${c.val}</div>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px">${c.label}</div>
+      </div>`).join('');
+  } catch(e) { /* ignore */ }
+}
+
+async function invLoad() {
+  const list = document.getElementById('inv-list');
+  if (!list) return;
+  const status = document.getElementById('inv-filter-status')?.value || '';
+  const verdict = document.getElementById('inv-filter-verdict')?.value || '';
+  const trigger = document.getElementById('inv-filter-trigger')?.value || '';
+  let url = '/api/investigations?limit=50';
+  if (status) url += `&status=${encodeURIComponent(status)}`;
+  if (verdict) url += `&verdict=${encodeURIComponent(verdict)}`;
+  if (trigger) url += `&trigger_type=${encodeURIComponent(trigger)}`;
+  try {
+    const data = await apiFetch(url);
+    const rows = data.investigations || [];
+    if (!rows.length) {
+      list.innerHTML = '<div class="card" style="text-align:center;padding:40px;color:var(--muted);">No investigations found.</div>';
+      return;
+    }
+    list.innerHTML = `
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <thead><tr style="border-bottom:1px solid var(--border);background:var(--surface2);">
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">ID</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Title</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Trigger</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Status</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Verdict</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Confidence</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;">Created</th>
+            <th style="padding:10px 12px;text-align:left;font-weight:600;"></th>
+          </tr></thead>
+          <tbody>
+          ${rows.map(r => `
+            <tr style="border-bottom:1px solid var(--border);cursor:pointer;" onclick="invShowDetail(${r.id})">
+              <td style="padding:10px 12px;color:var(--muted);">#${r.id}</td>
+              <td style="padding:10px 12px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${r.title||''}</td>
+              <td style="padding:10px 12px;">${_invTriggerBadge(r.trigger_type)}</td>
+              <td style="padding:10px 12px;">${_invStatusBadge(r.status)}</td>
+              <td style="padding:10px 12px;">${_invVerdictBadge(r.verdict)}</td>
+              <td style="padding:10px 12px;">${r.confidence != null ? r.confidence+'%' : '—'}</td>
+              <td style="padding:10px 12px;color:var(--muted);">${fmtDate(r.created_at)}</td>
+              <td style="padding:10px 12px;">
+                ${r.status === 'pending' || r.status === 'running' ? `<button onclick="event.stopPropagation();invCancel(${r.id})" style="padding:3px 8px;font-size:11px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;cursor:pointer;">Cancel</button>` : ''}
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        <div style="padding:10px 12px;color:var(--muted);font-size:12px;">${data.total} total</div>
+      </div>`;
+  } catch(e) {
+    list.innerHTML = `<div class="card" style="color:var(--error);">Error loading investigations: ${e}</div>`;
+  }
+}
+
+async function invShowDetail(invId) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:#0009;z-index:2000;overflow-y:auto;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;';
+  modal.innerHTML = '<div style="background:var(--surface);border-radius:var(--radius);padding:28px;max-width:800px;width:100%;box-shadow:0 8px 32px #0006;"><div class="spinner"></div></div>';
+  document.body.appendChild(modal);
+  modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+  try {
+    const d = await apiFetch(`/api/investigations/${invId}`);
+    const entities = d.entities || {};
+    const mitre = d.mitre_techniques || [];
+    const steps = d.steps || [];
+    const chipStyle = 'display:inline-block;padding:2px 8px;margin:2px;border-radius:10px;font-size:11px;background:var(--surface2);border:1px solid var(--border);';
+    const entitySection = Object.entries(entities).filter(([,v])=>Array.isArray(v)&&v.length).map(([k,v])=>
+      `<div style="margin-bottom:8px;"><span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;">${k}</span><br>${v.map(x=>`<span style="${chipStyle}">${x}</span>`).join('')}</div>`
+    ).join('');
+    const mitreSection = mitre.length ? mitre.map(t=>`<span style="${chipStyle};background:#9b59b622;border-color:#9b59b6;color:#9b59b6;">${t}</span>`).join('') : '<span style="color:var(--muted)">None</span>';
+    const stepsHtml = steps.length ? steps.map(s => {
+      const inp = (() => { try { return JSON.stringify(s.tool_input||{}, null, 2); } catch{ return ''; } })();
+      const out = (() => { try { return JSON.stringify(s.tool_output||{}, null, 2); } catch{ return ''; } })();
+      const stepId = `inv-step-${invId}-${s.step_number}`;
+      return `
+        <div style="border:1px solid var(--border);border-radius:var(--radius);margin-bottom:10px;overflow:hidden;">
+          <div style="display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2);cursor:pointer;" onclick="document.getElementById('${stepId}').style.display=document.getElementById('${stepId}').style.display==='none'?'block':'none'">
+            <span style="font-weight:700;color:var(--accent);">#${s.step_number}</span>
+            <span style="font-weight:600;">${s.tool_name}</span>
+            ${s.duration_ms!=null?`<span style="color:var(--muted);font-size:11px;margin-left:auto;">${s.duration_ms}ms</span>`:''}
+          </div>
+          <div id="${stepId}" style="display:none;padding:12px 14px;">
+            ${s.reasoning?`<div style="color:var(--muted);font-size:12px;margin-bottom:8px;font-style:italic;">${s.reasoning}</div>`:''}
+            <div style="margin-bottom:8px;"><span style="font-size:11px;font-weight:600;color:var(--muted);">INPUT</span><pre style="margin:4px 0;font-size:11px;overflow-x:auto;background:var(--surface2);padding:8px;border-radius:4px;">${inp}</pre></div>
+            <div><span style="font-size:11px;font-weight:600;color:var(--muted);">OUTPUT</span><pre style="margin:4px 0;font-size:11px;overflow-x:auto;background:var(--surface2);padding:8px;border-radius:4px;max-height:200px;">${out}</pre></div>
+          </div>
+        </div>`;
+    }).join('') : '<div style="color:var(--muted);font-size:13px;">No steps recorded.</div>';
+    modal.querySelector('div').innerHTML = `
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px;">
+        <div style="flex:1">
+          <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">${_invTriggerBadge(d.trigger_type)} &nbsp; ${_invStatusBadge(d.status)}</div>
+          <h2 style="margin:8px 0 4px;font-size:18px;">${d.title||'Investigation #'+d.id}</h2>
+          <div>${_invVerdictBadge(d.verdict)} ${d.confidence!=null?`<span style="font-size:12px;color:var(--muted);">Confidence: ${d.confidence}%</span>`:''}</div>
+        </div>
+        <button onclick="this.closest('.invmodal').remove()" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:13px;">&#x2715; Close</button>
+      </div>
+      ${d.summary?`<div style="background:var(--surface2);border-radius:var(--radius);padding:14px;margin-bottom:20px;font-size:13px;line-height:1.6;">${d.summary}</div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+        <div><h4 style="margin:0 0 8px;font-size:13px;">Entities</h4>${entitySection||'<span style="color:var(--muted)">None extracted</span>'}</div>
+        <div><h4 style="margin:0 0 8px;font-size:13px;">MITRE Techniques</h4>${mitreSection}</div>
+      </div>
+      <h4 style="margin:0 0 12px;font-size:13px;">Investigation Steps (${steps.length})</h4>
+      ${stepsHtml}
+      <div style="margin-top:16px;text-align:right;font-size:11px;color:var(--muted);">Created: ${fmtDate(d.created_at)} | Completed: ${fmtDate(d.completed_at)}</div>`;
+    modal.querySelector('div').classList.add('invmodal');
+    // re-bind close
+    modal.querySelector('button').onclick = () => modal.remove();
+  } catch(e) {
+    modal.querySelector('div').innerHTML = `<div style="color:var(--error);">Error: ${e}</div><button onclick="this.closest('[style]').remove()" style="margin-top:12px;padding:6px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;">Close</button>`;
+  }
+}
+
+function invShowNewModal() {
+  const m = document.getElementById('inv-modal');
+  if (m) { m.style.display='flex'; }
+}
+
+async function invSubmitNew() {
+  const trigger = document.getElementById('inv-new-trigger')?.value || 'manual';
+  const desc = document.getElementById('inv-new-desc')?.value?.trim() || '';
+  if (!desc) { alert('Please enter a description.'); return; }
+  try {
+    const result = await apiFetch('/api/investigations', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trigger_type: trigger, title: desc, context: {description: desc}}),
+    });
+    document.getElementById('inv-modal').style.display='none';
+    document.getElementById('inv-new-desc').value='';
+    await invLoad();
+    await invLoadStats();
+    if (result.id) invShowDetail(result.id);
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function invCancel(invId) {
+  if (!confirm('Cancel this investigation?')) return;
+  try {
+    await apiFetch(`/api/investigations/${invId}/cancel`, {method:'DELETE'});
+    invLoad();
+  } catch(e) { alert('Error: ' + e); }
 }
 
 </script>
