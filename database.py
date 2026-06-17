@@ -550,6 +550,44 @@ class InvestigationStep(Base):
     created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class Incident(Base):
+    __tablename__ = "incidents"
+    id            = Column(Integer, primary_key=True, index=True)
+    title         = Column(String(256), nullable=False)
+    severity      = Column(String(16), nullable=False, index=True)   # critical|high|medium|low
+    status        = Column(String(32), nullable=False, default="open", index=True)  # open|investigating|contained|resolved|false_positive
+    confidence    = Column(Integer, default=50)                       # 0-100, weighted by source diversity
+    verdict       = Column(String(32), nullable=True)                 # malicious|suspicious|benign|inconclusive
+    summary       = Column(Text, nullable=True)                       # AI or rule-generated
+    entities_json = Column(Text, nullable=True)                       # {"ips":[], "domains":[], "users":[], "hosts":[]}
+    mitre_techniques_json = Column(Text, nullable=True)               # consolidated from all items
+    mitre_tactics_json    = Column(Text, nullable=True)
+    item_count    = Column(Integer, default=0)                        # denormalized count of IncidentItem rows
+    source_diversity = Column(Integer, default=1)                     # how many distinct trigger types
+    first_seen    = Column(DateTime(timezone=True), nullable=True, index=True)
+    last_seen     = Column(DateTime(timezone=True), nullable=True, index=True)
+    resolved_at   = Column(DateTime(timezone=True), nullable=True)
+    assigned_to   = Column(String(128), nullable=True)
+    notes         = Column(Text, nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class IncidentItem(Base):
+    __tablename__ = "incident_items"
+    id            = Column(Integer, primary_key=True, index=True)
+    incident_id   = Column(Integer, nullable=False, index=True)
+    item_type     = Column(String(32), nullable=False)                # detection_match|alert_event|ioc_match|investigation
+    item_id       = Column(Integer, nullable=False)
+    added_at      = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    entity_key    = Column(String(256), nullable=True, index=True)    # e.g. "ip:1.2.3.4" — for grouping
+    severity      = Column(String(16), nullable=True)
+    __table_args__ = (
+        UniqueConstraint("incident_id", "item_type", "item_id", name="uq_incident_item"),
+        Index("ix_incident_items_incident_type", "incident_id", "item_type"),
+    )
+
+
 def _migrate_db():
     """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:
@@ -944,6 +982,56 @@ def _migrate_investigation_tables():
         conn.commit()
 
 
+def _migrate_incident_tables():
+    """Create Phase 4 incident correlation tables if they don't exist yet."""
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "incidents" not in existing:
+            conn.execute(text("""
+                CREATE TABLE incidents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    title VARCHAR(256) NOT NULL,
+                    severity VARCHAR(16) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'open',
+                    confidence INTEGER DEFAULT 50,
+                    verdict VARCHAR(32),
+                    summary TEXT,
+                    entities_json TEXT,
+                    mitre_techniques_json TEXT,
+                    mitre_tactics_json TEXT,
+                    item_count INTEGER DEFAULT 0,
+                    source_diversity INTEGER DEFAULT 1,
+                    first_seen DATETIME,
+                    last_seen DATETIME,
+                    resolved_at DATETIME,
+                    assigned_to VARCHAR(128),
+                    notes TEXT,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_severity ON incidents(severity)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_status ON incidents(status)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_first_seen ON incidents(first_seen)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_last_seen ON incidents(last_seen)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incidents_created_at ON incidents(created_at)"))
+        if "incident_items" not in existing:
+            conn.execute(text("""
+                CREATE TABLE incident_items (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    incident_id INTEGER NOT NULL,
+                    item_type VARCHAR(32) NOT NULL,
+                    item_id INTEGER NOT NULL,
+                    added_at DATETIME,
+                    entity_key VARCHAR(256),
+                    severity VARCHAR(16),
+                    UNIQUE(incident_id, item_type, item_id)
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incident_items_incident_id ON incident_items(incident_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incident_items_entity_key ON incident_items(entity_key)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_incident_items_incident_type ON incident_items(incident_id, item_type)"))
+        conn.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate_db()
@@ -954,6 +1042,7 @@ def init_db():
     _migrate_custom_parsers()
     _migrate_threat_intel_tables()
     _migrate_investigation_tables()
+    _migrate_incident_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

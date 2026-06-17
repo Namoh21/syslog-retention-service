@@ -406,6 +406,7 @@
       <li><a onclick="showPage('detections')" data-page="detections" title="Detection Engine rules and matches with MITRE ATT&amp;CK mapping"><span class="nav-icon">&#x1F6E1;</span> Detections <span id="nav-det-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li><a onclick="showPage('threatintel')" data-page="threatintel" title="Threat Intelligence feeds, indicators, and IOC matches"><span class="nav-icon">&#x1F9E0;</span> Threat Intel <span id="nav-ti-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li><a onclick="showPage('investigations')" data-page="investigations" title="AI Agent investigations — automated ReAct analysis of security alerts"><span class="nav-icon">&#x1F575;&#xFE0F;</span> Investigations <span id="nav-inv-badge" class="nav-badge" style="display:none">0</span></a></li>
+      <li><a onclick="showPage('incidents')" data-page="incidents" title="Correlated incident groups — multi-source alert fusion"><span class="nav-icon">&#x1F525;</span> Incidents <span id="nav-inc-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings" title="AI provider, API keys, NetFlow, and display settings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention" title="Control how long logs are kept and storage limits"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
@@ -617,7 +618,7 @@ function showPage(name) {
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
     investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
-    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections', threatintel:'Threat Intel', investigations:'Investigations',
+    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections', threatintel:'Threat Intel', investigations:'Investigations', incidents:'Incidents',
     unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
@@ -628,7 +629,7 @@ function showPage(name) {
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
-    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel, investigations,
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel, investigations, incidents,
     unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
@@ -6688,6 +6689,384 @@ async function invCancel(invId) {
     await apiFetch(`/api/investigations/${invId}/cancel`, {method:'DELETE'});
     invLoad();
   } catch(e) { alert('Error: ' + e); }
+}
+
+// ── Incidents page (Phase 4) ──────────────────────────────────────────────────
+
+function _incSevBadge(sev) {
+  const colors = {critical:'#e74c3c', high:'#e67e22', medium:'#f39c12', low:'#27ae60'};
+  const c = colors[sev] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${c}22;color:${c}">${sev||'?'}</span>`;
+}
+
+function _incStatusBadge(status) {
+  const colors = {open:'#3498db', investigating:'#9b59b6', contained:'#e67e22', resolved:'#27ae60', false_positive:'#7f8c8d'};
+  const c = colors[status] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${c}22;color:${c}">${status||'?'}</span>`;
+}
+
+function _incConfBar(conf) {
+  const pct = Math.max(0, Math.min(100, conf||0));
+  const color = pct >= 70 ? '#e74c3c' : pct >= 50 ? '#e67e22' : '#3498db';
+  return `<div style="display:flex;align-items:center;gap:6px;">
+    <div style="flex:1;height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;">
+      <div style="width:${pct}%;height:100%;background:${color};border-radius:3px;"></div>
+    </div>
+    <span style="font-size:11px;color:var(--muted);min-width:28px;">${pct}%</span>
+  </div>`;
+}
+
+function _incVerdictBadge(verdict) {
+  if (!verdict) return '<span style="color:var(--muted);font-size:11px;">—</span>';
+  const colors = {malicious:'#e74c3c', suspicious:'#e67e22', benign:'#27ae60', inconclusive:'#7f8c8d'};
+  const c = colors[verdict] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:${c}22;color:${c}">${verdict}</span>`;
+}
+
+function _itemTypeBadge(type) {
+  const colors = {detection_match:'#9b59b6', ioc_match:'#e74c3c', alert_event:'#e67e22', investigation:'#3498db'};
+  const c = colors[type] || '#7f8c8d';
+  return `<span style="display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;background:${c}22;color:${c}">${(type||'').replace('_',' ')}</span>`;
+}
+
+let _incTab = 'list';
+
+async function incidents() {
+  render(`
+    <div class="page-header">
+      <h1>&#x1F525; Incidents</h1>
+      <p>Correlated incident groups — multi-source alert fusion across detections, IOC matches, and alert events.</p>
+    </div>
+    <div style="display:flex;gap:4px;margin-bottom:20px;border-bottom:1px solid var(--border);padding-bottom:0;">
+      <button id="inc-tab-list" onclick="incSwitchTab('list')" style="padding:8px 18px;border:none;border-bottom:2px solid var(--accent);background:transparent;color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;">Incidents</button>
+      <button id="inc-tab-dash" onclick="incSwitchTab('dash')" style="padding:8px 18px;border:none;border-bottom:2px solid transparent;background:transparent;color:var(--muted);cursor:pointer;font-size:13px;">Dashboard</button>
+    </div>
+    <div id="inc-tab-list-content"></div>
+    <div id="inc-tab-dash-content" style="display:none;"></div>
+    <div id="inc-detail-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;overflow-y:auto;padding:40px 20px;">
+      <div style="max-width:860px;margin:0 auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:28px;position:relative;">
+        <button onclick="document.getElementById('inc-detail-modal').style.display='none'" style="position:absolute;top:14px;right:14px;background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">&#x2715;</button>
+        <div id="inc-detail-body">Loading…</div>
+      </div>
+    </div>
+  `);
+  await incLoadStats();
+  await incLoadList();
+}
+
+function incSwitchTab(tab) {
+  _incTab = tab;
+  document.getElementById('inc-tab-list-content').style.display = tab === 'list' ? '' : 'none';
+  document.getElementById('inc-tab-dash-content').style.display = tab === 'dash' ? '' : 'none';
+  document.getElementById('inc-tab-list').style.color = tab === 'list' ? 'var(--accent)' : 'var(--muted)';
+  document.getElementById('inc-tab-list').style.borderBottomColor = tab === 'list' ? 'var(--accent)' : 'transparent';
+  document.getElementById('inc-tab-dash').style.color = tab === 'dash' ? 'var(--accent)' : 'var(--muted)';
+  document.getElementById('inc-tab-dash').style.borderBottomColor = tab === 'dash' ? 'var(--accent)' : 'transparent';
+  if (tab === 'dash') incLoadDash();
+}
+
+async function incLoadStats() {
+  try {
+    const s = await apiFetch('/api/incidents/stats');
+    const statusMap = Object.fromEntries((s.by_status||[]).map(x => [x.status, x.count]));
+    const sevMap = Object.fromEntries((s.by_severity||[]).map(x => [x.severity, x.count]));
+    const statsEl = document.getElementById('inc-tab-list-content');
+    if (!statsEl) return;
+    const bar = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:18px;">
+      <div class="stat"><div class="val">${s.total||0}</div><div class="lbl">Total</div></div>
+      <div class="stat"><div class="val" style="color:#3498db">${statusMap['open']||0}</div><div class="lbl">Open</div></div>
+      <div class="stat"><div class="val" style="color:#e74c3c">${sevMap['critical']||0}</div><div class="lbl">Critical</div></div>
+      <div class="stat"><div class="val" style="color:#e67e22">${sevMap['high']||0}</div><div class="lbl">High</div></div>
+      <div class="stat"><div class="val">${s.avg_confidence||0}%</div><div class="lbl">Avg Confidence</div></div>
+      <div class="stat"><div class="val">${s.mttr_hours != null ? s.mttr_hours + 'h' : '—'}</div><div class="lbl">MTTR (30d)</div></div>
+    </div>` + statsEl.innerHTML;
+    statsEl.innerHTML = bar;
+  } catch(e) {}
+}
+
+async function incLoadList() {
+  const el = document.getElementById('inc-tab-list-content');
+  if (!el) return;
+  const status = document.getElementById('inc-filter-status')?.value || '';
+  const severity = document.getElementById('inc-filter-severity')?.value || '';
+  const entity = document.getElementById('inc-filter-entity')?.value?.trim() || '';
+  let url = '/api/incidents?limit=100';
+  if (status) url += '&status=' + encodeURIComponent(status);
+  if (severity) url += '&severity=' + encodeURIComponent(severity);
+  if (entity) url += '&entity=' + encodeURIComponent(entity);
+  try {
+    const data = await apiFetch(url);
+    const incs = data.incidents || [];
+    el.innerHTML += `
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;">
+        <select id="inc-filter-status" onchange="incRefreshList()" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          <option value="">All statuses</option>
+          <option value="open">Open</option>
+          <option value="investigating">Investigating</option>
+          <option value="contained">Contained</option>
+          <option value="resolved">Resolved</option>
+          <option value="false_positive">False Positive</option>
+        </select>
+        <select id="inc-filter-severity" onchange="incRefreshList()" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;">
+          <option value="">All severities</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <input id="inc-filter-entity" placeholder="Filter by entity (IP, domain…)" onkeydown="if(event.key==='Enter')incRefreshList()"
+          style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:13px;min-width:200px;" />
+        <button onclick="incRefreshList()" style="padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:13px;">&#x21BB; Refresh</button>
+        <span style="margin-left:auto;font-size:12px;color:var(--muted);">${data.total} incidents</span>
+      </div>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr>
+            <th>ID</th><th>Title</th><th>Severity</th><th>Status</th>
+            <th>Confidence</th><th>Items</th><th>Sources</th>
+            <th>First Seen</th><th>Last Seen</th><th>Assigned</th><th>Actions</th>
+          </tr></thead>
+          <tbody>
+            ${incs.length === 0 ? '<tr><td colspan="11" style="text-align:center;color:var(--muted);padding:24px;">No incidents yet — correlation engine will group alerts automatically.</td></tr>' :
+              incs.map(inc => `
+              <tr class="clickable-row" onclick="incShowDetail(${inc.id})">
+                <td style="color:var(--muted);font-size:12px;">#${inc.id}</td>
+                <td style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${inc.title}">${inc.title}</td>
+                <td>${_incSevBadge(inc.severity)}</td>
+                <td>${_incStatusBadge(inc.status)}</td>
+                <td style="min-width:100px;">${_incConfBar(inc.confidence)}</td>
+                <td style="text-align:center;">${inc.item_count||0}</td>
+                <td style="text-align:center;">${inc.source_diversity||1}</td>
+                <td style="font-size:11px;color:var(--muted);">${fmtDate(inc.first_seen)}</td>
+                <td style="font-size:11px;color:var(--muted);">${fmtDate(inc.last_seen)}</td>
+                <td style="font-size:12px;">${inc.assigned_to||'—'}</td>
+                <td onclick="event.stopPropagation()">
+                  <button onclick="incResolve(${inc.id})" title="Resolve" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface2);color:var(--accent2);cursor:pointer;margin-right:4px;">&#x2713;</button>
+                  <button onclick="incFP(${inc.id})" title="False Positive" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface2);color:var(--muted);cursor:pointer;">FP</button>
+                </td>
+              </tr>`).join('')
+            }
+          </tbody>
+        </table>
+      </div>`;
+  } catch(e) {
+    const el2 = document.getElementById('inc-tab-list-content');
+    if (el2) el2.innerHTML += `<div style="color:var(--danger);padding:20px;">Error loading incidents: ${e}</div>`;
+  }
+}
+
+async function incRefreshList() {
+  const el = document.getElementById('inc-tab-list-content');
+  if (el) el.innerHTML = '';
+  await incLoadList();
+}
+
+async function incShowDetail(id) {
+  const modal = document.getElementById('inc-detail-modal');
+  const body = document.getElementById('inc-detail-body');
+  if (!modal || !body) return;
+  modal.style.display = 'block';
+  body.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading…</div>';
+  try {
+    const inc = await apiFetch(`/api/incidents/${id}`);
+    const entities = inc.entities || {};
+    const entityHtml = [
+      ...(entities.ips||[]).map(ip => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;background:rgba(88,166,255,.15);color:#58a6ff;margin:2px;font-family:monospace;">${ip}</span>`),
+      ...(entities.domains||[]).map(d => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;background:rgba(248,81,73,.12);color:#f85149;margin:2px;font-family:monospace;">${d}</span>`),
+      ...(entities.users||[]).map(u => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;background:rgba(63,185,80,.12);color:#3fb950;margin:2px;">${u}</span>`),
+      ...(entities.hosts||[]).map(h => `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;background:rgba(210,153,34,.12);color:#d29922;margin:2px;">${h}</span>`),
+    ].join('') || '<span style="color:var(--muted);font-size:12px;">No entities extracted</span>';
+
+    const mitreHtml = (inc.mitre_techniques||[]).map(t =>
+      `<span style="display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;background:rgba(155,89,182,.15);color:#9b59b6;margin:2px;font-family:monospace;">${t}</span>`
+    ).join('') || '<span style="color:var(--muted);font-size:12px;">—</span>';
+
+    const itemsHtml = (inc.items||[]).map(item => `
+      <div style="display:flex;align-items:flex-start;gap:12px;padding:10px 0;border-bottom:1px solid rgba(48,54,61,.4);">
+        <div style="flex-shrink:0;padding-top:2px;">${_itemTypeBadge(item.item_type)}</div>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${item.summary||item.entity_key||'—'}</div>
+          <div style="font-size:11px;color:var(--muted);margin-top:2px;">${fmtDate(item.added_at)} ${item.severity ? '· ' + item.severity : ''} ${item.verdict ? '· verdict: ' + item.verdict : ''}</div>
+        </div>
+      </div>`).join('') || '<div style="color:var(--muted);font-size:12px;padding:10px 0;">No linked items yet</div>';
+
+    body.innerHTML = `
+      <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:20px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;">
+          <div style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:8px;">${inc.title}</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+            ${_incSevBadge(inc.severity)}
+            ${_incStatusBadge(inc.status)}
+            ${_incVerdictBadge(inc.verdict)}
+          </div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-size:12px;color:var(--muted);">Confidence</div>
+          <div style="font-size:22px;font-weight:700;color:${(inc.confidence||0)>=70?'#e74c3c':(inc.confidence||0)>=50?'#e67e22':'#3498db'}">${inc.confidence||0}%</div>
+        </div>
+      </div>
+      ${inc.summary ? `<div style="background:var(--surface2);border-radius:var(--radius);padding:12px;font-size:13px;color:var(--text);margin-bottom:16px;">${inc.summary}</div>` : ''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;font-size:12px;color:var(--muted);">
+        <div>Items: <strong style="color:var(--text)">${inc.item_count||0}</strong></div>
+        <div>Source diversity: <strong style="color:var(--text)">${inc.source_diversity||1}</strong></div>
+        <div>First seen: <strong style="color:var(--text)">${fmtDate(inc.first_seen)}</strong></div>
+        <div>Last seen: <strong style="color:var(--text)">${fmtDate(inc.last_seen)}</strong></div>
+        <div>Assigned to: <strong style="color:var(--text)">${inc.assigned_to||'—'}</strong></div>
+        ${inc.resolved_at ? `<div>Resolved: <strong style="color:var(--accent2)">${fmtDate(inc.resolved_at)}</strong></div>` : ''}
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Entities</div>
+        <div>${entityHtml}</div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">MITRE Techniques</div>
+        <div>${mitreHtml}</div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px;">Timeline</div>
+        ${itemsHtml}
+      </div>
+      <div style="margin-bottom:16px;">
+        <div style="font-size:12px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px;">Notes</div>
+        <textarea id="inc-notes-${inc.id}" style="width:100%;min-height:80px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px;font-size:13px;resize:vertical;">${inc.notes||''}</textarea>
+        <button onclick="incSaveNotes(${inc.id})" style="margin-top:6px;padding:6px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);cursor:pointer;font-size:12px;">Save Notes</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border);">
+        <button onclick="incResolve(${inc.id})" style="padding:7px 16px;background:rgba(39,174,96,.15);border:1px solid #27ae60;border-radius:var(--radius);color:#27ae60;cursor:pointer;font-size:13px;">&#x2713; Resolve</button>
+        <button onclick="incFP(${inc.id})" style="padding:7px 16px;background:rgba(127,140,141,.12);border:1px solid var(--muted);border-radius:var(--radius);color:var(--muted);cursor:pointer;font-size:13px;">Mark False Positive</button>
+        <div style="display:flex;gap:6px;margin-left:auto;align-items:center;">
+          <input id="inc-assign-${inc.id}" placeholder="Assign to…" value="${inc.assigned_to||''}" style="padding:6px 10px;border-radius:var(--radius);border:1px solid var(--border);background:var(--surface);color:var(--text);font-size:12px;width:160px;" />
+          <button onclick="incAssign(${inc.id})" style="padding:6px 12px;background:var(--accent);border:none;border-radius:var(--radius);color:#fff;cursor:pointer;font-size:12px;">Assign</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    body.innerHTML = `<div style="color:var(--danger);padding:20px;">Error: ${e}</div>`;
+  }
+}
+
+async function incResolve(id) {
+  if (!confirm('Mark this incident as resolved?')) return;
+  try {
+    await apiFetch(`/api/incidents/${id}/resolve`, {method:'POST'});
+    document.getElementById('inc-detail-modal').style.display = 'none';
+    incRefreshList();
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function incFP(id) {
+  if (!confirm('Mark this incident as false positive?')) return;
+  try {
+    await apiFetch(`/api/incidents/${id}/false-positive`, {method:'POST'});
+    document.getElementById('inc-detail-modal').style.display = 'none';
+    incRefreshList();
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function incAssign(id) {
+  const val = document.getElementById(`inc-assign-${id}`)?.value?.trim() || '';
+  try {
+    await apiFetch(`/api/incidents/${id}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({assigned_to: val})});
+    incShowDetail(id);
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function incSaveNotes(id) {
+  const val = document.getElementById(`inc-notes-${id}`)?.value || '';
+  try {
+    await apiFetch(`/api/incidents/${id}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({notes: val})});
+  } catch(e) { alert('Error: ' + e); }
+}
+
+async function incLoadDash() {
+  const el = document.getElementById('inc-tab-dash-content');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--muted);padding:20px;">Loading dashboard…</div>';
+  try {
+    const [stats, listData] = await Promise.all([
+      apiFetch('/api/incidents/stats'),
+      apiFetch('/api/incidents?limit=500'),
+    ]);
+    const incs = listData.incidents || [];
+
+    // Last 7 days by severity
+    const days = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      days.push(d.toISOString().slice(0, 10));
+    }
+    const bySevDay = {};
+    for (const sev of ['critical','high','medium','low']) bySevDay[sev] = {};
+    for (const inc of incs) {
+      if (!inc.created_at) continue;
+      const day = inc.created_at.slice(0, 10);
+      if (!days.includes(day)) continue;
+      const sev = inc.severity || 'low';
+      bySevDay[sev][day] = (bySevDay[sev][day] || 0) + 1;
+    }
+    const maxVal = Math.max(1, ...days.flatMap(d => ['critical','high','medium','low'].map(s => bySevDay[s][d]||0)));
+    const chartH = 100;
+    const barW = 28;
+    const gap = 8;
+    const sevColors = {critical:'#e74c3c', high:'#e67e22', medium:'#f39c12', low:'#27ae60'};
+
+    const barGroups = days.map((day, di) => {
+      let yOff = 0;
+      const bars = ['critical','high','medium','low'].reverse().map(sev => {
+        const val = bySevDay[sev][day] || 0;
+        const h = Math.round((val / maxVal) * chartH);
+        const y = chartH - yOff - h;
+        yOff += h;
+        return h > 0 ? `<rect x="${di*(barW+gap)}" y="${y}" width="${barW}" height="${h}" fill="${sevColors[sev]}" opacity="0.8" rx="2"/>` : '';
+      }).join('');
+      const label = day.slice(5);
+      return `${bars}<text x="${di*(barW+gap)+barW/2}" y="${chartH+14}" text-anchor="middle" fill="#8b949e" font-size="9">${label}</text>`;
+    }).join('');
+
+    const svgW = days.length * (barW + gap);
+    const trendChart = `<svg viewBox="0 0 ${svgW} ${chartH+20}" width="100%" style="max-width:500px;display:block;">${barGroups}</svg>`;
+
+    // Top IPs
+    const ipCounts = {};
+    for (const inc of incs) {
+      try { for (const ip of (JSON.parse(inc.entities_json||'{}').ips||[])) ipCounts[ip]=(ipCounts[ip]||0)+1; } catch(e) {}
+    }
+    const topIPs = Object.entries(ipCounts).sort((a,b)=>b[1]-a[1]).slice(0,8);
+
+    // Top tactics from stats
+    const topTech = (stats.top_techniques||[]).slice(0,8);
+
+    el.innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px;flex-wrap:wrap;">
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x1F4C8;</span> Incidents — Last 7 Days</div>
+          <div style="display:flex;gap:16px;margin-bottom:10px;flex-wrap:wrap;">
+            ${Object.entries(sevColors).map(([s,c])=>`<span style="font-size:11px;color:${c};display:flex;align-items:center;gap:4px;"><span style="display:inline-block;width:10px;height:10px;background:${c};border-radius:2px;"></span>${s}</span>`).join('')}
+          </div>
+          ${trendChart}
+        </div>
+        <div class="card">
+          <div class="card-title"><span class="icon">&#x1F310;</span> Top Source IPs</div>
+          ${topIPs.length === 0 ? '<div style="color:var(--muted);font-size:13px;">No IP data yet</div>' :
+            topIPs.map(([ip,c])=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(48,54,61,.4);">
+              <span style="font-family:monospace;font-size:12px;color:var(--accent);">${ip}</span>
+              <span style="font-size:12px;color:var(--muted);">${c} incident${c>1?'s':''}</span>
+            </div>`).join('')}
+        </div>
+        <div class="card" style="grid-column:1/-1;">
+          <div class="card-title"><span class="icon">&#x1F3AF;</span> Top MITRE Techniques</div>
+          ${topTech.length === 0 ? '<div style="color:var(--muted);font-size:13px;">No MITRE data yet</div>' :
+            `<div style="display:flex;flex-wrap:wrap;gap:8px;">` +
+            topTech.map(t=>`<div style="background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius);padding:8px 14px;min-width:120px;">
+              <div style="font-size:12px;font-family:monospace;color:#9b59b6;">${t.technique}</div>
+              <div style="font-size:11px;color:var(--muted);margin-top:2px;">${t.count} incident${t.count>1?'s':''}</div>
+            </div>`).join('') + '</div>'}
+        </div>
+      </div>`;
+  } catch(e) {
+    const el2 = document.getElementById('inc-tab-dash-content');
+    if (el2) el2.innerHTML = `<div style="color:var(--danger);padding:20px;">Error: ${e}</div>`;
+  }
 }
 
 </script>

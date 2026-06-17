@@ -3251,6 +3251,284 @@ async def threat_intel_stats(
     }
 
 
+# ===================== Incidents (Phase 4) =====================
+
+class IncidentPatch(BaseModel):
+    status: Optional[str] = None
+    verdict: Optional[str] = None
+    assigned_to: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.get("/incidents/stats", tags=["incidents"])
+async def get_incident_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Incident, IncidentItem
+    from sqlalchemy import func as _func
+
+    by_status = db.query(Incident.status, _func.count(Incident.id)).group_by(Incident.status).all()
+    by_severity = db.query(Incident.severity, _func.count(Incident.id)).group_by(Incident.severity).all()
+    avg_conf = db.query(_func.avg(Incident.confidence)).scalar() or 0
+
+    # MTTR: mean time to resolve for resolved incidents in last 30 days
+    cutoff_30d = datetime.now(timezone.utc) - timedelta(days=30)
+    resolved = (
+        db.query(Incident)
+        .filter(Incident.status == "resolved", Incident.resolved_at >= cutoff_30d)
+        .all()
+    )
+    mttr_hours = None
+    if resolved:
+        deltas = []
+        for inc in resolved:
+            if inc.resolved_at and inc.first_seen:
+                fs = inc.first_seen
+                ra = inc.resolved_at
+                if fs.tzinfo is None:
+                    fs = fs.replace(tzinfo=timezone.utc)
+                if ra.tzinfo is None:
+                    ra = ra.replace(tzinfo=timezone.utc)
+                delta = (ra - fs).total_seconds() / 3600
+                deltas.append(delta)
+        if deltas:
+            mttr_hours = round(sum(deltas) / len(deltas), 2)
+
+    # Top MITRE techniques
+    import json as _json
+    all_incidents = db.query(Incident).all()
+    tech_counts: dict = {}
+    for inc in all_incidents:
+        try:
+            techs = _json.loads(inc.mitre_techniques_json or "[]")
+            for t in techs:
+                tech_counts[t] = tech_counts.get(t, 0) + 1
+        except Exception:
+            pass
+    top_techniques = sorted(tech_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+
+    return {
+        "by_status": [{"status": s, "count": c} for s, c in by_status],
+        "by_severity": [{"severity": s, "count": c} for s, c in by_severity],
+        "avg_confidence": round(float(avg_conf), 1),
+        "mttr_hours": mttr_hours,
+        "top_techniques": [{"technique": t, "count": c} for t, c in top_techniques],
+        "total": db.query(Incident).count(),
+    }
+
+
+@router.get("/incidents", tags=["incidents"])
+async def list_incidents(
+    status: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    verdict: Optional[str] = Query(None),
+    assigned_to: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    entity: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Incident
+    q = db.query(Incident)
+    if status:
+        q = q.filter(Incident.status == status)
+    if severity:
+        q = q.filter(Incident.severity == severity)
+    if verdict:
+        q = q.filter(Incident.verdict == verdict)
+    if assigned_to:
+        q = q.filter(Incident.assigned_to == assigned_to)
+    if since:
+        q = q.filter(Incident.created_at >= since)
+    if entity:
+        q = q.filter(Incident.entities_json.ilike(f"%{entity}%"))
+    total = q.count()
+    incidents = q.order_by(Incident.created_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "incidents": [
+            {
+                "id": inc.id,
+                "title": inc.title,
+                "severity": inc.severity,
+                "status": inc.status,
+                "confidence": inc.confidence,
+                "verdict": inc.verdict,
+                "item_count": inc.item_count,
+                "source_diversity": inc.source_diversity,
+                "assigned_to": inc.assigned_to,
+                "first_seen": inc.first_seen.isoformat() if inc.first_seen else None,
+                "last_seen": inc.last_seen.isoformat() if inc.last_seen else None,
+                "created_at": inc.created_at.isoformat() if inc.created_at else None,
+            }
+            for inc in incidents
+        ],
+    }
+
+
+@router.get("/incidents/{incident_id}", tags=["incidents"])
+async def get_incident(
+    incident_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import Incident, IncidentItem
+    import json as _json
+    inc = db.query(Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    items = db.query(IncidentItem).filter_by(incident_id=incident_id).order_by(IncidentItem.added_at.asc()).all()
+
+    # Enrich items with source record summaries
+    enriched_items = []
+    for item in items:
+        info: dict = {
+            "id": item.id,
+            "item_type": item.item_type,
+            "item_id": item.item_id,
+            "entity_key": item.entity_key,
+            "severity": item.severity,
+            "added_at": item.added_at.isoformat() if item.added_at else None,
+        }
+        try:
+            if item.item_type == "detection_match":
+                from database import DetectionMatch
+                m = db.query(DetectionMatch).filter_by(id=item.item_id).first()
+                if m:
+                    info["summary"] = m.rule_name
+                    info["matched_at"] = m.matched_at.isoformat() if m.matched_at else None
+            elif item.item_type == "ioc_match":
+                from database import IocMatch
+                m = db.query(IocMatch).filter_by(id=item.item_id).first()
+                if m:
+                    info["summary"] = f"{m.matched_field}: {m.matched_value}"
+                    info["matched_at"] = m.matched_at.isoformat() if m.matched_at else None
+            elif item.item_type == "alert_event":
+                from database import AlertEvent
+                m = db.query(AlertEvent).filter_by(id=item.item_id).first()
+                if m:
+                    info["summary"] = m.rule_name
+                    info["fired_at"] = m.fired_at.isoformat() if m.fired_at else None
+            elif item.item_type == "investigation":
+                from database import Investigation
+                m = db.query(Investigation).filter_by(id=item.item_id).first()
+                if m:
+                    info["summary"] = m.title
+                    info["verdict"] = m.verdict
+                    info["completed_at"] = m.completed_at.isoformat() if m.completed_at else None
+        except Exception:
+            pass
+        enriched_items.append(info)
+
+    entities = {}
+    try:
+        entities = _json.loads(inc.entities_json or "{}")
+    except Exception:
+        pass
+    mitre_techniques = []
+    try:
+        mitre_techniques = _json.loads(inc.mitre_techniques_json or "[]")
+    except Exception:
+        pass
+
+    return {
+        "id": inc.id,
+        "title": inc.title,
+        "severity": inc.severity,
+        "status": inc.status,
+        "confidence": inc.confidence,
+        "verdict": inc.verdict,
+        "summary": inc.summary,
+        "entities": entities,
+        "mitre_techniques": mitre_techniques,
+        "item_count": inc.item_count,
+        "source_diversity": inc.source_diversity,
+        "assigned_to": inc.assigned_to,
+        "notes": inc.notes,
+        "first_seen": inc.first_seen.isoformat() if inc.first_seen else None,
+        "last_seen": inc.last_seen.isoformat() if inc.last_seen else None,
+        "resolved_at": inc.resolved_at.isoformat() if inc.resolved_at else None,
+        "created_at": inc.created_at.isoformat() if inc.created_at else None,
+        "updated_at": inc.updated_at.isoformat() if inc.updated_at else None,
+        "items": enriched_items,
+    }
+
+
+@router.patch("/incidents/{incident_id}", tags=["incidents"])
+async def patch_incident(
+    request: Request,
+    incident_id: int,
+    body: IncidentPatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from database import Incident
+    inc = db.query(Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    if body.status is not None:
+        inc.status = body.status
+    if body.verdict is not None:
+        inc.verdict = body.verdict
+    if body.assigned_to is not None:
+        inc.assigned_to = body.assigned_to
+    if body.notes is not None:
+        inc.notes = body.notes
+    inc.updated_at = datetime.now(timezone.utc)
+    write_audit(db, current_user.username, "incident.patch",
+                f"Patched incident #{incident_id}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/incidents/{incident_id}/resolve", tags=["incidents"])
+async def resolve_incident(
+    request: Request,
+    incident_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from database import Incident
+    inc = db.query(Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc.status = "resolved"
+    inc.resolved_at = datetime.now(timezone.utc)
+    inc.updated_at = datetime.now(timezone.utc)
+    write_audit(db, current_user.username, "incident.resolve",
+                f"Resolved incident #{incident_id}: {inc.title}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"ok": True, "resolved_at": inc.resolved_at.isoformat()}
+
+
+@router.post("/incidents/{incident_id}/false-positive", tags=["incidents"])
+async def false_positive_incident(
+    request: Request,
+    incident_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    from database import Incident
+    inc = db.query(Incident).filter_by(id=incident_id).first()
+    if not inc:
+        raise HTTPException(status_code=404, detail="Incident not found")
+    inc.status = "false_positive"
+    inc.verdict = "benign"
+    inc.updated_at = datetime.now(timezone.utc)
+    write_audit(db, current_user.username, "incident.false_positive",
+                f"Marked incident #{incident_id} as false positive: {inc.title}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/detections/dry-run", tags=["detections"])
 async def detection_dry_run(
     body: dict,
