@@ -13,3 +13,4 @@ python-dotenv>=1.0.1
 httpx>=0.28.1
 aiosmtplib>=3.0.2
 pywin32>=308
+pyyaml>=6.0.2

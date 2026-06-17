@@ -1,0 +1,19 @@
+id: det-net-008
+name: High-Severity Event Flood from Single Source
+description: Detects a burst of high-severity syslog events from a single log source IP which may indicate system compromise, DoS, or misconfiguration.
+severity: high
+category: network
+tags:
+  - attack.ta0040
+detection:
+  match:
+    and:
+      - {field: severity, op: lte, value: 2}
+  aggregate:
+    group_by: log_source_ip
+    window_minutes: 5
+    threshold: 5
+false_positives:
+  - Misconfigured devices sending spurious high-severity logs
+enabled: true
+author: builtin

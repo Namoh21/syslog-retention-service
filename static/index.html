@@ -403,6 +403,7 @@
       <li><a onclick="showPage('simulate')" data-page="simulate" title="Test a KQL rule against your logs before creating an alert"><span class="nav-icon">&#x1F9EA;</span> Rule Simulator</a></li>
       <li><a onclick="showPage('policygaps')" data-page="policygaps" title="Find traffic that reaches your devices without being explicitly blocked"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
       <li><a onclick="showPage('alertrules')" data-page="alertrules" title="Configure automated alerts triggered by log patterns"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
+      <li><a onclick="showPage('detections')" data-page="detections" title="Detection Engine rules and matches with MITRE ATT&amp;CK mapping"><span class="nav-icon">&#x1F6E1;</span> Detections <span id="nav-det-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings" title="AI provider, API keys, NetFlow, and display settings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention" title="Control how long logs are kept and storage limits"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
@@ -614,7 +615,7 @@ function showPage(name) {
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
     investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
-    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts',
+    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections',
     unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
@@ -625,7 +626,7 @@ function showPage(name) {
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
-    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules,
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections,
     unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
@@ -5808,6 +5809,275 @@ async function runPostureReview() {
     if (out) out.innerHTML = `<div class="alert alert-warn"><strong>Posture review failed:</strong> ${esc(String(e))}</div>`;
   }
 }
+
+// ===================== Detections =====================
+
+function _detToast(msg, type) {
+  let el = document.getElementById('det-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'det-toast';
+    el.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:9000;max-width:360px;padding:10px 16px;border-radius:6px;font-size:13px;box-shadow:0 4px 12px #0004;transition:opacity .3s';
+    document.body.appendChild(el);
+  }
+  el.style.background = type === 'error' ? 'var(--danger)' : 'var(--accent2)';
+  el.style.color = '#fff';
+  el.style.opacity = '1';
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { el.style.opacity = '0'; }, 3000);
+}
+
+let _detMitreRef = null;
+async function _loadMitreRef() {
+  if (_detMitreRef) return _detMitreRef;
+  try {
+    const r = await apiFetch('/api/detections/mitre-reference');
+    _detMitreRef = r;
+  } catch(e) { _detMitreRef = {tactics:{}, techniques:{}}; }
+  return _detMitreRef;
+}
+
+function _detSevBadge(sev) {
+  const colors = {critical:'var(--danger)', high:'var(--warn)', medium:'#e6a817', low:'#2da44e', info:'var(--muted)'};
+  const col = colors[sev] || 'var(--muted)';
+  return `<span style="display:inline-block;padding:1px 7px;border-radius:9px;background:${col};color:#fff;font-size:11px;font-weight:600">${esc(sev||'?')}</span>`;
+}
+
+function _mitreBadges(techniques) {
+  if (!techniques || !techniques.length) return '';
+  return techniques.map(t => {
+    const info = _detMitreRef?.techniques?.[t.toUpperCase()];
+    const label = info ? `${t}: ${info.name}` : t;
+    return `<span title="${esc(label)}" style="display:inline-block;padding:1px 6px;border-radius:4px;background:#2563eb22;color:#2563eb;font-size:10px;margin:1px;cursor:default">${esc(t)}</span>`;
+  }).join('');
+}
+
+let _detTab = 'rules';
+async function detections() {
+  render(`
+    <div class="page-header">
+      <h1>&#x1F6E1; Detections</h1>
+      <p>YAML-driven detection rules with MITRE ATT&amp;CK mapping. Matches are generated automatically every 30 seconds.</p>
+    </div>
+    <div class="sub-tabs" style="margin-bottom:16px">
+      <button id="det-tab-rules" class="sub-tab active" onclick="detShowTab('rules')">Rules</button>
+      <button id="det-tab-matches" class="sub-tab" onclick="detShowTab('matches')">Matches</button>
+    </div>
+    <div id="det-rules-pane"></div>
+    <div id="det-matches-pane" style="display:none"></div>
+  `);
+  await _loadMitreRef();
+  detShowTab(_detTab);
+}
+
+function detShowTab(tab) {
+  _detTab = tab;
+  document.querySelectorAll('.sub-tab').forEach(b => b.classList.remove('active'));
+  const btn = document.getElementById('det-tab-' + tab);
+  if (btn) btn.classList.add('active');
+  document.getElementById('det-rules-pane').style.display = tab === 'rules' ? '' : 'none';
+  document.getElementById('det-matches-pane').style.display = tab === 'matches' ? '' : 'none';
+  if (tab === 'rules') detLoadRules();
+  else detLoadMatches();
+}
+
+async function detLoadRules() {
+  const pane = document.getElementById('det-rules-pane');
+  if (!pane) return;
+  pane.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+      <button class="btn btn-sm" onclick="detSyncRules()">&#x1F504; Sync from Disk</button>
+      <select id="det-rule-filter-sev" onchange="detLoadRules()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border)">
+        <option value="">All Severities</option>
+        <option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option>
+      </select>
+      <select id="det-rule-filter-cat" onchange="detLoadRules()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border)">
+        <option value="">All Categories</option>
+        <option>auth</option><option>network</option><option>dns</option><option>app</option>
+      </select>
+    </div>
+    <div id="det-rules-table"><div class="spinner"></div> Loading rules...</div>
+  `;
+  await _detRefreshRulesTable();
+}
+
+async function _detRefreshRulesTable() {
+  const container = document.getElementById('det-rules-table');
+  if (!container) return;
+  const sev = document.getElementById('det-rule-filter-sev')?.value || '';
+  const cat = document.getElementById('det-rule-filter-cat')?.value || '';
+  let url = '/api/detections/rules?';
+  if (sev) url += `severity=${encodeURIComponent(sev)}&`;
+  if (cat) url += `category=${encodeURIComponent(cat)}&`;
+  try {
+    const rules = await apiFetch(url);
+    if (!rules.length) { container.innerHTML = '<p style="color:var(--muted)">No rules found. Run "Sync from Disk" to load YAML rules.</p>'; return; }
+    let html = `<table class="data-table"><thead><tr>
+      <th>Rule ID</th><th>Name</th><th>Category</th><th>Severity</th><th>MITRE Tags</th><th>Enabled</th><th>Last Synced</th><th>Actions</th>
+    </tr></thead><tbody>`;
+    for (const r of rules) {
+      const tags = (r.tags || []).filter(t => t.startsWith('attack.t'));
+      const techs = tags.map(t => t.replace('attack.','').toUpperCase());
+      const synced = r.last_synced_at ? new Date(r.last_synced_at).toLocaleString() : 'Never';
+      html += `<tr>
+        <td style="font-family:monospace;font-size:12px">${esc(r.rule_id)}</td>
+        <td>${esc(r.name)}</td>
+        <td><span style="font-size:11px;background:var(--surface2);padding:1px 6px;border-radius:4px">${esc(r.category||'')}</span></td>
+        <td>${_detSevBadge(r.severity)}</td>
+        <td style="max-width:200px">${_mitreBadges(techs)}</td>
+        <td><label class="kb-toggle"><input type="checkbox" ${r.enabled?'checked':''} onchange="detToggleRule('${esc(r.rule_id)}', this)"><span class="kb-toggle-track"></span></label></td>
+        <td style="font-size:11px;color:var(--muted)">${synced}</td>
+        <td><button class="btn btn-xs" onclick="detDryRun('${esc(r.rule_id)}', ${JSON.stringify(r.condition)})">Dry Run</button></td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div class="alert alert-warn">Failed to load rules: ${esc(String(e))}</div>`;
+  }
+}
+
+async function detSyncRules() {
+  try {
+    const r = await apiFetch('/api/detections/rules/sync', {method:'POST'});
+    _detToast(`Synced: ${r.loaded} loaded, ${r.updated} updated${r.errors.length ? ', ' + r.errors.length + ' errors' : ''}`);
+    await _detRefreshRulesTable();
+  } catch(e) { _detToast('Sync failed: ' + e, 'error'); }
+}
+
+async function detToggleRule(ruleId, checkbox) {
+  try {
+    const r = await apiFetch(`/api/detections/rules/${encodeURIComponent(ruleId)}/toggle`, {method:'PATCH'});
+    checkbox.checked = r.enabled;
+    showToast(`Rule ${ruleId} ${r.enabled ? 'enabled' : 'disabled'}`);
+  } catch(e) { _detToast('Toggle failed: ' + e, 'error'); checkbox.checked = !checkbox.checked; }
+}
+
+async function detDryRun(ruleId, condition) {
+  const modal = document.createElement('div');
+  modal.style.cssText = 'position:fixed;inset:0;background:#0008;z-index:9999;display:flex;align-items:center;justify-content:center';
+  modal.innerHTML = `<div style="background:var(--surface);border-radius:8px;padding:24px;max-width:700px;width:95%;max-height:80vh;overflow:auto">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <strong>Dry Run — ${esc(ruleId)}</strong>
+      <button onclick="this.closest('[style*=fixed]').remove()" style="background:none;border:none;cursor:pointer;font-size:18px;color:var(--muted)">&#x2715;</button>
+    </div>
+    <p style="color:var(--muted);font-size:13px">Testing condition against last 24 hours of logs...</p>
+    <div id="dry-run-result"><div class="spinner"></div></div>
+  </div>`;
+  document.body.appendChild(modal);
+  try {
+    const r = await apiFetch('/api/detections/dry-run', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({condition, hours: 24, limit: 50})
+    });
+    let html = `<p><strong>${r.match_count}</strong> matches in last ${r.hours_searched}h</p>`;
+    if (r.matches.length) {
+      html += `<table class="data-table" style="font-size:12px"><thead><tr><th>Time</th><th>Event</th><th>Src IP</th><th>Dst Port</th><th>Action</th><th>Message</th></tr></thead><tbody>`;
+      for (const m of r.matches) {
+        html += `<tr><td>${m.received_at ? new Date(m.received_at).toLocaleTimeString() : '?'}</td><td>${esc(m.event_type||'')}</td><td>${esc(m.src_ip||'')}</td><td>${esc(String(m.dst_port||''))}</td><td>${esc(m.action||'')}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${esc((m.message||'').slice(0,100))}</td></tr>`;
+      }
+      html += '</tbody></table>';
+    }
+    document.getElementById('dry-run-result').innerHTML = html;
+  } catch(e) {
+    document.getElementById('dry-run-result').innerHTML = `<div class="alert alert-warn">Error: ${esc(String(e))}</div>`;
+  }
+}
+
+async function detLoadMatches() {
+  const pane = document.getElementById('det-matches-pane');
+  if (!pane) return;
+
+  // Load stats first
+  let statsHtml = '';
+  try {
+    const stats = await apiFetch('/api/detections/stats');
+    const c24 = stats.counts_24h || {};
+    const sevOrder = ['critical','high','medium','low','info'];
+    const total24 = Object.values(c24).reduce((a,b) => a+b, 0);
+    statsHtml = `<div class="card" style="margin-bottom:16px">
+      <div class="card-title">&#x1F4CA; Detection Stats (24h)</div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+        <div>Total matches: <strong>${total24}</strong></div>
+        <div>Unacknowledged: <strong style="color:var(--warn)">${stats.unacknowledged||0}</strong></div>
+        ${sevOrder.map(s => c24[s] ? `<div>${_detSevBadge(s)} <strong>${c24[s]}</strong></div>` : '').join('')}
+      </div>
+      ${stats.top_mitre_24h?.length ? `<div style="margin-top:10px;font-size:13px"><strong>Top MITRE:</strong> ${stats.top_mitre_24h.slice(0,5).map(t => `${_mitreBadges([t.technique])} ×${t.count}`).join(' &nbsp; ')}</div>` : ''}
+    </div>`;
+  } catch(e) {}
+
+  pane.innerHTML = `
+    ${statsHtml}
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <select id="det-match-sev" onchange="detRefreshMatches()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border)">
+        <option value="">All Severities</option>
+        <option>critical</option><option>high</option><option>medium</option><option>low</option><option>info</option>
+      </select>
+      <select id="det-match-ack" onchange="detRefreshMatches()" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border)">
+        <option value="">All</option>
+        <option value="false">Unacknowledged</option>
+        <option value="true">Acknowledged</option>
+      </select>
+      <input id="det-match-mitre" placeholder="MITRE technique (e.g. T1110)" style="padding:4px 8px;border-radius:4px;border:1px solid var(--border)" onchange="detRefreshMatches()">
+      <button class="btn btn-sm" onclick="detRefreshMatches()">&#x1F50D; Filter</button>
+    </div>
+    <div id="det-matches-table"><div class="spinner"></div> Loading matches...</div>
+  `;
+  await detRefreshMatches();
+}
+
+async function detRefreshMatches() {
+  const container = document.getElementById('det-matches-table');
+  if (!container) return;
+  const sev = document.getElementById('det-match-sev')?.value || '';
+  const ack = document.getElementById('det-match-ack')?.value || '';
+  const mitre = document.getElementById('det-match-mitre')?.value || '';
+  let url = '/api/detections/matches?limit=100&';
+  if (sev) url += `severity=${encodeURIComponent(sev)}&`;
+  if (ack !== '') url += `acknowledged=${ack}&`;
+  if (mitre) url += `mitre_technique=${encodeURIComponent(mitre)}&`;
+  container.innerHTML = '<div class="spinner"></div> Loading...';
+  try {
+    const data = await apiFetch(url);
+    const matches = data.matches || [];
+    if (!matches.length) { container.innerHTML = '<p style="color:var(--muted)">No matches found.</p>'; return; }
+    let html = `<p style="color:var(--muted);font-size:13px">Showing ${matches.length} of ${data.total} matches</p>
+      <table class="data-table"><thead><tr>
+        <th>Time</th><th>Rule</th><th>Severity</th><th>MITRE</th><th>Fields</th><th>Ack</th>
+      </tr></thead><tbody>`;
+    for (const m of matches) {
+      const ts = m.matched_at ? new Date(m.matched_at).toLocaleString() : '?';
+      const fields = m.matched_fields || {};
+      const fieldsStr = Object.entries(fields).slice(0,3).map(([k,v])=>`${k}=${v}`).join(', ');
+      html += `<tr style="${m.acknowledged ? 'opacity:0.5' : ''}">
+        <td style="font-size:12px">${esc(ts)}</td>
+        <td><span style="font-family:monospace;font-size:11px">${esc(m.rule_id)}</span><br><span style="font-size:12px">${esc(m.rule_name)}</span></td>
+        <td>${_detSevBadge(m.severity)}</td>
+        <td>${_mitreBadges(m.mitre_techniques||[])}</td>
+        <td style="font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis">${esc(fieldsStr)}</td>
+        <td>${m.acknowledged
+          ? '<span style="color:var(--muted);font-size:12px">&#x2713; Acked</span>'
+          : `<button class="btn btn-xs" onclick="detAckMatch(${m.id}, this)">Ack</button>`}</td>
+      </tr>`;
+    }
+    html += '</tbody></table>';
+    container.innerHTML = html;
+  } catch(e) {
+    container.innerHTML = `<div class="alert alert-warn">Failed to load matches: ${esc(String(e))}</div>`;
+  }
+}
+
+async function detAckMatch(matchId, btn) {
+  try {
+    await apiFetch(`/api/detections/matches/${matchId}/acknowledge`, {method:'POST'});
+    btn.closest('tr').style.opacity = '0.5';
+    btn.outerHTML = '<span style="color:var(--muted);font-size:12px">&#x2713; Acked</span>';
+    _detToast('Match acknowledged');
+  } catch(e) { _detToast('Failed: ' + e, 'error'); }
+}
+
 </script>
 </body>
 </html>

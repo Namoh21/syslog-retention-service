@@ -1,0 +1,16 @@
+id: det-net-004
+name: Threat Management Block
+description: Detects traffic blocked by the Unifi threat management system indicating C2 or malicious communication attempts.
+severity: high
+category: network
+tags:
+  - attack.t1071
+  - attack.ta0011
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: threat_block}
+false_positives:
+  - False positives from threat feed providers
+enabled: true
+author: builtin

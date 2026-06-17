@@ -1,0 +1,21 @@
+id: det-net-001
+name: Firewall Block Flood - Active Scanning
+description: Detects a high volume of firewall blocks from a single source IP indicating active network scanning.
+severity: medium
+category: network
+tags:
+  - attack.t1595
+  - attack.ta0043
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: firewall_block}
+  aggregate:
+    group_by: src_ip
+    window_minutes: 5
+    threshold: 50
+false_positives:
+  - Legitimate vulnerability scanners
+  - Network monitoring tools
+enabled: true
+author: builtin

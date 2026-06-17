@@ -1,0 +1,17 @@
+id: det-net-007
+name: VPN Connection Established
+description: Informational alert when a VPN connection is established — useful for auditing remote access to the network.
+severity: info
+category: network
+tags:
+  - attack.t1133
+  - attack.ta0001
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: vpn_connect}
+false_positives:
+  - Authorized remote workers
+  - Site-to-site VPN tunnels
+enabled: true
+author: builtin

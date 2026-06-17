@@ -1,0 +1,17 @@
+id: det-net-002
+name: IDS Alert Triggered
+description: Detects any IDS/IPS alert indicating potential exploitation attempt or malicious traffic.
+severity: high
+category: network
+tags:
+  - attack.t1190
+  - attack.ta0001
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: ids_alert}
+false_positives:
+  - Security research traffic
+  - Misconfigured IDS signatures
+enabled: true
+author: builtin

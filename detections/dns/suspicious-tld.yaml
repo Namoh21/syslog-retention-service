@@ -1,0 +1,18 @@
+id: det-dns-002
+name: DNS Query to Suspicious TLD
+description: Detects DNS queries to top-level domains frequently associated with malware C2, phishing, and throwaway infrastructure.
+severity: medium
+category: dns
+tags:
+  - attack.t1568.002
+  - attack.ta0011
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: dns_query}
+      - {field: domain, op: regex, value: '\.(top|xyz|tk|ru|cn|biz)$'}
+false_positives:
+  - Legitimate business use of .cn or .ru domains
+  - Security research
+enabled: true
+author: builtin

@@ -408,6 +408,48 @@ class IpReputationCache(Base):
     fetched_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
+class DetectionRule(Base):
+    __tablename__ = "detection_rules"
+    id             = Column(Integer, primary_key=True, index=True)
+    rule_id        = Column(String(64), unique=True, index=True, nullable=False)
+    name           = Column(String(256), nullable=False)
+    description    = Column(Text, nullable=True)
+    severity       = Column(String(16), nullable=False, default="medium")
+    category       = Column(String(64), nullable=True, index=True)
+    tags_json      = Column(Text, nullable=True)
+    condition_json = Column(Text, nullable=False)
+    false_positives_json = Column(Text, nullable=True)
+    enabled        = Column(Boolean, default=True, index=True)
+    source_file    = Column(String(512), nullable=True)
+    version        = Column(String(32), nullable=True)
+    author         = Column(String(128), nullable=True)
+    created_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at     = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+    last_synced_at = Column(DateTime(timezone=True), nullable=True)
+    file_hash      = Column(String(64), nullable=True)
+    __table_args__ = (Index("ix_detection_rules_enabled_category", "enabled", "category"),)
+
+
+class DetectionMatch(Base):
+    __tablename__ = "detection_matches"
+    id            = Column(Integer, primary_key=True, index=True)
+    rule_id       = Column(Integer, nullable=False, index=True)
+    rule_name     = Column(String(256), nullable=False)
+    rule_str_id   = Column(String(64), nullable=False, index=True)
+    entry_id      = Column(Integer, nullable=False, index=True)
+    matched_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    severity      = Column(String(16), nullable=False, index=True)
+    mitre_techniques_json = Column(Text, nullable=True)
+    matched_fields_json   = Column(Text, nullable=True)
+    entry_received_at     = Column(DateTime(timezone=True), nullable=True, index=True)
+    acknowledged  = Column(Boolean, default=False, index=True)
+    notified      = Column(Boolean, default=False)
+    __table_args__ = (
+        Index("ix_detmatches_rule_matched", "rule_id", "matched_at"),
+        Index("ix_detmatches_severity_matched", "severity", "matched_at"),
+    )
+
+
 def _migrate_db():
     """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:

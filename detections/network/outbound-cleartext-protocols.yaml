@@ -1,0 +1,19 @@
+id: det-net-006
+name: Outbound Cleartext Protocol Usage
+description: Detects outbound connections on legacy cleartext protocols (Telnet, FTP) which may indicate data exfiltration or compromised host.
+severity: medium
+category: network
+tags:
+  - attack.t1071
+  - attack.ta0010
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: firewall_allow}
+      - {field: direction, op: eq, value: outbound}
+      - {field: dst_port, op: in, value: [23, 21]}
+false_positives:
+  - Legacy systems requiring Telnet or FTP
+  - Authorized FTP transfers to known servers
+enabled: true
+author: builtin

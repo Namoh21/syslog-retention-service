@@ -3,6 +3,7 @@ All REST API routes for the syslog retention service.
 """
 import asyncio
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, List, Optional
@@ -2603,3 +2604,342 @@ async def update_notification_settings(
                 request.client.host if request.client else "")
     db.commit()
     return {"message": "Notification settings saved."}
+
+
+# ===================== Detection Engine =====================
+
+@router.get("/detections/rules", tags=["detections"])
+async def list_detection_rules(
+    enabled: Optional[bool] = Query(None),
+    category: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import DetectionRule
+    q = db.query(DetectionRule)
+    if enabled is not None:
+        q = q.filter(DetectionRule.enabled == enabled)
+    if category:
+        q = q.filter(DetectionRule.category == category)
+    if severity:
+        q = q.filter(DetectionRule.severity == severity)
+    rules = q.order_by(DetectionRule.category, DetectionRule.name).all()
+    return [
+        {
+            "id": r.id,
+            "rule_id": r.rule_id,
+            "name": r.name,
+            "description": r.description,
+            "severity": r.severity,
+            "category": r.category,
+            "tags": json.loads(r.tags_json or "[]"),
+            "enabled": r.enabled,
+            "author": r.author,
+            "source_file": r.source_file,
+            "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "condition": json.loads(r.condition_json or "{}"),
+        }
+        for r in rules
+    ]
+
+
+@router.get("/detections/rules/{rule_id}", tags=["detections"])
+async def get_detection_rule(
+    rule_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import DetectionRule
+    rule = db.query(DetectionRule).filter_by(rule_id=rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    return {
+        "id": rule.id,
+        "rule_id": rule.rule_id,
+        "name": rule.name,
+        "description": rule.description,
+        "severity": rule.severity,
+        "category": rule.category,
+        "tags": json.loads(rule.tags_json or "[]"),
+        "condition": json.loads(rule.condition_json or "{}"),
+        "false_positives": json.loads(rule.false_positives_json or "[]"),
+        "enabled": rule.enabled,
+        "author": rule.author,
+        "source_file": rule.source_file,
+        "version": rule.version,
+        "last_synced_at": rule.last_synced_at.isoformat() if rule.last_synced_at else None,
+        "created_at": rule.created_at.isoformat() if rule.created_at else None,
+        "updated_at": rule.updated_at.isoformat() if rule.updated_at else None,
+    }
+
+
+@router.patch("/detections/rules/{rule_id}/toggle", tags=["detections"])
+async def toggle_detection_rule(
+    rule_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import DetectionRule
+    rule = db.query(DetectionRule).filter_by(rule_id=rule_id).first()
+    if not rule:
+        raise HTTPException(404, "Rule not found")
+    rule.enabled = not rule.enabled
+    rule.updated_at = datetime.now(timezone.utc)
+    write_audit(db, admin.username, "detection.toggle",
+                f"Rule {rule_id} {'enabled' if rule.enabled else 'disabled'}",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"rule_id": rule_id, "enabled": rule.enabled}
+
+
+@router.post("/detections/rules/sync", tags=["detections"])
+async def sync_detection_rules(
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from detection_engine import sync_rules_from_disk
+    result = sync_rules_from_disk(db)
+    write_audit(db, admin.username, "detection.sync",
+                f"Rules synced: loaded={result['loaded']} updated={result['updated']} errors={len(result['errors'])}",
+                request.client.host if request.client else "")
+    db.commit()
+    return result
+
+
+@router.get("/detections/matches", tags=["detections"])
+async def list_detection_matches(
+    severity: Optional[str] = Query(None),
+    rule_id: Optional[str] = Query(None),
+    acknowledged: Optional[bool] = Query(None),
+    since: Optional[datetime] = Query(None),
+    mitre_technique: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import DetectionMatch, DetectionRule
+    q = db.query(DetectionMatch)
+    if severity:
+        q = q.filter(DetectionMatch.severity == severity)
+    if rule_id:
+        rule = db.query(DetectionRule).filter_by(rule_id=rule_id).first()
+        if rule:
+            q = q.filter(DetectionMatch.rule_id == rule.id)
+    if acknowledged is not None:
+        q = q.filter(DetectionMatch.acknowledged == acknowledged)
+    if since:
+        q = q.filter(DetectionMatch.matched_at >= since)
+    if mitre_technique:
+        q = q.filter(DetectionMatch.mitre_techniques_json.contains(mitre_technique.upper()))
+    total = q.count()
+    matches = q.order_by(DetectionMatch.matched_at.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "matches": [
+            {
+                "id": m.id,
+                "rule_id": m.rule_str_id,
+                "rule_name": m.rule_name,
+                "entry_id": m.entry_id,
+                "matched_at": m.matched_at.isoformat() if m.matched_at else None,
+                "severity": m.severity,
+                "mitre_techniques": json.loads(m.mitre_techniques_json or "[]"),
+                "matched_fields": json.loads(m.matched_fields_json or "{}"),
+                "entry_received_at": m.entry_received_at.isoformat() if m.entry_received_at else None,
+                "acknowledged": m.acknowledged,
+            }
+            for m in matches
+        ],
+    }
+
+
+@router.get("/detections/matches/{match_id}", tags=["detections"])
+async def get_detection_match(
+    match_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import DetectionMatch
+    m = db.query(DetectionMatch).filter_by(id=match_id).first()
+    if not m:
+        raise HTTPException(404, "Match not found")
+    entry = db.query(SyslogEntry).filter_by(id=m.entry_id).first()
+    result = {
+        "id": m.id,
+        "rule_id": m.rule_str_id,
+        "rule_name": m.rule_name,
+        "entry_id": m.entry_id,
+        "matched_at": m.matched_at.isoformat() if m.matched_at else None,
+        "severity": m.severity,
+        "mitre_techniques": json.loads(m.mitre_techniques_json or "[]"),
+        "matched_fields": json.loads(m.matched_fields_json or "{}"),
+        "entry_received_at": m.entry_received_at.isoformat() if m.entry_received_at else None,
+        "acknowledged": m.acknowledged,
+    }
+    if entry:
+        result["entry"] = {
+            "id": entry.id,
+            "received_at": entry.received_at.isoformat() if entry.received_at else None,
+            "log_source_ip": entry.log_source_ip,
+            "event_type": entry.event_type,
+            "src_ip": entry.src_ip,
+            "dst_ip": entry.dst_ip,
+            "dst_port": entry.dst_port,
+            "protocol": entry.protocol,
+            "action": entry.action,
+            "direction": entry.direction,
+            "message": entry.message,
+            "severity": entry.severity,
+        }
+    return result
+
+
+@router.post("/detections/matches/{match_id}/acknowledge", tags=["detections"])
+async def acknowledge_detection_match(
+    match_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    from database import DetectionMatch
+    m = db.query(DetectionMatch).filter_by(id=match_id).first()
+    if not m:
+        raise HTTPException(404, "Match not found")
+    m.acknowledged = True
+    db.commit()
+    return {"acknowledged": True, "match_id": match_id}
+
+
+@router.get("/detections/stats", tags=["detections"])
+async def detection_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import DetectionMatch, DetectionRule
+    from sqlalchemy import func as sqlfunc
+    now = datetime.now(timezone.utc)
+    since_24h = now - timedelta(hours=24)
+    since_7d = now - timedelta(days=7)
+
+    def counts_by_severity(since_dt):
+        rows = (
+            db.query(DetectionMatch.severity, sqlfunc.count(DetectionMatch.id))
+            .filter(DetectionMatch.matched_at >= since_dt)
+            .group_by(DetectionMatch.severity)
+            .all()
+        )
+        return {sev: cnt for sev, cnt in rows}
+
+    top_rules_rows = (
+        db.query(DetectionMatch.rule_str_id, DetectionMatch.rule_name, sqlfunc.count(DetectionMatch.id).label("cnt"))
+        .filter(DetectionMatch.matched_at >= since_24h)
+        .group_by(DetectionMatch.rule_str_id, DetectionMatch.rule_name)
+        .order_by(sqlfunc.count(DetectionMatch.id).desc())
+        .limit(10)
+        .all()
+    )
+
+    # Top MITRE techniques from matches in last 24h
+    recent_matches = (
+        db.query(DetectionMatch.mitre_techniques_json)
+        .filter(DetectionMatch.matched_at >= since_24h, DetectionMatch.mitre_techniques_json.isnot(None))
+        .limit(500)
+        .all()
+    )
+    tech_counts: dict = {}
+    for (tj,) in recent_matches:
+        try:
+            for t in json.loads(tj or "[]"):
+                tech_counts[t] = tech_counts.get(t, 0) + 1
+        except Exception:
+            pass
+    top_techniques = sorted(tech_counts.items(), key=lambda x: -x[1])[:10]
+
+    unacked_count = db.query(DetectionMatch).filter(DetectionMatch.acknowledged == False).count()
+
+    return {
+        "counts_24h": counts_by_severity(since_24h),
+        "counts_7d": counts_by_severity(since_7d),
+        "top_rules_24h": [
+            {"rule_id": r, "rule_name": n, "count": c} for r, n, c in top_rules_rows
+        ],
+        "top_mitre_24h": [
+            {"technique": t, "count": c} for t, c in top_techniques
+        ],
+        "unacknowledged": unacked_count,
+    }
+
+
+@router.get("/detections/mitre-reference", tags=["detections"])
+async def mitre_reference(_: User = Depends(get_current_user)):
+    from detection_engine import _load_mitre_reference
+    return _load_mitre_reference()
+
+
+@router.post("/detections/dry-run", tags=["detections"])
+async def detection_dry_run(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    """Test a condition tree against recent entries without writing DetectionMatch rows."""
+    from detection_engine import _build_sqla_filter, _apply_regex_filter
+    condition = body.get("condition", {})
+    hours = float(body.get("hours", 24))
+    limit = int(body.get("limit", 100))
+    limit = max(1, min(limit, 500))
+
+    since = datetime.now(timezone.utc) - timedelta(hours=hours)
+    q = db.query(SyslogEntry).filter(SyslogEntry.received_at >= since)
+
+    match_node = condition.get("match") or condition
+    filter_result = _build_sqla_filter(match_node)
+    regex_info = None
+
+    if isinstance(filter_result, dict):
+        if "_and_filter" in filter_result:
+            sql_filter = filter_result["_and_filter"]
+            regex_info = filter_result
+        elif "_regex" in filter_result:
+            sql_filter = None
+            regex_info = {"_regexes": [filter_result]}
+        else:
+            sql_filter = None
+    else:
+        sql_filter = filter_result
+
+    if sql_filter is not None:
+        q = q.filter(sql_filter)
+
+    rows = q.order_by(SyslogEntry.received_at.desc()).limit(limit * 2 if regex_info else limit).all()
+
+    if regex_info:
+        rows = _apply_regex_filter(rows, regex_info)
+        rows = rows[:limit]
+
+    return {
+        "match_count": len(rows),
+        "hours_searched": hours,
+        "matches": [
+            {
+                "id": e.id,
+                "received_at": e.received_at.isoformat() if e.received_at else None,
+                "event_type": e.event_type,
+                "src_ip": e.src_ip,
+                "dst_ip": e.dst_ip,
+                "dst_port": e.dst_port,
+                "action": e.action,
+                "direction": e.direction,
+                "message": (e.message or "")[:200],
+                "log_source_ip": e.log_source_ip,
+            }
+            for e in rows
+        ],
+    }

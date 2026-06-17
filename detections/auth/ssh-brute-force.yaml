@@ -1,0 +1,21 @@
+id: det-auth-001
+name: SSH Brute Force - Multiple Failed Logins
+description: Detects repeated SSH authentication failures from a single source IP suggesting a brute force attack.
+severity: high
+category: auth
+tags:
+  - attack.t1110.001
+  - attack.ta0006
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: auth_failure}
+      - {field: protocol, op: eq, value: SSH}
+  aggregate:
+    group_by: src_ip
+    window_minutes: 5
+    threshold: 10
+false_positives:
+  - Vulnerability scanners from known security-team IPs
+enabled: true
+author: builtin

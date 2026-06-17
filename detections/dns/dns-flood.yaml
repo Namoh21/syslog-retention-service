@@ -1,0 +1,21 @@
+id: det-dns-001
+name: DNS Query Flood - Possible Tunneling or DGA
+description: Detects a high volume of DNS queries from a single host which may indicate DNS tunneling or domain generation algorithm (DGA) activity.
+severity: medium
+category: dns
+tags:
+  - attack.t1071.004
+  - attack.ta0011
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: dns_query}
+  aggregate:
+    group_by: src_ip
+    window_minutes: 5
+    threshold: 200
+false_positives:
+  - DNS resolvers and recursive servers
+  - High-traffic internal services
+enabled: true
+author: builtin

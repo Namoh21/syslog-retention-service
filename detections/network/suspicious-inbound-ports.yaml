@@ -1,0 +1,18 @@
+id: det-net-005
+name: Suspicious Inbound Connection Attempts on High-Risk Ports
+description: Detects inbound firewall blocks targeting high-risk service ports commonly associated with exploitation and lateral movement.
+severity: high
+category: network
+tags:
+  - attack.t1190
+  - attack.ta0001
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: firewall_block}
+      - {field: direction, op: eq, value: inbound}
+      - {field: dst_port, op: in, value: [23, 2323, 3389, 445, 135, 1433, 5900]}
+false_positives:
+  - Internet-wide scanning reaching public IP
+enabled: true
+author: builtin

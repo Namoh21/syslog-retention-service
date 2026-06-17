@@ -1,0 +1,19 @@
+id: det-net-009
+name: Lateral Movement - Admin Port Access on LAN
+description: Detects allowed connections on internal network to administrative ports commonly used for lateral movement.
+severity: medium
+category: network
+tags:
+  - attack.t1021
+  - attack.ta0008
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: firewall_allow}
+      - {field: direction, op: eq, value: lan}
+      - {field: dst_port, op: in, value: [445, 3389, 5985, 5986, 22]}
+false_positives:
+  - Authorized IT admin activity
+  - Remote management tools
+enabled: false
+author: builtin

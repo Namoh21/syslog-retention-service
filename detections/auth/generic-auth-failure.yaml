@@ -1,0 +1,21 @@
+id: det-auth-002
+name: Generic Authentication Failures - Threshold
+description: Detects multiple authentication failures from any source within a short window, indicating password spraying or brute force.
+severity: medium
+category: auth
+tags:
+  - attack.t1110
+  - attack.ta0006
+detection:
+  match:
+    and:
+      - {field: event_type, op: eq, value: auth_failure}
+  aggregate:
+    group_by: src_ip
+    window_minutes: 10
+    threshold: 5
+false_positives:
+  - Misconfigured services with incorrect credentials
+  - Password rotation causing temporary failures
+enabled: true
+author: builtin
