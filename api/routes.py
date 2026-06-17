@@ -2883,6 +2883,374 @@ async def mitre_reference(_: User = Depends(get_current_user)):
     return _load_mitre_reference()
 
 
+# ===================== Threat Intel =====================
+
+@router.get("/threatintel/feeds", tags=["threatintel"])
+async def list_threat_feeds(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import ThreatIntelFeed
+    feeds = db.query(ThreatIntelFeed).order_by(ThreatIntelFeed.name).all()
+    return [
+        {
+            "id": f.id,
+            "name": f.name,
+            "feed_type": f.feed_type,
+            "config_json": f.config_json,
+            "poll_interval_minutes": f.poll_interval_minutes,
+            "enabled": f.enabled,
+            "last_polled_at": f.last_polled_at.isoformat() if f.last_polled_at else None,
+            "last_error": f.last_error,
+            "indicator_count": f.indicator_count,
+            "has_api_key": bool(f.encrypted_api_key),
+            "created_at": f.created_at.isoformat() if f.created_at else None,
+        }
+        for f in feeds
+    ]
+
+
+@router.post("/threatintel/feeds", status_code=201, tags=["threatintel"])
+async def create_threat_feed(
+    request: Request,
+    body: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import ThreatIntelFeed, encrypt_value
+    name = body.get("name", "").strip()
+    feed_type = body.get("feed_type", "").strip()
+    if not name or not feed_type:
+        raise HTTPException(400, "name and feed_type are required")
+    if feed_type not in ("cisa_kev", "otx", "misp", "taxii"):
+        raise HTTPException(400, "feed_type must be one of: cisa_kev, otx, misp, taxii")
+    existing = db.query(ThreatIntelFeed).filter_by(name=name).first()
+    if existing:
+        raise HTTPException(409, f"Feed named '{name}' already exists")
+    api_key = body.get("api_key", "")
+    feed = ThreatIntelFeed(
+        name=name,
+        feed_type=feed_type,
+        config_json=body.get("config_json"),
+        encrypted_api_key=encrypt_value(api_key) if api_key else None,
+        poll_interval_minutes=int(body.get("poll_interval_minutes", 60)),
+        enabled=bool(body.get("enabled", True)),
+    )
+    db.add(feed)
+    write_audit(db, admin.username, "threatintel.create", f"Created threat feed '{name}'",
+                request.client.host if request.client else "")
+    db.commit()
+    db.refresh(feed)
+    return {"id": feed.id, "name": feed.name, "feed_type": feed.feed_type, "enabled": feed.enabled}
+
+
+@router.get("/threatintel/feeds/{feed_id}", tags=["threatintel"])
+async def get_threat_feed(
+    feed_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import ThreatIntelFeed
+    f = db.query(ThreatIntelFeed).filter_by(id=feed_id).first()
+    if not f:
+        raise HTTPException(404, "Feed not found")
+    return {
+        "id": f.id, "name": f.name, "feed_type": f.feed_type,
+        "config_json": f.config_json, "poll_interval_minutes": f.poll_interval_minutes,
+        "enabled": f.enabled, "last_polled_at": f.last_polled_at.isoformat() if f.last_polled_at else None,
+        "last_error": f.last_error, "indicator_count": f.indicator_count,
+        "has_api_key": bool(f.encrypted_api_key),
+        "created_at": f.created_at.isoformat() if f.created_at else None,
+        "updated_at": f.updated_at.isoformat() if f.updated_at else None,
+    }
+
+
+@router.patch("/threatintel/feeds/{feed_id}", tags=["threatintel"])
+async def update_threat_feed(
+    feed_id: int,
+    request: Request,
+    body: dict,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import ThreatIntelFeed, encrypt_value
+    f = db.query(ThreatIntelFeed).filter_by(id=feed_id).first()
+    if not f:
+        raise HTTPException(404, "Feed not found")
+    for field in ("name", "feed_type", "config_json", "poll_interval_minutes", "enabled"):
+        if field in body:
+            setattr(f, field, body[field])
+    if "api_key" in body and body["api_key"]:
+        f.encrypted_api_key = encrypt_value(body["api_key"])
+    f.updated_at = datetime.now(timezone.utc)
+    write_audit(db, admin.username, "threatintel.update", f"Updated threat feed '{f.name}'",
+                request.client.host if request.client else "")
+    db.commit()
+    return {"id": f.id, "name": f.name, "enabled": f.enabled}
+
+
+@router.delete("/threatintel/feeds/{feed_id}", status_code=204, tags=["threatintel"])
+async def delete_threat_feed(
+    feed_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import ThreatIntelFeed, ThreatIndicator
+    f = db.query(ThreatIntelFeed).filter_by(id=feed_id).first()
+    if not f:
+        raise HTTPException(404, "Feed not found")
+    name = f.name
+    db.query(ThreatIndicator).filter_by(feed_id=feed_id).delete()
+    db.delete(f)
+    write_audit(db, admin.username, "threatintel.delete", f"Deleted threat feed '{name}'",
+                request.client.host if request.client else "")
+    db.commit()
+
+
+@router.post("/threatintel/feeds/{feed_id}/poll", tags=["threatintel"])
+async def poll_threat_feed(
+    feed_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    from database import ThreatIntelFeed
+    from threat_intel import _FETCHERS
+    f = db.query(ThreatIntelFeed).filter_by(id=feed_id).first()
+    if not f:
+        raise HTTPException(404, "Feed not found")
+    fetcher = _FETCHERS.get(f.feed_type)
+    if not fetcher:
+        raise HTTPException(400, f"Unknown feed type: {f.feed_type}")
+    write_audit(db, admin.username, "threatintel.poll", f"Manual poll triggered for feed '{f.name}'",
+                request.client.host if request.client else "")
+    db.commit()
+    try:
+        count = await fetcher(f, db)
+        f.last_polled_at = datetime.now(timezone.utc)
+        f.last_error = None
+        from database import ThreatIndicator
+        f.indicator_count = db.query(ThreatIndicator).filter_by(feed_id=f.id).count()
+        db.commit()
+        return {"status": "ok", "indicators_processed": count, "total_indicators": f.indicator_count}
+    except Exception as exc:
+        f.last_polled_at = datetime.now(timezone.utc)
+        f.last_error = str(exc)
+        db.commit()
+        raise HTTPException(500, f"Poll failed: {exc}")
+
+
+@router.get("/threatintel/indicators", tags=["threatintel"])
+async def list_threat_indicators(
+    feed_id: Optional[int] = Query(None),
+    indicator_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import ThreatIndicator
+    q = db.query(ThreatIndicator)
+    if feed_id is not None:
+        q = q.filter(ThreatIndicator.feed_id == feed_id)
+    if indicator_type:
+        q = q.filter(ThreatIndicator.indicator_type == indicator_type)
+    if severity:
+        q = q.filter(ThreatIndicator.severity == severity)
+    if search:
+        q = q.filter(ThreatIndicator.value.ilike(f"%{search}%"))
+    total = q.count()
+    rows = q.order_by(ThreatIndicator.last_seen.desc()).offset(offset).limit(limit).all()
+    return {
+        "total": total, "offset": offset, "limit": limit,
+        "indicators": [
+            {
+                "id": r.id, "feed_id": r.feed_id,
+                "indicator_type": r.indicator_type, "value": r.value,
+                "confidence": r.confidence, "severity": r.severity,
+                "tags": json.loads(r.tags_json or "[]"),
+                "source_ref": r.source_ref,
+                "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/threatintel/indicators/lookup", tags=["threatintel"])
+async def lookup_threat_indicator(
+    type: str = Query(...),
+    value: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import ThreatIndicator
+    rows = (
+        db.query(ThreatIndicator)
+        .filter_by(indicator_type=type, value=value)
+        .all()
+    )
+    return {
+        "type": type, "value": value, "matches": len(rows),
+        "indicators": [
+            {
+                "id": r.id, "feed_id": r.feed_id, "severity": r.severity,
+                "confidence": r.confidence,
+                "tags": json.loads(r.tags_json or "[]"),
+                "source_ref": r.source_ref,
+                "first_seen": r.first_seen.isoformat() if r.first_seen else None,
+                "last_seen": r.last_seen.isoformat() if r.last_seen else None,
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/threatintel/ioc-matches", tags=["threatintel"])
+async def list_ioc_matches(
+    severity: Optional[str] = Query(None),
+    acknowledged: Optional[bool] = Query(None),
+    since: Optional[datetime] = Query(None),
+    feed_id: Optional[int] = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import IocMatch, ThreatIndicator
+    q = db.query(IocMatch)
+    if severity:
+        q = q.filter(IocMatch.severity == severity)
+    if acknowledged is not None:
+        q = q.filter(IocMatch.acknowledged == acknowledged)
+    if since:
+        q = q.filter(IocMatch.matched_at >= since)
+    if feed_id is not None:
+        ind_ids = [r.id for r in db.query(ThreatIndicator.id).filter_by(feed_id=feed_id).all()]
+        q = q.filter(IocMatch.indicator_id.in_(ind_ids))
+    total = q.count()
+    rows = q.order_by(IocMatch.matched_at.desc()).offset(offset).limit(limit).all()
+
+    # Enrich with indicator details
+    ind_ids_needed = list({r.indicator_id for r in rows})
+    ind_map = {i.id: i for i in db.query(ThreatIndicator).filter(ThreatIndicator.id.in_(ind_ids_needed)).all()}
+
+    return {
+        "total": total, "offset": offset, "limit": limit,
+        "matches": [
+            {
+                "id": m.id,
+                "indicator_id": m.indicator_id,
+                "indicator": {
+                    "type": ind_map[m.indicator_id].indicator_type if m.indicator_id in ind_map else None,
+                    "value": ind_map[m.indicator_id].value if m.indicator_id in ind_map else None,
+                    "severity": ind_map[m.indicator_id].severity if m.indicator_id in ind_map else None,
+                    "tags": json.loads(ind_map[m.indicator_id].tags_json or "[]") if m.indicator_id in ind_map else [],
+                    "source_ref": ind_map[m.indicator_id].source_ref if m.indicator_id in ind_map else None,
+                } if m.indicator_id in ind_map else None,
+                "entry_id": m.entry_id,
+                "netflow_id": m.netflow_id,
+                "matched_field": m.matched_field,
+                "matched_value": m.matched_value,
+                "matched_at": m.matched_at.isoformat() if m.matched_at else None,
+                "severity": m.severity,
+                "acknowledged": m.acknowledged,
+                "notified": m.notified,
+            }
+            for m in rows
+        ],
+    }
+
+
+@router.post("/threatintel/ioc-matches/{match_id}/acknowledge", tags=["threatintel"])
+async def acknowledge_ioc_match(
+    match_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_write),
+):
+    from database import IocMatch
+    m = db.query(IocMatch).filter_by(id=match_id).first()
+    if not m:
+        raise HTTPException(404, "Match not found")
+    m.acknowledged = True
+    db.commit()
+    return {"acknowledged": True, "match_id": match_id}
+
+
+@router.get("/threatintel/stats", tags=["threatintel"])
+async def threat_intel_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    from database import IocMatch, ThreatIndicator, ThreatIntelFeed
+    from sqlalchemy import func as sqlfunc
+    now = datetime.now(timezone.utc)
+    since_24h = now - timedelta(hours=24)
+    since_7d = now - timedelta(days=7)
+
+    # Indicator counts by type
+    by_type = (
+        db.query(ThreatIndicator.indicator_type, sqlfunc.count(ThreatIndicator.id))
+        .group_by(ThreatIndicator.indicator_type)
+        .all()
+    )
+    # Indicator counts by severity
+    by_severity = (
+        db.query(ThreatIndicator.severity, sqlfunc.count(ThreatIndicator.id))
+        .group_by(ThreatIndicator.severity)
+        .all()
+    )
+    total_indicators = db.query(sqlfunc.count(ThreatIndicator.id)).scalar() or 0
+
+    # Recent IOC matches
+    recent_matches = (
+        db.query(IocMatch)
+        .filter(IocMatch.matched_at >= since_24h)
+        .order_by(IocMatch.matched_at.desc())
+        .limit(10)
+        .all()
+    )
+    unacked = db.query(IocMatch).filter_by(acknowledged=False).count()
+    matches_24h = db.query(IocMatch).filter(IocMatch.matched_at >= since_24h).count()
+    matches_7d = db.query(IocMatch).filter(IocMatch.matched_at >= since_7d).count()
+
+    # Feed health
+    feeds = db.query(ThreatIntelFeed).all()
+    feed_health = [
+        {
+            "id": f.id, "name": f.name, "feed_type": f.feed_type,
+            "enabled": f.enabled, "indicator_count": f.indicator_count,
+            "last_polled_at": f.last_polled_at.isoformat() if f.last_polled_at else None,
+            "last_error": f.last_error,
+            "healthy": f.last_error is None and f.enabled,
+        }
+        for f in feeds
+    ]
+
+    return {
+        "total_indicators": total_indicators,
+        "by_type": [{"type": t, "count": c} for t, c in by_type],
+        "by_severity": [{"severity": s or "unknown", "count": c} for s, c in by_severity],
+        "ioc_matches_24h": matches_24h,
+        "ioc_matches_7d": matches_7d,
+        "unacknowledged_matches": unacked,
+        "recent_matches": [
+            {
+                "id": m.id, "severity": m.severity,
+                "matched_field": m.matched_field, "matched_value": m.matched_value,
+                "matched_at": m.matched_at.isoformat() if m.matched_at else None,
+                "acknowledged": m.acknowledged,
+            }
+            for m in recent_matches
+        ],
+        "feed_health": feed_health,
+    }
+
+
 @router.post("/detections/dry-run", tags=["detections"])
 async def detection_dry_run(
     body: dict,

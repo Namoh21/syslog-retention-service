@@ -54,20 +54,31 @@ async def enrich_ip(ip: str) -> dict:
     try:
         cached = db.query(IpReputationCache).filter_by(ip=ip).first()
         if cached and _is_cache_fresh(cached):
-            return _row_to_dict(cached)
-
-        data = await _fetch_enrichment(ip)
-        if cached:
-            for k, v in data.items():
-                if hasattr(cached, k):
-                    setattr(cached, k, v)
-            cached.fetched_at = datetime.now(timezone.utc)
+            result = _row_to_dict(cached)
         else:
-            db.add(IpReputationCache(ip=ip, fetched_at=datetime.now(timezone.utc), **{
-                k: v for k, v in data.items() if k != "ip"
-            }))
-        db.commit()
-        return {"ip": ip, **data}
+            data = await _fetch_enrichment(ip)
+            if cached:
+                for k, v in data.items():
+                    if hasattr(cached, k):
+                        setattr(cached, k, v)
+                cached.fetched_at = datetime.now(timezone.utc)
+            else:
+                db.add(IpReputationCache(ip=ip, fetched_at=datetime.now(timezone.utc), **{
+                    k: v for k, v in data.items() if k != "ip"
+                }))
+            db.commit()
+            result = {"ip": ip, **data}
+
+        # Threat intel lookup
+        try:
+            from threat_intel import check_threat_intel
+            ti = check_threat_intel(ip, db)
+            if ti:
+                result["threat_intel"] = ti
+        except Exception as ti_exc:
+            logger.debug("Threat intel lookup failed for %s: %s", ip, ti_exc)
+
+        return result
     except Exception as exc:
         logger.warning("Enrichment failed for %s: %s", ip, exc)
         return {"ip": ip, "error": str(exc)}

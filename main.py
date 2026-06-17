@@ -143,10 +143,13 @@ async def lifespan(app: FastAPI):
 
     from alert_engine import run_alert_engine
     from unifi_poller import run_unifi_poller
+    from threat_intel import run_threat_intel_poller, run_ioc_matcher
     _background_tasks.append(asyncio.create_task(_scheduled_purge(), name="purge"))
     _background_tasks.append(asyncio.create_task(run_alert_engine(), name="alert_engine"))
     _background_tasks.append(asyncio.create_task(run_unifi_poller(), name="unifi_poller"))
     _background_tasks.append(asyncio.create_task(run_detection_engine(), name="detection_engine"))
+    _background_tasks.append(asyncio.create_task(run_threat_intel_poller(), name="threat_intel_poller"))
+    _background_tasks.append(asyncio.create_task(run_ioc_matcher(), name="ioc_matcher"))
     logger.info(
         "Web console: http://%s:%d",
         "localhost" if settings.api_host == "0.0.0.0" else settings.api_host,

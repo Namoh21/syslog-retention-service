@@ -37,7 +37,7 @@ def decrypt_value(ciphertext: str) -> str:
         return ""
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Index, Integer, String, Text,
+    Boolean, Column, DateTime, Index, Integer, String, Text, UniqueConstraint,
     create_engine, func, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -450,6 +450,57 @@ class DetectionMatch(Base):
     )
 
 
+class ThreatIntelFeed(Base):
+    __tablename__ = "threat_intel_feeds"
+    id            = Column(Integer, primary_key=True, index=True)
+    name          = Column(String(128), nullable=False, unique=True)
+    feed_type     = Column(String(32), nullable=False)   # cisa_kev|otx|misp|taxii
+    config_json   = Column(Text, nullable=True)          # URL, collection, etc (non-secret)
+    encrypted_api_key = Column(Text, nullable=True)      # via existing encrypt_value()
+    poll_interval_minutes = Column(Integer, default=60)
+    enabled       = Column(Boolean, default=True, index=True)
+    last_polled_at = Column(DateTime(timezone=True), nullable=True)
+    last_error    = Column(Text, nullable=True)
+    indicator_count = Column(Integer, default=0)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+
+class ThreatIndicator(Base):
+    __tablename__ = "threat_indicators"
+    id            = Column(Integer, primary_key=True, index=True)
+    feed_id       = Column(Integer, nullable=False, index=True)
+    indicator_type = Column(String(32), nullable=False, index=True)  # ip|domain|cve|hash|url
+    value         = Column(String(512), nullable=False, index=True)
+    confidence    = Column(Integer, default=50)          # 0-100
+    severity      = Column(String(16), nullable=True)    # critical|high|medium|low
+    tags_json     = Column(Text, nullable=True)          # ["ransomware", "apt"]
+    source_ref    = Column(String(256), nullable=True)   # CVE ID, OTX pulse, etc
+    first_seen    = Column(DateTime(timezone=True), nullable=True)
+    last_seen     = Column(DateTime(timezone=True), nullable=True)
+    expires_at    = Column(DateTime(timezone=True), nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    __table_args__ = (
+        Index("ix_threat_indicators_type_value", "indicator_type", "value"),
+        UniqueConstraint("feed_id", "indicator_type", "value", name="uq_indicator_feed_type_value"),
+    )
+
+
+class IocMatch(Base):
+    __tablename__ = "ioc_matches"
+    id            = Column(Integer, primary_key=True, index=True)
+    indicator_id  = Column(Integer, nullable=False, index=True)
+    entry_id      = Column(Integer, nullable=True, index=True)   # SyslogEntry.id
+    netflow_id    = Column(Integer, nullable=True, index=True)   # NetFlowRecord.id if exists
+    matched_field = Column(String(64), nullable=False)           # src_ip, dst_ip, domain, etc
+    matched_value = Column(String(512), nullable=False)
+    matched_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), index=True)
+    severity      = Column(String(16), nullable=False, index=True)
+    acknowledged  = Column(Boolean, default=False, index=True)
+    notified      = Column(Boolean, default=False)
+    __table_args__ = (Index("ix_ioc_matches_indicator_matched", "indicator_id", "matched_at"),)
+
+
 def _migrate_db():
     """Add any missing columns to existing tables (safe to re-run)."""
     with engine.connect() as conn:
@@ -647,6 +698,71 @@ def _migrate_unifi_change_tables():
         conn.commit()
 
 
+def _migrate_threat_intel_tables():
+    """Create threat intel tables if they don't exist yet."""
+    with engine.connect() as conn:
+        existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
+        if "threat_intel_feeds" not in existing:
+            conn.execute(text("""
+                CREATE TABLE threat_intel_feeds (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name VARCHAR(128) NOT NULL UNIQUE,
+                    feed_type VARCHAR(32) NOT NULL,
+                    config_json TEXT,
+                    encrypted_api_key TEXT,
+                    poll_interval_minutes INTEGER DEFAULT 60,
+                    enabled BOOLEAN DEFAULT 1,
+                    last_polled_at DATETIME,
+                    last_error TEXT,
+                    indicator_count INTEGER DEFAULT 0,
+                    created_at DATETIME,
+                    updated_at DATETIME
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_threat_intel_feeds_enabled ON threat_intel_feeds(enabled)"))
+        if "threat_indicators" not in existing:
+            conn.execute(text("""
+                CREATE TABLE threat_indicators (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    feed_id INTEGER NOT NULL,
+                    indicator_type VARCHAR(32) NOT NULL,
+                    value VARCHAR(512) NOT NULL,
+                    confidence INTEGER DEFAULT 50,
+                    severity VARCHAR(16),
+                    tags_json TEXT,
+                    source_ref VARCHAR(256),
+                    first_seen DATETIME,
+                    last_seen DATETIME,
+                    expires_at DATETIME,
+                    created_at DATETIME,
+                    UNIQUE(feed_id, indicator_type, value)
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_threat_indicators_feed_id ON threat_indicators(feed_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_threat_indicators_type ON threat_indicators(indicator_type)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_threat_indicators_value ON threat_indicators(value)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_threat_indicators_type_value ON threat_indicators(indicator_type, value)"))
+        if "ioc_matches" not in existing:
+            conn.execute(text("""
+                CREATE TABLE ioc_matches (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    indicator_id INTEGER NOT NULL,
+                    entry_id INTEGER,
+                    netflow_id INTEGER,
+                    matched_field VARCHAR(64) NOT NULL,
+                    matched_value VARCHAR(512) NOT NULL,
+                    matched_at DATETIME,
+                    severity VARCHAR(16) NOT NULL,
+                    acknowledged BOOLEAN DEFAULT 0,
+                    notified BOOLEAN DEFAULT 0
+                )"""))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_indicator_id ON ioc_matches(indicator_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_entry_id ON ioc_matches(entry_id)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_matched_at ON ioc_matches(matched_at)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_severity ON ioc_matches(severity)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_acknowledged ON ioc_matches(acknowledged)"))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_ioc_matches_indicator_matched ON ioc_matches(indicator_id, matched_at)"))
+        conn.commit()
+
+
 def _migrate_agent_tables():
     with engine.connect() as conn:
         existing = {row[0] for row in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).fetchall()}
@@ -724,6 +840,7 @@ def init_db():
     _migrate_dpi_tables()
     _migrate_agent_tables()
     _migrate_unifi_change_tables()
+    _migrate_threat_intel_tables()
     _seed_defaults()
     _migrate_secret_key_to_keystore()
     _secure_env_file()

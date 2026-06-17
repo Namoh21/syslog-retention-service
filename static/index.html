@@ -404,6 +404,7 @@
       <li><a onclick="showPage('policygaps')" data-page="policygaps" title="Find traffic that reaches your devices without being explicitly blocked"><span class="nav-icon">&#x26A0;&#xFE0F;</span> Policy Gaps</a></li>
       <li><a onclick="showPage('alertrules')" data-page="alertrules" title="Configure automated alerts triggered by log patterns"><span class="nav-icon">&#x1F514;</span> Alerts <span id="nav-alert-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li><a onclick="showPage('detections')" data-page="detections" title="Detection Engine rules and matches with MITRE ATT&amp;CK mapping"><span class="nav-icon">&#x1F6E1;</span> Detections <span id="nav-det-badge" class="nav-badge" style="display:none">0</span></a></li>
+      <li><a onclick="showPage('threatintel')" data-page="threatintel" title="Threat Intelligence feeds, indicators, and IOC matches"><span class="nav-icon">&#x1F9E0;</span> Threat Intel <span id="nav-ti-badge" class="nav-badge" style="display:none">0</span></a></li>
       <li style="cursor:default;padding:6px 16px 2px;font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--border);margin-top:4px;">Configure</li>
       <li><a onclick="showPage('svcSettings')" data-page="svcSettings" title="AI provider, API keys, NetFlow, and display settings"><span class="nav-icon">&#x2699;&#xFE0F;</span> Service Settings</a></li>
       <li><a onclick="showPage('retention')" data-page="retention" title="Control how long logs are kept and storage limits"><span class="nav-icon">&#x1F5C4;</span> Retention</a></li>
@@ -615,7 +616,7 @@ function showPage(name) {
   const pageTitles = {
     dashboard:'Dashboard', logs:'Log Viewer', ai:'AI Analysis',
     investigate:'Investigate IP', rulehits:'Rule Hits', trafficmatrix:'Traffic Matrix', netflow:'NetFlow',
-    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections',
+    simulate:'Rule Simulator', policygaps:'Policy Gaps', alertrules:'Alerts', detections:'Detections', threatintel:'Threat Intel',
     unifiConfig:'Network Config',
     svcSettings:'Service Settings', retention:'Retention', users:'Users',
     apikeys:'API Keys', auditlog:'Audit Log', setup:'Setup Guide', changePassword:'Change Password',
@@ -626,7 +627,7 @@ function showPage(name) {
   // Stop UI timers when leaving AI page — background job continues on server
   if (name !== 'ai') { _stopPolling(); }
   const pages = {
-    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections,
+    dashboard, logs, ai, investigate, rulehits, trafficmatrix, netflow, simulate, policygaps, alertrules, detections, threatintel,
     unifiConfig,
     svcSettings, retention, users, apikeys, auditlog, setup, changePassword,
   };
@@ -6076,6 +6077,362 @@ async function detAckMatch(matchId, btn) {
     btn.outerHTML = '<span style="color:var(--muted);font-size:12px">&#x2713; Acked</span>';
     _detToast('Match acknowledged');
   } catch(e) { _detToast('Failed: ' + e, 'error'); }
+}
+
+// ===================== Threat Intel =====================
+
+let _tiTab = 'feeds';
+
+function _tiToast(msg, type='ok') {
+  let el = document.getElementById('ti-toast');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.background = type === 'error' ? 'var(--danger)' : 'var(--accent2)';
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 3500);
+}
+
+function _tiSevBadge(sev) {
+  const colors = {critical:'#f85149',high:'#d29922',medium:'#58a6ff',low:'#8b949e'};
+  const c = colors[sev] || '#8b949e';
+  return `<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;background:${c}22;color:${c}">${sev||'unknown'}</span>`;
+}
+
+function _tiTypeBadge(type) {
+  const colors = {ip:'#3fb950',domain:'#58a6ff',cve:'#f85149',hash:'#d29922',url:'#a371f7'};
+  const c = colors[type] || '#8b949e';
+  return `<span style="display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:600;background:${c}22;color:${c}">${type||'?'}</span>`;
+}
+
+async function threatintel() {
+  render(`
+    <div class="page-header">
+      <h1>&#x1F9E0; Threat Intel</h1>
+      <p>Manage threat intelligence feeds, browse indicators, and review IOC matches.</p>
+    </div>
+    <div id="ti-toast" style="display:none;position:fixed;bottom:24px;right:24px;padding:10px 18px;border-radius:var(--radius);color:#fff;font-size:13px;z-index:999;"></div>
+
+    <!-- Stats bar -->
+    <div id="ti-stats-bar" class="stat-grid" style="margin-bottom:20px;"></div>
+
+    <!-- Sub-tabs -->
+    <div style="display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:20px;">
+      <button id="ti-tab-feeds" onclick="tiSwitchTab('feeds')" style="padding:8px 20px;background:none;border:none;border-bottom:2px solid var(--accent);color:var(--accent);cursor:pointer;font-size:13px;font-weight:600;">Feeds</button>
+      <button id="ti-tab-indicators" onclick="tiSwitchTab('indicators')" style="padding:8px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;">Indicators</button>
+      <button id="ti-tab-matches" onclick="tiSwitchTab('matches')" style="padding:8px 20px;background:none;border:none;border-bottom:2px solid transparent;color:var(--muted);cursor:pointer;font-size:13px;">IOC Matches <span id="ti-match-count" style="font-size:11px;"></span></button>
+    </div>
+
+    <!-- Feeds tab -->
+    <div id="ti-pane-feeds">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+        <span style="font-size:13px;color:var(--muted);">Configured threat intelligence sources</span>
+        <button onclick="tiShowAddFeed()" style="background:var(--accent);color:#000;border:none;padding:7px 14px;border-radius:var(--radius);font-size:12px;font-weight:600;cursor:pointer;">+ Add Feed</button>
+      </div>
+      <div id="ti-feeds-content" class="card"><div style="color:var(--muted);padding:20px;text-align:center;">Loading...</div></div>
+    </div>
+
+    <!-- Indicators tab -->
+    <div id="ti-pane-indicators" style="display:none;">
+      <div class="form-row" style="margin-bottom:12px;">
+        <input id="ti-ind-search" placeholder="Search value..." style="flex:1;min-width:180px;" oninput="tiLoadIndicators()" />
+        <select id="ti-ind-type" onchange="tiLoadIndicators()" style="min-width:110px;">
+          <option value="">All Types</option>
+          <option value="ip">IP</option>
+          <option value="domain">Domain</option>
+          <option value="cve">CVE</option>
+          <option value="hash">Hash</option>
+          <option value="url">URL</option>
+        </select>
+        <select id="ti-ind-sev" onchange="tiLoadIndicators()" style="min-width:110px;">
+          <option value="">All Severities</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+      </div>
+      <div id="ti-indicators-content" class="card"><div style="color:var(--muted);padding:20px;text-align:center;">Loading...</div></div>
+    </div>
+
+    <!-- IOC Matches tab -->
+    <div id="ti-pane-matches" style="display:none;">
+      <div class="form-row" style="margin-bottom:12px;">
+        <select id="ti-match-sev" onchange="tiLoadMatches()" style="min-width:130px;">
+          <option value="">All Severities</option>
+          <option value="critical">Critical</option>
+          <option value="high">High</option>
+          <option value="medium">Medium</option>
+          <option value="low">Low</option>
+        </select>
+        <select id="ti-match-acked" onchange="tiLoadMatches()" style="min-width:140px;">
+          <option value="">All Matches</option>
+          <option value="false">Unacknowledged</option>
+          <option value="true">Acknowledged</option>
+        </select>
+      </div>
+      <div id="ti-matches-content" class="card"><div style="color:var(--muted);padding:20px;text-align:center;">Loading...</div></div>
+    </div>
+
+    <!-- Add Feed Modal -->
+    <div id="ti-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:none;align-items:center;justify-content:center;">
+      <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:460px;max-width:95vw;">
+        <div style="font-size:15px;font-weight:600;color:var(--text);margin-bottom:16px;">Add Threat Intel Feed</div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Feed Name *</label>
+          <input id="ti-f-name" placeholder="e.g. CISA KEV" style="width:100%;" />
+        </div>
+        <div class="form-group" style="margin-bottom:10px;">
+          <label>Feed Type *</label>
+          <select id="ti-f-type" onchange="tiModalTypeChange()" style="width:100%;">
+            <option value="cisa_kev">CISA KEV</option>
+            <option value="otx">AlienVault OTX</option>
+            <option value="misp">MISP</option>
+            <option value="taxii">TAXII 2.1</option>
+          </select>
+        </div>
+        <div id="ti-f-url-row" class="form-group" style="margin-bottom:10px;display:none;">
+          <label>Base URL</label>
+          <input id="ti-f-url" placeholder="https://..." style="width:100%;" />
+        </div>
+        <div id="ti-f-key-row" class="form-group" style="margin-bottom:10px;display:none;">
+          <label>API Key</label>
+          <input id="ti-f-key" type="password" placeholder="Leave blank to keep existing" style="width:100%;" />
+        </div>
+        <div id="ti-f-col-row" class="form-group" style="margin-bottom:10px;display:none;">
+          <label>Collection ID (optional)</label>
+          <input id="ti-f-col" placeholder="TAXII collection UUID" style="width:100%;" />
+        </div>
+        <div class="form-group" style="margin-bottom:16px;">
+          <label>Poll Interval (minutes)</label>
+          <input id="ti-f-interval" type="number" value="60" min="15" style="width:100%;" />
+        </div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;">
+          <button onclick="tiCloseModal()" style="background:none;border:1px solid var(--border);color:var(--text);padding:7px 16px;border-radius:var(--radius);cursor:pointer;font-size:13px;">Cancel</button>
+          <button onclick="tiSaveFeed()" style="background:var(--accent);color:#000;border:none;padding:7px 16px;border-radius:var(--radius);font-weight:600;cursor:pointer;font-size:13px;">Save Feed</button>
+        </div>
+      </div>
+    </div>
+  `);
+  tiLoadStats();
+  tiSwitchTab('feeds');
+}
+
+function tiSwitchTab(tab) {
+  _tiTab = tab;
+  ['feeds','indicators','matches'].forEach(t => {
+    const btn = document.getElementById(`ti-tab-${t}`);
+    const pane = document.getElementById(`ti-pane-${t}`);
+    if (!btn || !pane) return;
+    const active = t === tab;
+    btn.style.borderBottom = active ? '2px solid var(--accent)' : '2px solid transparent';
+    btn.style.color = active ? 'var(--accent)' : 'var(--muted)';
+    btn.style.fontWeight = active ? '600' : '400';
+    pane.style.display = active ? '' : 'none';
+  });
+  if (tab === 'feeds') tiLoadFeeds();
+  if (tab === 'indicators') tiLoadIndicators();
+  if (tab === 'matches') tiLoadMatches();
+}
+
+async function tiLoadStats() {
+  try {
+    const s = await apiFetch('/api/threatintel/stats');
+    const bar = document.getElementById('ti-stats-bar');
+    if (!bar) return;
+    bar.innerHTML = `
+      <div class="stat"><div class="val">${s.total_indicators.toLocaleString()}</div><div class="lbl">Total Indicators</div></div>
+      <div class="stat"><div class="val" style="color:var(--warn)">${s.ioc_matches_24h}</div><div class="lbl">IOC Matches (24h)</div></div>
+      <div class="stat"><div class="val" style="color:var(--danger)">${s.unacknowledged_matches}</div><div class="lbl">Unacknowledged</div></div>
+      <div class="stat"><div class="val">${s.feed_health.length}</div><div class="lbl">Configured Feeds</div></div>
+      <div class="stat"><div class="val" style="color:var(--accent2)">${s.feed_health.filter(f=>f.healthy).length}</div><div class="lbl">Healthy Feeds</div></div>
+    `;
+    const mc = document.getElementById('ti-match-count');
+    if (mc && s.unacknowledged_matches > 0) mc.innerHTML = `<span style="background:var(--danger);color:#fff;padding:1px 6px;border-radius:10px;font-size:10px;margin-left:4px;">${s.unacknowledged_matches}</span>`;
+    const badge = document.getElementById('nav-ti-badge');
+    if (badge) {
+      if (s.unacknowledged_matches > 0) { badge.textContent = s.unacknowledged_matches; badge.style.display = ''; }
+      else badge.style.display = 'none';
+    }
+  } catch(e) { /* silent */ }
+}
+
+async function tiLoadFeeds() {
+  const el = document.getElementById('ti-feeds-content');
+  if (!el) return;
+  try {
+    const feeds = await apiFetch('/api/threatintel/feeds');
+    if (!feeds.length) {
+      el.innerHTML = `<div style="text-align:center;padding:32px;color:var(--muted);">
+        <div style="font-size:32px;margin-bottom:12px;">&#x1F9E0;</div>
+        <div style="margin-bottom:8px;">No threat intelligence feeds configured yet.</div>
+        <div style="font-size:12px;">Add CISA KEV to get started — no API key required.</div>
+      </div>`;
+      return;
+    }
+    el.innerHTML = `<div class="tbl-wrap"><table>
+      <thead><tr><th>Name</th><th>Type</th><th>Status</th><th>Last Polled</th><th>Indicators</th><th>Enabled</th><th>Actions</th></tr></thead>
+      <tbody>${feeds.map(f => `
+        <tr>
+          <td style="font-weight:600;">${f.name}</td>
+          <td><span style="font-family:monospace;font-size:12px;color:var(--accent2)">${f.feed_type}</span></td>
+          <td>${f.last_error ? `<span style="color:var(--danger);font-size:12px;" title="${f.last_error}">&#x26A0; Error</span>` :
+            f.last_polled_at ? '<span style="color:var(--accent2);">&#x2713; OK</span>' :
+            '<span style="color:var(--muted);font-size:12px;">Not polled</span>'}</td>
+          <td style="font-size:12px;color:var(--muted);">${f.last_polled_at ? new Date(f.last_polled_at).toLocaleString() : '—'}</td>
+          <td style="font-weight:600;color:var(--accent);">${(f.indicator_count||0).toLocaleString()}</td>
+          <td>${f.enabled ? '<span style="color:var(--accent2);">&#x25CF; On</span>' : '<span style="color:var(--muted);">&#x25CB; Off</span>'}</td>
+          <td>
+            <button onclick="tiPollFeed(${f.id},'${f.name}',this)" style="background:none;border:1px solid var(--border);color:var(--text);padding:3px 10px;border-radius:var(--radius);cursor:pointer;font-size:11px;margin-right:4px;">Poll Now</button>
+            <button onclick="tiToggleFeed(${f.id},${!f.enabled})" style="background:none;border:1px solid var(--border);color:${f.enabled?'var(--warn)':'var(--accent2)'};padding:3px 10px;border-radius:var(--radius);cursor:pointer;font-size:11px;margin-right:4px;">${f.enabled ? 'Disable' : 'Enable'}</button>
+            <button onclick="tiDeleteFeed(${f.id},'${f.name}')" style="background:none;border:1px solid var(--border);color:var(--danger);padding:3px 10px;border-radius:var(--radius);cursor:pointer;font-size:11px;">Delete</button>
+          </td>
+        </tr>`).join('')}
+      </tbody></table></div>`;
+  } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:16px;">Error: ${e}</div>`; }
+}
+
+async function tiPollFeed(feedId, feedName, btn) {
+  const orig = btn.textContent;
+  btn.textContent = 'Polling...'; btn.disabled = true;
+  try {
+    const r = await apiFetch(`/api/threatintel/feeds/${feedId}/poll`, {method:'POST'});
+    _tiToast(`${feedName}: ${r.total_indicators} indicators loaded`);
+    tiLoadFeeds();
+    tiLoadStats();
+  } catch(e) { _tiToast('Poll failed: ' + e, 'error'); }
+  finally { btn.textContent = orig; btn.disabled = false; }
+}
+
+async function tiToggleFeed(feedId, enable) {
+  try {
+    await apiFetch(`/api/threatintel/feeds/${feedId}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({enabled: enable})});
+    tiLoadFeeds();
+  } catch(e) { _tiToast('Failed: ' + e, 'error'); }
+}
+
+async function tiDeleteFeed(feedId, feedName) {
+  if (!confirm(`Delete feed "${feedName}" and all its indicators?`)) return;
+  try {
+    await apiFetch(`/api/threatintel/feeds/${feedId}`, {method:'DELETE'});
+    _tiToast(`Feed "${feedName}" deleted`);
+    tiLoadFeeds(); tiLoadStats();
+  } catch(e) { _tiToast('Delete failed: ' + e, 'error'); }
+}
+
+function tiShowAddFeed() {
+  const m = document.getElementById('ti-modal');
+  if (m) { m.style.display = 'flex'; tiModalTypeChange(); }
+}
+
+function tiCloseModal() {
+  const m = document.getElementById('ti-modal');
+  if (m) m.style.display = 'none';
+}
+
+function tiModalTypeChange() {
+  const type = document.getElementById('ti-f-type')?.value;
+  const needsUrl = ['misp','taxii'].includes(type);
+  const needsKey = ['otx','misp','taxii'].includes(type);
+  const needsCol = type === 'taxii';
+  document.getElementById('ti-f-url-row').style.display = needsUrl ? '' : 'none';
+  document.getElementById('ti-f-key-row').style.display = needsKey ? '' : 'none';
+  document.getElementById('ti-f-col-row').style.display = needsCol ? '' : 'none';
+}
+
+async function tiSaveFeed() {
+  const name = document.getElementById('ti-f-name')?.value?.trim();
+  const feed_type = document.getElementById('ti-f-type')?.value;
+  const url = document.getElementById('ti-f-url')?.value?.trim();
+  const api_key = document.getElementById('ti-f-key')?.value?.trim();
+  const col = document.getElementById('ti-f-col')?.value?.trim();
+  const interval = parseInt(document.getElementById('ti-f-interval')?.value) || 60;
+  if (!name) { _tiToast('Feed name is required', 'error'); return; }
+  const cfg = {};
+  if (url) cfg.url = url;
+  if (col) cfg.collection_id = col;
+  const body = {name, feed_type, config_json: Object.keys(cfg).length ? JSON.stringify(cfg) : null, poll_interval_minutes: interval};
+  if (api_key) body.api_key = api_key;
+  try {
+    await apiFetch('/api/threatintel/feeds', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+    _tiToast(`Feed "${name}" created`);
+    tiCloseModal();
+    tiLoadFeeds();
+  } catch(e) { _tiToast('Failed: ' + e, 'error'); }
+}
+
+let _tiIndSearchTimer;
+async function tiLoadIndicators() {
+  clearTimeout(_tiIndSearchTimer);
+  _tiIndSearchTimer = setTimeout(_tiDoLoadIndicators, 350);
+}
+
+async function _tiDoLoadIndicators() {
+  const el = document.getElementById('ti-indicators-content');
+  if (!el) return;
+  const search = document.getElementById('ti-ind-search')?.value?.trim() || '';
+  const type = document.getElementById('ti-ind-type')?.value || '';
+  const sev = document.getElementById('ti-ind-sev')?.value || '';
+  let url = '/api/threatintel/indicators?limit=200';
+  if (search) url += `&search=${encodeURIComponent(search)}`;
+  if (type) url += `&indicator_type=${type}`;
+  if (sev) url += `&severity=${sev}`;
+  try {
+    const data = await apiFetch(url);
+    if (!data.indicators.length) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;">No indicators match your filters.</div>'; return; }
+    el.innerHTML = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${data.total.toLocaleString()} indicators total</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Type</th><th>Value</th><th>Severity</th><th>Confidence</th><th>Tags</th><th>Source</th><th>Last Seen</th></tr></thead>
+        <tbody>${data.indicators.map(i => `
+          <tr>
+            <td>${_tiTypeBadge(i.indicator_type)}</td>
+            <td style="font-family:monospace;font-size:12px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${i.value}">${i.value}</td>
+            <td>${_tiSevBadge(i.severity)}</td>
+            <td style="color:var(--muted);font-size:12px;">${i.confidence}%</td>
+            <td style="font-size:11px;color:var(--muted);">${(i.tags||[]).join(', ')||'—'}</td>
+            <td style="font-size:11px;color:var(--muted);max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${i.source_ref||''}">${i.source_ref||'—'}</td>
+            <td style="font-size:11px;color:var(--muted);">${i.last_seen ? new Date(i.last_seen).toLocaleDateString() : '—'}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+  } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:16px;">Error: ${e}</div>`; }
+}
+
+async function tiLoadMatches() {
+  const el = document.getElementById('ti-matches-content');
+  if (!el) return;
+  const sev = document.getElementById('ti-match-sev')?.value || '';
+  const acked = document.getElementById('ti-match-acked')?.value || '';
+  let url = '/api/threatintel/ioc-matches?limit=100';
+  if (sev) url += `&severity=${sev}`;
+  if (acked !== '') url += `&acknowledged=${acked}`;
+  try {
+    const data = await apiFetch(url);
+    if (!data.matches.length) { el.innerHTML = '<div style="color:var(--muted);padding:20px;text-align:center;">No IOC matches found.</div>'; return; }
+    el.innerHTML = `<div style="font-size:12px;color:var(--muted);margin-bottom:10px;">${data.total.toLocaleString()} total matches</div>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Severity</th><th>Field</th><th>Matched Value</th><th>Indicator</th><th>Tags</th><th>Entry</th><th>Time</th><th></th></tr></thead>
+        <tbody>${data.matches.map(m => `
+          <tr style="${m.acknowledged ? 'opacity:.55' : ''}">
+            <td>${_tiSevBadge(m.severity)}</td>
+            <td style="font-size:12px;color:var(--muted);">${m.matched_field}</td>
+            <td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${m.matched_value}">${m.matched_value}</td>
+            <td>${m.indicator ? `${_tiTypeBadge(m.indicator.type)} <span style="font-size:11px;color:var(--muted);">${m.indicator.source_ref||''}</span>` : '—'}</td>
+            <td style="font-size:11px;color:var(--muted);">${m.indicator ? (m.indicator.tags||[]).join(', ')||'—' : '—'}</td>
+            <td style="font-size:12px;">${m.entry_id ? `<a href="#" onclick="showPage('logs')" style="color:var(--accent);">#${m.entry_id}</a>` : '—'}</td>
+            <td style="font-size:11px;color:var(--muted);">${m.matched_at ? new Date(m.matched_at).toLocaleString() : '—'}</td>
+            <td>${m.acknowledged ? '<span style="color:var(--muted);font-size:11px;">&#x2713; Acked</span>' :
+              `<button onclick="tiAckMatch(${m.id},this)" style="background:none;border:1px solid var(--border);color:var(--text);padding:2px 8px;border-radius:var(--radius);cursor:pointer;font-size:11px;">Ack</button>`}</td>
+          </tr>`).join('')}
+        </tbody></table></div>`;
+  } catch(e) { el.innerHTML = `<div style="color:var(--danger);padding:16px;">Error: ${e}</div>`; }
+}
+
+async function tiAckMatch(matchId, btn) {
+  try {
+    await apiFetch(`/api/threatintel/ioc-matches/${matchId}/acknowledge`, {method:'POST'});
+    btn.closest('tr').style.opacity = '0.5';
+    btn.outerHTML = '<span style="color:var(--muted);font-size:11px;">&#x2713; Acked</span>';
+    tiLoadStats();
+  } catch(e) { _tiToast('Failed: ' + e, 'error'); }
 }
 
 </script>
